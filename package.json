@@ -1,0 +1,31 @@
+{
+  "name": "auto-blog",
+  "version": "1.0.0",
+  "description": "NaviWrite Backend - Naver Blog SEO/GEO/AEO API Server",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently \"vite\" \"node --watch server.js\"",
+    "dev:server": "node --watch server.js",
+    "build": "vite build",
+    "start": "node server.js",
+    "db:init": "node src/db/init.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.0",
+    "pg": "^8.13.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.1",
+    "concurrently": "^9.0.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.26.2",
+    "recharts": "^2.12.7",
+    "vite": "^5.4.8"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
