@@ -11,14 +11,14 @@ export const pool = new Pool({
 });
 
 pool.on('error', (err) => {
-  console.error('[DB] 예기치 않은 에러:', err.message);
+  console.error('[DB] Unexpected error:', err.message);
 });
 
 export async function initDB() {
   const client = await pool.connect();
   try {
     await client.query(`
-      -- 추적 포스트
+      -- Tracked Posts
       CREATE TABLE IF NOT EXISTS tracked_posts (
         id SERIAL PRIMARY KEY,
         url TEXT NOT NULL UNIQUE,
@@ -36,7 +36,7 @@ export async function initDB() {
         updated_at TIMESTAMPTZ DEFAULT NOW()
       );
 
-      -- 순위 기록
+      -- Ranking Records
       CREATE TABLE IF NOT EXISTS ranking_records (
         id SERIAL PRIMARY KEY,
         post_id INTEGER REFERENCES tracked_posts(id) ON DELETE CASCADE,
@@ -47,7 +47,7 @@ export async function initDB() {
         checked_at TIMESTAMPTZ DEFAULT NOW()
       );
 
-      -- 조회수 기록
+      -- View Records
       CREATE TABLE IF NOT EXISTS view_records (
         id SERIAL PRIMARY KEY,
         post_id INTEGER REFERENCES tracked_posts(id) ON DELETE CASCADE,
@@ -55,7 +55,7 @@ export async function initDB() {
         recorded_at TIMESTAMPTZ DEFAULT NOW()
       );
 
-      -- 피드백 (AI 개선 제안)
+      -- Feedbacks (AI improvement suggestions)
       CREATE TABLE IF NOT EXISTS feedbacks (
         id SERIAL PRIMARY KEY,
         post_id INTEGER REFERENCES tracked_posts(id) ON DELETE CASCADE,
@@ -67,7 +67,7 @@ export async function initDB() {
         created_at TIMESTAMPTZ DEFAULT NOW()
       );
 
-      -- 레퍼런스 (경쟁글 수집)
+      -- References (competitor collection)
       CREATE TABLE IF NOT EXISTS references_data (
         id SERIAL PRIMARY KEY,
         url TEXT NOT NULL,
@@ -83,7 +83,7 @@ export async function initDB() {
         collected_at TIMESTAMPTZ DEFAULT NOW()
       );
 
-      -- 카테고리 패턴 DB (학습 결과)
+      -- Category Pattern DB (learning results)
       CREATE TABLE IF NOT EXISTS pattern_stats (
         id SERIAL PRIMARY KEY,
         category TEXT NOT NULL UNIQUE,
@@ -96,13 +96,13 @@ export async function initDB() {
         updated_at TIMESTAMPTZ DEFAULT NOW()
       );
 
-      -- 인덱스
+      -- Indexes
       CREATE INDEX IF NOT EXISTS idx_ranking_post_id ON ranking_records(post_id);
       CREATE INDEX IF NOT EXISTS idx_ranking_checked_at ON ranking_records(checked_at);
       CREATE INDEX IF NOT EXISTS idx_views_post_id ON view_records(post_id);
       CREATE INDEX IF NOT EXISTS idx_feedbacks_post_id ON feedbacks(post_id);
     `);
-    console.log('[DB] 테이블 초기화 완료');
+    console.log('[DB] Tables initialized successfully');
   } finally {
     client.release();
   }

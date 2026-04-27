@@ -3,7 +3,7 @@ import pool from '../db/index.js';
 
 const router = Router();
 
-// ─── 레퍼런스 저장 (경쟁글 분석 결과) ───
+// --- Save Reference (competitor analysis result) ---
 router.post('/references', async (req, res) => {
   try {
     const { url, title, keyword, category, char_count, image_count,
@@ -17,7 +17,7 @@ router.post('/references', async (req, res) => {
        JSON.stringify(subheadings || []), seo_score || 0, geo_score || 0, aeo_score || 0]
     );
 
-    // 패턴 통계 업데이트
+    // Update pattern stats
     await updatePatternStats(category);
 
     res.json(rows[0]);
@@ -26,7 +26,7 @@ router.post('/references', async (req, res) => {
   }
 });
 
-// ─── 레퍼런스 목록 ───
+// --- Reference List ---
 router.get('/references', async (req, res) => {
   try {
     const { category, keyword } = req.query;
@@ -55,7 +55,7 @@ router.get('/references', async (req, res) => {
   }
 });
 
-// ─── 카테고리별 패턴 통계 ───
+// --- Pattern Stats by Category ---
 router.get('/stats', async (req, res) => {
   try {
     const { rows } = await pool.query(
@@ -67,7 +67,7 @@ router.get('/stats', async (req, res) => {
   }
 });
 
-// ─── 특정 카테고리 패턴 ───
+// --- Specific Category Pattern ---
 router.get('/stats/:category', async (req, res) => {
   try {
     const { category } = req.params;
@@ -91,7 +91,7 @@ router.get('/stats/:category', async (req, res) => {
   }
 });
 
-// ─── 피드백 CRUD ───
+// --- Feedback CRUD ---
 router.post('/feedbacks', async (req, res) => {
   try {
     const { post_id, type, description, before_text, after_text } = req.body;
@@ -112,14 +112,14 @@ router.patch('/feedbacks/:id/apply', async (req, res) => {
       'UPDATE feedbacks SET applied = TRUE WHERE id = $1 RETURNING *',
       [req.params.id]
     );
-    if (rows.length === 0) return res.status(404).json({ error: '피드백을 찾을 수 없습니다' });
+    if (rows.length === 0) return res.status(404).json({ error: 'Feedback not found' });
     res.json(rows[0]);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// ─── 내부 함수: 패턴 통계 재계산 ───
+// --- Internal: Recalculate pattern stats ---
 async function updatePatternStats(category) {
   if (!category) return;
   try {
@@ -147,7 +147,7 @@ async function updatePatternStats(category) {
         updated_at = NOW()
     `, [category]);
   } catch (err) {
-    console.error('[Pattern] 통계 업데이트 실패:', err.message);
+    console.error('[Pattern] Stats update failed:', err.message);
   }
 }
 

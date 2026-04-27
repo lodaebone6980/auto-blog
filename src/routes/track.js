@@ -3,7 +3,7 @@ import pool from '../db/index.js';
 
 const router = Router();
 
-// ─── 순위 추적 대시보드 데이터 ───
+// --- Ranking Dashboard Data ---
 router.get('/dashboard', async (req, res) => {
   try {
     const { period } = req.query; // day, week, month
@@ -11,7 +11,7 @@ router.get('/dashboard', async (req, res) => {
     if (period === 'day') interval = '1 day';
     if (period === 'month') interval = '30 days';
 
-    // 기간 내 순위 변동
+    // Ranking changes within period
     const rankings = await pool.query(`
       SELECT r.keyword, r.position, r.checked_at, t.title, t.url
       FROM ranking_records r
@@ -20,7 +20,7 @@ router.get('/dashboard', async (req, res) => {
       ORDER BY r.checked_at DESC
     `, [interval]);
 
-    // 기간 내 조회수 추이
+    // View trends within period
     const views = await pool.query(`
       SELECT v.post_id, v.views, v.recorded_at, t.title
       FROM view_records v
@@ -29,7 +29,7 @@ router.get('/dashboard', async (req, res) => {
       ORDER BY v.recorded_at DESC
     `, [interval]);
 
-    // 포스트별 최신 순위
+    // Latest ranking per post
     const latestRankings = await pool.query(`
       SELECT DISTINCT ON (r.post_id, r.keyword)
         r.post_id, r.keyword, r.position, r.checked_at, t.title
@@ -38,7 +38,7 @@ router.get('/dashboard', async (req, res) => {
       ORDER BY r.post_id, r.keyword, r.checked_at DESC
     `);
 
-    // 총 조회수 합계
+    // Total views sum
     const totalViews = await pool.query(`
       SELECT COALESCE(SUM(views), 0) as total
       FROM view_records
@@ -57,7 +57,7 @@ router.get('/dashboard', async (req, res) => {
   }
 });
 
-// ─── 특정 포스트 순위 히스토리 ───
+// --- Post Ranking History ---
 router.get('/history/:postId', async (req, res) => {
   try {
     const { postId } = req.params;
@@ -79,10 +79,10 @@ router.get('/history/:postId', async (req, res) => {
   }
 });
 
-// ─── 순위 변동 알림 체크 ───
+// --- Ranking Change Alerts ---
 router.get('/alerts', async (req, res) => {
   try {
-    // 최근 2건의 순위를 비교해서 3단계 이상 변동된 것만
+    // Compare last 2 rankings, show changes >= 3 positions
     const alerts = await pool.query(`
       WITH ranked AS (
         SELECT post_id, keyword, position,
@@ -101,7 +101,7 @@ router.get('/alerts', async (req, res) => {
 
     res.json(alerts.rows.map(a => ({
       ...a,
-      change: a.prev_position - a.position, // 양수 = 상승, 음수 = 하락
+      change: a.prev_position - a.position, // positive = up, negative = down
       direction: a.prev_position > a.position ? 'up' : 'down'
     })));
   } catch (err) {

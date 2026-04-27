@@ -3,7 +3,7 @@ import pool from '../db/index.js';
 
 const router = Router();
 
-// ─── 포스트 목록 ───
+// --- Post List ---
 router.get('/posts', async (req, res) => {
   try {
     const { rows } = await pool.query(
@@ -15,7 +15,7 @@ router.get('/posts', async (req, res) => {
   }
 });
 
-// ─── 포스트 등록 ───
+// --- Create/Update Post ---
 router.post('/posts', async (req, res) => {
   try {
     const { url, title, keyword, category, platform, char_count, image_count,
@@ -43,12 +43,12 @@ router.post('/posts', async (req, res) => {
   }
 });
 
-// ─── 포스트 상세 + 순위 기록 ───
+// --- Post Detail + Rankings ---
 router.get('/posts/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const post = await pool.query('SELECT * FROM tracked_posts WHERE id = $1', [id]);
-    if (post.rows.length === 0) return res.status(404).json({ error: '포스트를 찾을 수 없습니다' });
+    if (post.rows.length === 0) return res.status(404).json({ error: 'Post not found' });
 
     const rankings = await pool.query(
       'SELECT * FROM ranking_records WHERE post_id = $1 ORDER BY checked_at DESC LIMIT 30',
@@ -74,7 +74,7 @@ router.get('/posts/:id', async (req, res) => {
   }
 });
 
-// ─── 포스트 삭제 ───
+// --- Delete Post ---
 router.delete('/posts/:id', async (req, res) => {
   try {
     await pool.query('DELETE FROM tracked_posts WHERE id = $1', [req.params.id]);
@@ -84,7 +84,7 @@ router.delete('/posts/:id', async (req, res) => {
   }
 });
 
-// ─── 순위 기록 추가 ───
+// --- Add Ranking Record ---
 router.post('/rankings', async (req, res) => {
   try {
     const { post_id, keyword, position, page, search_type } = req.body;
@@ -99,7 +99,7 @@ router.post('/rankings', async (req, res) => {
   }
 });
 
-// ─── 조회수 기록 추가 ───
+// --- Add View Record ---
 router.post('/views', async (req, res) => {
   try {
     const { post_id, views } = req.body;
@@ -113,7 +113,7 @@ router.post('/views', async (req, res) => {
   }
 });
 
-// ─── 대시보드 통계 ───
+// --- Dashboard Stats ---
 router.get('/stats', async (req, res) => {
   try {
     const totalPosts = await pool.query('SELECT COUNT(*) FROM tracked_posts');

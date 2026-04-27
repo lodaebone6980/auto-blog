@@ -15,7 +15,7 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// ─── 미들웨어 ───
+// --- Middleware ---
 app.use(cors({
   origin: [
     'chrome-extension://*',
@@ -26,13 +26,13 @@ app.use(cors({
 }));
 app.use(express.json({ limit: '5mb' }));
 
-// ─── API 라우트 ───
+// --- API Routes ---
 app.use('/api', apiRouter);
 app.use('/api/ai', aiRouter);
 app.use('/api/track', trackRouter);
 app.use('/api/pattern', patternRouter);
 
-// ─── 헬스체크 ───
+// --- Health Check ---
 app.get('/api/health', async (req, res) => {
   try {
     const dbResult = await pool.query('SELECT NOW()');
@@ -47,23 +47,23 @@ app.get('/api/health', async (req, res) => {
   }
 });
 
-// ─── 빌드된 프론트엔드 서빙 ───
+// --- Serve built frontend ---
 app.use(express.static(path.join(__dirname, 'dist')));
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'dist', 'index.html'));
 });
 
-// ─── 서버 시작 ───
+// --- Start Server ---
 async function start() {
   try {
     await initDB();
-    console.log('[auto-blog] DB 초기화 완료');
+    console.log('[auto-blog] DB initialized');
   } catch (err) {
-    console.error('[auto-blog] DB 초기화 실패 (서버는 계속 실행):', err.message);
+    console.error('[auto-blog] DB init failed (server continues):', err.message);
   }
 
   app.listen(PORT, () => {
-    console.log(`[auto-blog] 서버 실행 중: http://localhost:${PORT}`);
+    console.log(`[auto-blog] Server running: http://localhost:${PORT}`);
   });
 }
 
