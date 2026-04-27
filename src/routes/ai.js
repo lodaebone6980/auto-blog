@@ -64,7 +64,7 @@ router.post('/gpt', async (req, res) => {
   }
 });
 
-// ─── SEO/GEO/AEO 분석 요청 ───
+// ─── SEO/GEO/AEO 분선 요청 ───
 router.post('/analyze', async (req, res) => {
   try {
     const apiKey = process.env.CLAUDE_API_KEY || process.env.OPENAI_API_KEY;
@@ -75,7 +75,7 @@ router.post('/analyze', async (req, res) => {
       return res.status(400).json({ error: 'content와 keyword는 필수입니다' });
     }
 
-    const systemPrompt = `당싨은 네이버 블로그 SEO 전문가입니다.
+    const systemPrompt = `당신은 네이버 블로그 SEO 전문가입니다.
 주어진 콘텐츠를 분석하여 SEO, GEO(생성형 AI 검색 최적화), AEO(AI 엔진 최적화) 관점에서 평가하고
 구체적인 개선 방안을 제시하세요.
 
@@ -83,7 +83,7 @@ router.post('/analyze', async (req, res) => {
 플랫폼: ${platform || 'blog'}
 타겟 키워드: ${keyword}
 
-응답 형싍;
+응답 형식:
 [SEO 점수] 0~100
 [GEO 점수] 0~100
 [AEO 점수] 0~100
