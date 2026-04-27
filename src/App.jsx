@@ -1,168 +1,732 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 
 const API = '/api';
 
-const TEXT = {
-  loading: '\ub370\uc774\ud130\ub97c \ubd88\ub7ec\uc624\ub294 \uc911...',
-  trackedPosts: '\ucd94\uc801 \uc911\uc778 \ud3ec\uc2a4\ud2b8',
-  avgScore: '\ud3c9\uade0 \uc810\uc218',
-  pendingFeedback: '\ub300\uae30 \ud53c\ub4dc\ubc31',
-  trackedSection: '\ucd94\uc801 \ud3ec\uc2a4\ud2b8',
-  noPosts: '\uc544\uc9c1 \ucd94\uc801 \uc911\uc778 \ud3ec\uc2a4\ud2b8\uac00 \uc5c6\uc2b5\ub2c8\ub2e4',
-  registerPosts: 'NaviWrite \ud655\uc7a5\ud504\ub85c\uadf8\ub7a8\uc5d0\uc11c \ud3ec\uc2a4\ud2b8\ub97c \ub4f1\ub85d\ud558\uc138\uc694',
-  serverOnline: 'Server Online',
-  serverError: 'Server Error',
+const COLORS = {
+  primary: '#1B3A5C',
+  accent: '#2E75B6',
+  success: '#2E8B57',
+  warning: '#D4790E',
+  danger: '#CC0000',
+  bg: '#f5f7fa',
+  card: '#ffffff',
+  border: '#e5e7eb',
+  textPrimary: '#1f2937',
+  textSecondary: '#6b7280',
+  textMuted: '#9ca3af',
 };
+
+const PERIODS = [
+  { key: 'day', label: 'ì¼ê°„' },
+  { key: 'week', label: 'ì£¼ê°„' },
+  { key: 'month', label: 'ì›”ê°„' },
+];
+
+const SORT_OPTIONS = [
+  { key: 'created_at', label: 'ë‚ ì§œìˆœ' },
+  { key: 'total_score', label: 'ì´ì ìˆœ' },
+  { key: 'seo_score', label: 'SEOìˆœ' },
+  { key: 'geo_score', label: 'GEOìˆœ' },
+  { key: 'aeo_score', label: 'AEOìˆœ' },
+];
+
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ Utility â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+
+function formatDate(d) {
+  if (!d) return '';
+  const date = new Date(d);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+
+function formatTime(d) {
+  return d.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
+
+async function safeFetch(url, opts) {
+  try {
+    const res = await fetch(url, opts);
+    if (!res.ok) throw new Error(res.statusText);
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ Skeleton â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+
+function Skeleton({ width = '100%', height = 20, radius = 6, style = {} }) {
+  return (
+    <div style={{
+      width, height, borderRadius: radius,
+      background: 'linear-gradient(90deg, #e5e7eb 25%, #f3f4f6 50%, #e5e7eb 75%)',
+      backgroundSize: '200% 100%',
+      animation: 'shimmer 1.5s infinite',
+      ...style,
+    }} />
+  );
+}
+
+function SkeletonCard() {
+  return (
+    <div style={{ ...cardStyle, flex: 1, minWidth: 180 }}>
+      <Skeleton width={80} height={14} style={{ marginBottom: 10 }} />
+      <Skeleton width={60} height={32} style={{ marginBottom: 6 }} />
+      <Skeleton width={50} height={12} />
+    </div>
+  );
+}
+
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ Score Bar â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 function ScoreBar({ label, score, max = 100, color }) {
   const pct = Math.min((score / max) * 100, 100);
   return (
-    <div style={{ marginBottom: 8 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 3 }}>
-        <span style={{ fontWeight: 600 }}>{label}</span>
-        <span style={{ color }}>{score.toFixed(1)}</span>
+    <div style={{ marginBottom: 6 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, marginBottom: 2 }}>
+        <span style={{ fontWeight: 600, color: COLORS.textSecondary }}>{label}</span>
+        <span style={{ color, fontWeight: 700 }}>{score.toFixed(1)}</span>
       </div>
-      <div style={{ height: 6, background: '#e5e7eb', borderRadius: 3 }}>
-        <div style={{ height: '100%', width: `${pct}%`, background: color, borderRadius: 3, transition: 'width 0.5s' }} />
+      <div style={{ height: 5, background: '#e5e7eb', borderRadius: 3 }}>
+        <div style={{
+          height: '100%', width: `${pct}%`, background: color, borderRadius: 3,
+          transition: 'width 0.6s ease',
+        }} />
       </div>
     </div>
   );
 }
 
-function StatCard({ label, value, sub, color }) {
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ Stat Card â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+
+function StatCard({ label, value, change, color, icon, loading }) {
+  if (loading) return <SkeletonCard />;
+  const changeColor = change > 0 ? COLORS.success : change < 0 ? COLORS.danger : COLORS.textMuted;
+  const changeArrow = change > 0 ? 'â–²' : change < 0 ? 'â–¼' : '';
   return (
     <div style={{
-      background: 'white', borderRadius: 12, padding: '20px 16px',
-      border: '1px solid #e5e7eb', flex: 1, minWidth: 140
-    }}>
-      <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 4 }}>{label}</div>
-      <div style={{ fontSize: 28, fontWeight: 700, color: color || '#1B3A5C' }}>{value}</div>
-      {sub && <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 2 }}>{sub}</div>}
-    </div>
-  );
-}
-
-export default function App() {
-  const [stats, setStats] = useState(null);
-  const [posts, setPosts] = useState([]);
-  const [health, setHealth] = useState(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    Promise.allSettled([
-      fetch(`${API}/health`).then(r => r.json()),
-      fetch(`${API}/stats`).then(r => r.json()),
-      fetch(`${API}/posts`).then(r => r.json()),
-    ]).then(([h, s, p]) => {
-      if (h.status === 'fulfilled') setHealth(h.value);
-      if (s.status === 'fulfilled') setStats(s.value);
-      if (p.status === 'fulfilled') setPosts(p.value);
-      setLoading(false);
-    });
-  }, []);
-
-  return (
-    <div style={{ maxWidth: 960, margin: '0 auto', padding: '24px 16px' }}>
-      <header style={{ marginBottom: 32 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8 }}>
-          <div style={{
-            width: 40, height: 40, background: 'linear-gradient(135deg, #1B3A5C, #2E75B6)',
-            borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center',
-            color: 'white', fontWeight: 700, fontSize: 18
-          }}>A</div>
-          <div>
-            <h1 style={{ fontSize: 22, fontWeight: 700, color: '#1B3A5C' }}>Auto Blog</h1>
-            <p style={{ fontSize: 12, color: '#6b7280' }}>NaviWrite SEO/GEO/AEO Dashboard</p>
-          </div>
+      ...cardStyle, flex: 1, minWidth: 180,
+      transition: 'transform 0.2s, box-shadow 0.2s',
+      cursor: 'default',
+    }}
+      onMouseEnter={e => { e.currentTarget.style.transform = 'translateY(-2px)'; e.currentTarget.style.boxShadow = '0 6px 20px rgba(0,0,0,0.08)'; }}
+      onMouseLeave={e => { e.currentTarget.style.transform = 'translateY(0)'; e.currentTarget.style.boxShadow = '0 1px 3px rgba(0,0,0,0.04)'; }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+        <span style={{ fontSize: 12, color: COLORS.textSecondary, fontWeight: 500 }}>{label}</span>
+        {icon && <span style={{ fontSize: 18, opacity: 0.5 }}>{icon}</span>}
+      </div>
+      <div style={{ fontSize: 30, fontWeight: 800, color: color || COLORS.primary, lineHeight: 1.1 }}>{value}</div>
+      {change !== undefined && change !== null && (
+        <div style={{ fontSize: 11, color: changeColor, marginTop: 6, fontWeight: 600 }}>
+          {changeArrow} {change > 0 ? '+' : ''}{typeof change === 'number' ? change.toFixed(1) : change}% ì´ì „ ëŒ€ë¹„
         </div>
-        {health && (
-          <div style={{
-            display: 'inline-flex', alignItems: 'center', gap: 6,
-            background: health.status === 'ok' ? '#ecfdf5' : '#fef2f2',
-            color: health.status === 'ok' ? '#059669' : '#dc2626',
-            padding: '4px 12px', borderRadius: 20, fontSize: 12, fontWeight: 600
-          }}>
-            <span style={{
-              width: 7, height: 7, borderRadius: '50%',
-              background: health.status === 'ok' ? '#059669' : '#dc2626'
-            }} />
-            {health.status === 'ok' ? TEXT.serverOnline : TEXT.serverError}
-          </div>
-        )}
-      </header>
-
-      {loading ? (
-        <div style={{ textAlign: 'center', padding: 60, color: '#9ca3af' }}>
-          <p>{TEXT.loading}</p>
-        </div>
-      ) : (
-        <>
-          <div style={{ display: 'flex', gap: 12, marginBottom: 24, flexWrap: 'wrap' }}>
-            <StatCard label={TEXT.trackedPosts} value={stats?.totalPosts || 0} color="#1B3A5C" />
-            <StatCard label={TEXT.avgScore} value={stats?.avgScore || '0.0'} sub="/300" color="#2E75B6" />
-            <StatCard label={TEXT.pendingFeedback} value={stats?.pendingFeedbacks || 0} color="#D4790E" />
-          </div>
-
-          <section style={{ background: 'white', borderRadius: 16, border: '1px solid #e5e7eb', overflow: 'hidden' }}>
-            <div style={{ padding: '16px 20px', borderBottom: '1px solid #e5e7eb' }}>
-              <h2 style={{ fontSize: 15, fontWeight: 700 }}>{TEXT.trackedSection}</h2>
-            </div>
-            {posts.length === 0 ? (
-              <div style={{ padding: 40, textAlign: 'center', color: '#9ca3af' }}>
-                <p style={{ fontSize: 14, marginBottom: 4 }}>{TEXT.noPosts}</p>
-                <p style={{ fontSize: 12 }}>{TEXT.registerPosts}</p>
-              </div>
-            ) : (
-              <div>
-                {posts.map((post) => (
-                  <div key={post.id} style={{
-                    padding: '14px 20px', borderBottom: '1px solid #f3f4f6',
-                    display: 'flex', alignItems: 'center', gap: 16
-                  }}>
-                    <div style={{ flex: 1 }}>
-                      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 2 }}>{post.title}</div>
-                      <div style={{ fontSize: 11, color: '#9ca3af' }}>
-                        {post.keyword} / {post.category} / {post.platform}
-                      </div>
-                    </div>
-                    <div style={{ width: 160 }}>
-                      <ScoreBar label="SEO" score={post.seo_score} color="#1B3A5C" />
-                      <ScoreBar label="GEO" score={post.geo_score} color="#2E75B6" />
-                      <ScoreBar label="AEO" score={post.aeo_score} color="#2E8B57" />
-                    </div>
-                    <div style={{
-                      fontSize: 20, fontWeight: 700,
-                      color: post.total_score >= 200 ? '#2E8B57' : post.total_score >= 150 ? '#D4790E' : '#CC0000'
-                    }}>
-                      {post.total_score.toFixed(0)}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </section>
-
-          <section style={{
-            marginTop: 24, background: 'white', borderRadius: 16,
-            border: '1px solid #e5e7eb', padding: 20
-          }}>
-            <h2 style={{ fontSize: 15, fontWeight: 700, marginBottom: 12 }}>API Endpoints</h2>
-            <div style={{ fontSize: 12, color: '#6b7280', fontFamily: 'monospace', lineHeight: 2 }}>
-              <div><span style={{ color: '#059669', fontWeight: 600 }}>GET</span> /api/health</div>
-              <div><span style={{ color: '#059669', fontWeight: 600 }}>GET</span> /api/stats</div>
-              <div><span style={{ color: '#2563eb', fontWeight: 600 }}>POST</span> /api/posts</div>
-              <div><span style={{ color: '#059669', fontWeight: 600 }}>GET</span> /api/posts</div>
-              <div><span style={{ color: '#2563eb', fontWeight: 600 }}>POST</span> /api/ai/analyze</div>
-              <div><span style={{ color: '#059669', fontWeight: 600 }}>GET</span> /api/track/dashboard</div>
-              <div><span style={{ color: '#2563eb', fontWeight: 600 }}>POST</span> /api/pattern/references</div>
-            </div>
-          </section>
-
-          <footer style={{ textAlign: 'center', marginTop: 32, fontSize: 11, color: '#9ca3af' }}>
-            Auto Blog v1.0.0 - NaviWrite Backend - Powered by Railway
-          </footer>
-        </>
       )}
     </div>
   );
 }
+
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ SVG Line Chart â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+
+function LineChart({ data, width = 500, height = 260, title }) {
+  // data: { labels: string[], series: { name, values, color }[] }
+  if (!data || !data.series || data.series.length === 0) {
+    return (
+      <div style={{ ...cardStyle, flex: 1, minWidth: 300 }}>
+        <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 12, color: COLORS.primary }}>{title}</div>
+        <div style={{ textAlign: 'center', padding: 40, color: COLORS.textMuted, fontSize: 13 }}>ë°ì´í„° ì—†ìŒ</div>
+      </div>
+    );
+  }
+
+  const pad = { top: 20, right: 20, bottom: 40, left: 45 };
+  const cw = width - pad.left - pad.right;
+  const ch = height - pad.top - pad.bottom;
+
+  const allVals = data.series.flatMap(s => s.values.filter(v => v != null));
+  let minV = Math.min(...allVals);
+  let maxV = Math.max(...allVals);
+  if (minV === maxV) { minV -= 1; maxV += 1; }
+  const range = maxV - minV;
+
+  const xStep = data.labels.length > 1 ? cw / (data.labels.length - 1) : cw / 2;
+
+  // For ranking chart, invert Y (lower position = better = higher on chart)
+  const invertY = title && title.includes('ìˆœìœ„');
+  const mapY = v => {
+    if (invertY) return pad.top + ((v - minV) / range) * ch;
+    return pad.top + ch - ((v - minV) / range) * ch;
+  };
+
+  const yTicks = 5;
+  const yTickVals = Array.from({ length: yTicks }, (_, i) => minV + (range * i) / (yTicks - 1));
+
+  const [hovered, setHovered] = useState(null);
+
+  return (
+    <div style={{ ...cardStyle, flex: 1, minWidth: 300 }}>
+      <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 8, color: COLORS.primary }}>{title}</div>
+      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 8 }}>
+        {data.series.map(s => (
+          <div key={s.name} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11 }}>
+            <span style={{ width: 10, height: 3, borderRadius: 2, background: s.color, display: 'inline-block' }} />
+            <span style={{ color: COLORS.textSecondary }}>{s.name}</span>
+          </div>
+        ))}
+      </div>
+      <svg viewBox={`0 0 ${width} ${height}`} style={{ width: '100%', height: 'auto' }}>
+        {/* Grid lines */}
+        {yTickVals.map((v, i) => {
+          const y = mapY(v);
+          return (
+            <g key={i}>
+              <line x1={pad.left} y1={y} x2={width - pad.right} y2={y} stroke="#f0f0f0" strokeWidth={1} />
+              <text x={pad.left - 6} y={y + 3} textAnchor="end" fontSize={9} fill={COLORS.textMuted}>{Math.round(v)}</text>
+            </g>
+          );
+        })}
+        {/* X labels */}
+        {data.labels.map((label, i) => {
+          const x = pad.left + i * xStep;
+          const show = data.labels.length <= 10 || i % Math.ceil(data.labels.length / 8) === 0;
+          if (!show) return null;
+          return (
+            <text key={i} x={x} y={height - 8} textAnchor="middle" fontSize={9} fill={COLORS.textMuted}>
+              {label.length > 5 ? label.slice(5) : label}
+            </text>
+          );
+        })}
+        {/* Lines */}
+        {data.series.map(s => {
+          const points = s.values.map((v, i) => (v != null ? `${pad.left + i * xStep},${mapY(v)}` : null)).filter(Boolean);
+          return (
+            <polyline key={s.name} points={points.join(' ')} fill="none" stroke={s.color}
+              strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
+          );
+        })}
+        {/* Dots */}
+        {data.series.map(s =>
+          s.values.map((v, i) => {
+            if (v == null) return null;
+            const cx = pad.left + i * xStep;
+            const cy = mapY(v);
+            const isHovered = hovered && hovered.series === s.name && hovered.idx === i;
+            return (
+              <g key={`${s.name}-${i}`}>
+                <circle cx={cx} cy={cy} r={isHovered ? 5 : 3} fill={s.color} stroke="white" strokeWidth={1.5}
+                  style={{ cursor: 'pointer', transition: 'r 0.15s' }}
+                  onMouseEnter={() => setHovered({ series: s.name, idx: i, val: v })}
+                  onMouseLeave={() => setHovered(null)}
+                />
+                {isHovered && (
+                  <g>
+                    <rect x={cx - 24} y={cy - 22} width={48} height={18} rx={4} fill={COLORS.primary} opacity={0.9} />
+                    <text x={cx} y={cy - 10} textAnchor="middle" fontSize={10} fill="white" fontWeight={600}>{v}</text>
+                  </g>
+                )}
+              </g>
+            );
+          })
+        )}
+      </svg>
+    </div>
+  );
+}
+
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ SVG Bar Chart â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+
+function BarChart({ data, width = 500, height = 260, title }) {
+  // data: { labels: string[], values: number[], color: string }
+  if (!data || !data.values || data.values.length === 0) {
+    return (
+      <div style={{ ...cardStyle, flex: 1, minWidth: 300 }}>
+        <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 12, color: COLORS.primary }}>{title}</div>
+        <div style={{ textAlign: 'center', padding: 40, color: COLORS.textMuted, fontSize: 13 }}>ë°ì´í„° ì—†ìŒ</div>
+      </div>
+    );
+  }
+
+  const pad = { top: 20, right: 20, bottom: 40, left: 45 };
+  const cw = width - pad.left - pad.right;
+  const ch = height - pad.top - pad.bottom;
+
+  const maxV = Math.max(...data.values, 1);
+  const barGap = 4;
+  const barW = Math.max(8, (cw - barGap * data.values.length) / data.values.length);
+
+  const yTicks = 5;
+  const yTickVals = Array.from({ length: yTicks }, (_, i) => Math.round((maxV * i) / (yTicks - 1)));
+
+  const [hoveredBar, setHoveredBar] = useState(null);
+
+  return (
+    <div style={{ ...cardStyle, flex: 1, minWidth: 300 }}>
+      <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 12, color: COLORS.primary }}>{title}</div>
+      <svg viewBox={`0 0 ${width} ${height}`} style={{ width: '100%', height: 'auto' }}>
+        {/* Y grid */}
+        {yTickVals.map((v, i) => {
+          const y = pad.top + ch - (v / maxV) * ch;
+          return (
+            <g key={i}>
+              <line x1={pad.left} y1={y} x2={width - pad.right} y2={y} stroke="#f0f0f0" strokeWidth={1} />
+              <text x={pad.left - 6} y={y + 3} textAnchor="end" fontSize={9} fill={COLORS.textMuted}>{v}</text>
+            </g>
+          );
+        })}
+        {/* Bars */}
+        {data.values.map((v, i) => {
+          const x = pad.left + i * (barW + barGap) + barGap / 2;
+          const barH = (v / maxV) * ch;
+          const y = pad.top + ch - barH;
+          const isH = hoveredBar === i;
+          return (
+            <g key={i}
+              onMouseEnter={() => setHoveredBar(i)}
+              onMouseLeave={() => setHoveredBar(null)}
+              style={{ cursor: 'pointer' }}
+            >
+              <rect x={x} y={y} width={barW} height={barH} rx={3}
+                fill={isH ? COLORS.primary : (data.color || COLORS.accent)}
+                opacity={isH ? 1 : 0.8}
+                style={{ transition: 'all 0.15s' }}
+              />
+              {isH && (
+                <g>
+                  <rect x={x + barW / 2 - 20} y={y - 22} width={40} height={18} rx={4} fill={COLORS.primary} opacity={0.9} />
+                  <text x={x + barW / 2} y={y - 10} textAnchor="middle" fontSize={10} fill="white" fontWeight={600}>{v}</text>
+                </g>
+              )}
+              {/* X label */}
+              {(data.values.length <= 14 || i % Math.ceil(data.values.length / 8) === 0) && (
+                <text x={x + barW / 2} y={height - 8} textAnchor="middle" fontSize={9} fill={COLORS.textMuted}>
+                  {data.labels[i]?.length > 5 ? data.labels[i].slice(5) : data.labels[i]}
+                </text>
+              )}
+            </g>
+          );
+        })}
+      </svg>
+    </div>
+  );
+}
+
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ Alert Item â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+
+function AlertItem({ alert }) {
+  const isUp = alert.change < 0; // lower position = better ranking = up
+  const color = isUp ? COLORS.success : COLORS.danger;
+  const arrow = isUp ? 'â–²' : 'â–¼';
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: 12, padding: '10px 16px',
+      borderLeft: `3px solid ${color}`, background: isUp ? '#f0fdf4' : '#fef2f2',
+      borderRadius: '0 8px 8px 0', marginBottom: 6,
+    }}>
+      <span style={{ fontSize: 18, color, fontWeight: 700 }}>{arrow}</span>
+      <div style={{ flex: 1 }}>
+        <div style={{ fontSize: 13, fontWeight: 600, color: COLORS.textPrimary }}>{alert.keyword}</div>
+        <div style={{ fontSize: 11, color: COLORS.textSecondary }}>{alert.postTitle || alert.post_title || ''}</div>
+      </div>
+      <div style={{ textAlign: 'right' }}>
+        <span style={{ fontSize: 13, fontWeight: 700, color }}>
+          {alert.oldPosition ?? alert.old_position} â†’ {alert.newPosition ?? alert.new_position}
+        </span>
+        <div style={{ fontSize: 10, color: COLORS.textMuted }}>
+          {Math.abs(alert.change)}ìœ„ {isUp ? 'ìƒìŠ¹' : 'í•˜ë½'}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ Feedback Item â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+
+function FeedbackItem({ fb, onApply }) {
+  const [applying, setApplying] = useState(false);
+  const [applied, setApplied] = useState(false);
+
+  const typeColors = {
+    seo: COLORS.primary,
+    geo: COLORS.accent,
+    aeo: COLORS.success,
+    content: COLORS.warning,
+  };
+
+  const handleApply = async () => {
+    setApplying(true);
+    const res = await safeFetch(`${API}/pattern/feedbacks/${fb.id}/apply`, { method: 'PATCH' });
+    setApplying(false);
+    if (res) {
+      setApplied(true);
+      if (onApply) onApply(fb.id);
+    }
+  };
+
+  return (
+    <div style={{
+      padding: '14px 16px', borderBottom: `1px solid ${COLORS.border}`,
+      opacity: applied ? 0.5 : 1, transition: 'opacity 0.3s',
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+        <span style={{
+          fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 10,
+          background: (typeColors[fb.type] || COLORS.accent) + '18',
+          color: typeColors[fb.type] || COLORS.accent,
+          textTransform: 'uppercase',
+        }}>
+          {fb.type}
+        </span>
+        <span style={{ fontSize: 12, color: COLORS.textSecondary, flex: 1 }}>{fb.description}</span>
+        <button
+          onClick={handleApply}
+          disabled={applying || applied}
+          style={{
+            padding: '5px 14px', borderRadius: 6, border: 'none', fontSize: 11, fontWeight: 600,
+            background: applied ? COLORS.success : COLORS.accent,
+            color: 'white', cursor: applied ? 'default' : 'pointer',
+            opacity: applying ? 0.6 : 1,
+            transition: 'all 0.2s',
+          }}
+        >
+          {applied ? 'ì ìš© ì™„ë£Œ' : applying ? 'ì ìš© ì¤‘...' : 'ì ìš©'}
+        </button>
+      </div>
+      {(fb.before || fb.after) && (
+        <div style={{ display: 'flex', gap: 8, fontSize: 11 }}>
+          {fb.before && (
+            <div style={{ flex: 1, padding: 8, background: '#fef2f2', borderRadius: 6, color: COLORS.danger }}>
+              <div style={{ fontWeight: 600, marginBottom: 2 }}>Before</div>
+              <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{fb.before}</div>
+            </div>
+          )}
+          {fb.after && (
+            <div style={{ flex: 1, padding: 8, background: '#f0fdf4', borderRadius: 6, color: COLORS.success }}>
+              <div style={{ fontWeight: 600, marginBottom: 2 }}>After</div>
+              <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{fb.after}</div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ Post Row (Expandable) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+
+function PostRow({ post, expanded, onToggle }) {
+  return (
+    <div style={{ borderBottom: `1px solid ${COLORS.border}` }}>
+      <div
+        onClick={onToggle}
+        style={{
+          padding: '12px 20px', display: 'flex', alignItems: 'center', gap: 14,
+          cursor: 'pointer', transition: 'background 0.15s',
+          background: expanded ? '#f8fafc' : 'transparent',
+        }}
+        onMouseEnter={e => { if (!expanded) e.currentTarget.style.background = '#fafbfc'; }}
+        onMouseLeave={e => { if (!expanded) e.currentTarget.style.background = 'transparent'; }}
+      >
+        <span style={{ fontSize: 10, color: COLORS.textMuted, transition: 'transform 0.2s', display: 'inline-block', transform: expanded ? 'rotate(90deg)' : 'rotate(0)' }}>â–¶</span>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: COLORS.textPrimary, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{post.title}</div>
+          <div style={{ fontSize: 11, color: COLORS.textMuted, marginTop: 2 }}>
+            {post.keyword} Â· {post.category}{post.platform ? ` Â· ${post.platform}` : ''}
+          </div>
+        </div>
+        <div style={{ width: 150, flexShrink: 0 }}>
+          <ScoreBar label="SEO" score={post.seo_score || 0} color={COLORS.primary} />
+          <ScoreBar label="GEO" score={post.geo_score || 0} color={COLORS.accent} />
+          <ScoreBar label="AEO" score={post.aeo_score || 0} color={COLORS.success} />
+        </div>
+        <div style={{
+          fontSize: 20, fontWeight: 800, width: 52, textAlign: 'center', flexShrink: 0,
+          color: (post.total_score || 0) >= 200 ? COLORS.success : (post.total_score || 0) >= 150 ? COLORS.warning : COLORS.danger,
+        }}>
+          {(post.total_score || 0).toFixed(0)}
+        </div>
+        <div style={{ fontSize: 11, color: COLORS.textMuted, width: 80, textAlign: 'right', flexShrink: 0 }}>
+          {formatDate(post.created_at)}
+        </div>
+      </div>
+
+      {/* Expanded detail */}
+      {expanded && (
+        <div style={{ padding: '0 20px 16px 40px', background: '#f8fafc' }}>
+          {post.rankings && post.rankings.length > 0 && (
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6, color: COLORS.primary }}>ìˆœìœ„ ê¸°ë¡</div>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                {post.rankings.map((r, i) => (
+                  <span key={i} style={{
+                    fontSize: 11, padding: '3px 8px', borderRadius: 6,
+                    background: COLORS.accent + '15', color: COLORS.accent,
+                  }}>
+                    {formatDate(r.date)}: {r.position}ìœ„
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+          {post.feedbacks && post.feedbacks.length > 0 && (
+            <div>
+              <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6, color: COLORS.primary }}>í”¼ë“œë°±</div>
+              {post.feedbacks.map((fb, i) => (
+                <div key={i} style={{
+                  fontSize: 11, padding: 8, marginBottom: 4, borderRadius: 6,
+                  background: 'white', border: `1px solid ${COLORS.border}`,
+                }}>
+                  <span style={{
+                    fontWeight: 700, marginRight: 6, padding: '1px 6px', borderRadius: 4,
+                    background: COLORS.warning + '18', color: COLORS.warning, fontSize: 10,
+                  }}>{fb.type}</span>
+                  {fb.description}
+                </div>
+              ))}
+            </div>
+          )}
+          {(!post.rankings || post.rankings.length === 0) && (!post.feedbacks || post.feedbacks.length === 0) && (
+            <div style={{ fontSize: 12, color: COLORS.textMuted }}>ì¶”ê°€ ì •ë³´ ì—†ìŒ</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ Shared Styles â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+
+const cardStyle = {
+  background: COLORS.card,
+  borderRadius: 12,
+  padding: '20px 20px',
+  border: `1px solid ${COLORS.border}`,
+  boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
+};
+
+const sectionStyle = {
+  ...cardStyle,
+  marginBottom: 20,
+  overflow: 'hidden',
+  padding: 0,
+};
+
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ Main App â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+
+export default function App() {
+  const [health, setHealth] = useState(null);
+  const [stats, setStats] = useState(null);
+  const [posts, setPosts] = useState([]);
+  const [dashboard, setDashboard] = useState(null);
+  const [alerts, setAlerts] = useState([]);
+  const [period, setPeriod] = useState('week');
+  const [loading, setLoading] = useState(true);
+  const [currentTime, setCurrentTime] = useState(new Date());
+
+  // Posts table state
+  const [search, setSearch] = useState('');
+  const [sortBy, setSortBy] = useState('created_at');
+  const [sortDir, setSortDir] = useState('desc');
+  const [expandedPost, setExpandedPost] = useState(null);
+
+  // Clock
+  useEffect(() => {
+    const t = setInterval(() => setCurrentTime(new Date()), 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  // Health check (polls every 30s)
+  useEffect(() => {
+    const check = () => safeFetch(`${API}/health`).then(r => setHealth(r));
+    check();
+    const t = setInterval(check, 30000);
+    return () => clearInterval(t);
+  }, []);
+
+  // Fetch main data
+  const fetchData = useCallback(async () => {
+    setLoading(true);
+    const [s, p, d, a] = await Promise.all([
+      safeFetch(`${API}/stats`),
+      safeFetch(`${API}/posts`),
+      safeFetch(`${API}/track/dashboard?period=${period}`),
+      safeFetch(`${API}/track/alerts`),
+    ]);
+    if (s) setStats(s);
+    if (p) setPosts(Array.isArray(p) ? p : []);
+    if (d) setDashboard(d);
+    if (a) setAlerts(Array.isArray(a) ? a : []);
+    setLoading(false);
+  }, [period]);
+
+  useEffect(() => { fetchData(); }, [fetchData]);
+
+  // Filtered + sorted posts
+  const filteredPosts = useMemo(() => {
+    let list = [...posts];
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      list = list.filter(p =>
+        (p.title || '').toLowerCase().includes(q) ||
+        (p.keyword || '').toLowerCase().includes(q)
+      );
+    }
+    list.sort((a, b) => {
+      const av = a[sortBy] ?? 0;
+      const bv = b[sortBy] ?? 0;
+      if (sortBy === 'created_at') {
+        return sortDir === 'desc' ? new Date(bv) - new Date(av) : new Date(av) - new Date(bv);
+      }
+      return sortDir === 'desc' ? bv - av : av - bv;
+    });
+    return list;
+  }, [posts, search, sortBy, sortDir]);
+
+  // Chart data
+  const rankingChartData = useMemo(() => {
+    if (!dashboard?.rankings || dashboard.rankings.length === 0) return null;
+    const keywordMap = {};
+    dashboard.rankings.forEach(r => {
+      const kw = r.keyword || 'í‚¤ì›Œë“œ';
+      if (!keywordMap[kw]) keywordMap[kw] = [];
+      keywordMap[kw].push({ date: r.date, position: r.position });
+    });
+    const allDates = [...new Set(dashboard.rankings.map(r => r.date))].sort();
+    const palette = [COLORS.primary, COLORS.accent, COLORS.success, COLORS.warning, COLORS.danger, '#8B5CF6', '#EC4899'];
+    const series = Object.entries(keywordMap).map(([name, entries], i) => {
+      const dateMap = {};
+      entries.forEach(e => { dateMap[e.date] = e.position; });
+      return {
+        name,
+        values: allDates.map(d => dateMap[d] ?? null),
+        color: palette[i % palette.length],
+      };
+    });
+    return { labels: allDates, series };
+  }, [dashboard]);
+
+  const viewsChartData = useMemo(() => {
+    if (!dashboard?.views || dashboard.views.length === 0) return null;
+    return {
+      labels: dashboard.views.map(v => v.date),
+      values: dashboard.views.map(v => v.count || v.views || 0),
+      color: COLORS.accent,
+    };
+  }, [dashboard]);
+
+  // Pending feedbacks from stats or dashboard
+  const pendingFeedbacks = useMemo(() => {
+    if (dashboard?.feedbacks) return dashboard.feedbacks.filter(f => f.status === 'pending' || !f.status);
+    return [];
+  }, [dashboard]);
+
+  // Significant alerts (>= 3 positions)
+  const significantAlerts = useMemo(() => {
+    return alerts.filter(a => Math.abs(a.change) >= 3);
+  }, [alerts]);
+
+  const totalViews = useMemo(() => {
+    if (dashboard?.totalViews != null) return dashboard.totalViews;
+    if (dashboard?.views) return dashboard.views.reduce((s, v) => s + (v.count || v.views || 0), 0);
+    return 0;
+  }, [dashboard]);
+
+  const healthOk = health && health.status === 'ok';
+
+  return (
+    <div style={{ background: COLORS.bg, minHeight: '100vh' }}>
+      <style>{`
+        @keyframes shimmer {
+          0% { background-position: 200% 0; }
+          100% { background-position: -200% 0; }
+        }
+        @keyframes fadeIn {
+          from { opacity: 0; transform: translateY(8px); }
+          to { opacity: 1; transform: translateY(0); }
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans KR', sans-serif; }
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 3px; }
+      `}</style>
+
+      {/* â”€â”€â”€â”€â”€â”€ Header â”€â”€â”€â”€â”€â”€ */}
+      <header style={{
+        background: 'linear-gradient(135deg, #1B3A5C 0%, #2E75B6 100%)',
+        padding: '16px 24px',
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        flexWrap: 'wrap', gap: 12,
+        boxShadow: '0 2px 12px rgba(27,58,92,0.3)',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <div style={{
+            width: 38, height: 38, background: 'rgba(255,255,255,0.15)',
+            borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center',
+            color: 'white', fontWeight: 800, fontSize: 18, backdropFilter: 'blur(4px)',
+          }}>N</div>
+          <div>
+            <h1 style={{ fontSize: 18, fontWeight: 800, color: 'white', letterSpacing: '-0.3px' }}>Auto Blog Dashboard</h1>
+            <p style={{ fontSize: 11, color: 'rgba(255,255,255,0.7)' }}>NaviWrite SEO/GEO/AEO ê´€ë¦¬</p>
+          </div>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 6,
+            background: 'rgba(255,255,255,0.12)', padding: '5px 12px', borderRadius: 20,
+          }}>
+            <span style={{
+              width: 8, height: 8, borderRadius: '50%',
+              background: healthOk ? '#4ade80' : '#f87171',
+              boxShadow: healthOk ? '0 0 6px #4ade80' : '0 0 6px #f87171',
+            }} />
+            <span style={{ fontSize: 11, color: 'white', fontWeight: 500 }}>
+              {healthOk ? 'ì„œë²„ ì •ìƒ' : health === null ? 'í™•ì¸ ì¤‘...' : 'ì„œë²„ ì˜¤ë¥˜'}
+            </span>
+          </div>
+          <span style={{ fontSize: 12, color: 'rgba(255,255,255,0.8)', fontVariantNumeric: 'tabular-nums' }}>
+            {formatTime(currentTime)}
+          </span>
+        </div>
+      </header>
+
+      <div style={{ maxWidth: 1200, margin: '0 auto', padding: '20px 16px' }}>
+
+        {/* â”€â”€â”€â”€â”€â”€ Period Filter â”€â”€â”€â”€â”€â”€ */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 20 }}>
+          <span style={{ fontSize: 12, color: COLORS.textSecondary, marginRight: 8, fontWeight: 600 }}>ê¸°ê°„ :</span>
+          {PERIODS.map(p => (
+            <button key={p.key} onClick={() => setPeriod(p.key)} style={{
+              padding: '6px 16px', borderRadius: 8, border: 'none', fontSize: 12, fontWeight: 600,
+              background: period === p.key ? COLORS.primary : 'white',
+              color: period === p.key ? 'white' : COLORS.textSecondary,
+              cursor: 'pointer', transition: 'all 0.2s',
+              boxShadow: period === p.key ? '0 2px 8px rgba(27,58,92,0.25)' : '0 1px 2px rgba(0,0,0,0.06)',
+            }}>
+              {p.label}
+            </button>
+          ))}
+        </div>
+
+        {/* â”€â”€â”€â”€â”€â”€ Stats Row â”€â”€â”€â”€â”€â”€ */}
+        <div style={{ display: 'flex', gap: 14, marginBottom: 20, flexWrap: 'wrap' }}>
+          <StatCard loading={loading} label="ì „ì²´ í¬ìŠ¤íŠ¸" value={stats?.totalPosts ?? 0} change={stats?.postsChange} color={COLORS.primary} icon="ğŸ“" />
+          <StatCard loading={loading} label="í‰ê·  ì ìˆ˜" value={stats?.avgScore ?? '0.0'} change={stats?.scoreChange} color={COLORS.accent} icon="ğŸ“Š" />
+          <StatCard loading={loading} label="ì´ ì¡°íšŒìˆ˜" value={totalViews.toLocaleString()} change={stats?.viewsChange ?? null} color={COLORS.success} icon="ğŸ‘" />
+          <StatCard loading={loading} label="ëŒ€ê¸° í”¼ë“œë°±" value={stats?.pendingFeedbacks ?? 0} change={null} color={COLORS.warning} icon="ğŸ’¬" />
+        </div>
+
+        {/* â”€â”€â”€â”€â”€â”€ Charts â”€â”€â”€â”€â”€â”€ */}
+        {!loading && (
+          <div style={{ display: 'flex', gap: 14, marginBottom: 20, flexWrap: 'wrap', animation: 'fadeIn 0.4s ease' }}>
+            <LineChart title="í‚¤ì›Œë“œ ìˆœìœ„ ì¶”ì´" data={rankingChartData} />
+            <BarChart title="ì¼ë³„ ì¡°íšŒìˆ˜ ì¶”ì´" data={viewsChartData} />
+          </div>
+        )}
+
+        {/* â”€â”€â”€â”€â”€â”€ Posts Table â”€â”€â”€â”€â”€â”€ */}
+        <div style={{ ...sectionStyle, animation: loading ? 'none' : 'fadeIn 0.4s ease' }}>
+          <div style={{ padding: '14px 20px', borderBottom: `1px solid ${COLORS.border}`, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+            <h2 style={{ fontSize: 15, fontWeight: 700, color: COLORS.primary, marginRight: 'auto' }}>
+              í¬ìŠ¤íŠ¸ ëª©ë¡ <span style={{ fontSize: 12, fontWeight: 400, color: COLORS.textMuted }}>({filteredPosts.length})</span>
+            </h2>
+            <input
+              type="text"
+              placeholder="ì œëª© / í‚¤ì›Œë“œ ê²€î×¥x‚âââ ¢fÇVS×·6V&6‡Ğ¢öä6†ævS×¶RÓâ6WE6V&6‚†RçF&vWBçfÇVR—Ğ¢7G–ÆS×·°¢FF–æs¢sg‚'‚rÂ&÷&FW%&F—W3¢‚Â&÷&FW#¢‚6öÆ–BG´4ôÄõ%2æ&÷&FW'ÖÀ¢föçE6—¦S¢"Â÷WFÆ–æS¢væöæRrÂv–GFƒ¢#À¢G&ç6—F–öã¢v&÷&FW"Ö6öÆ÷"ã'2rÀ¢×Ğ¢öäfö7W3×¶RÓâ²RçF&vWBç7G–ÆRæ&÷&FW$6öÆ÷"Ò4ôÄõ%2æ66VçC²×Ğ¢öä&ÇW#×¶RÓâ²RçF&vWBç7G–ÆRæ&÷&FW$6öÆ÷"Ò4ôÄõ%2æ&÷&FW#²×Ğ¢óà¢ÆF—b7G–ÆS×·²F—7Æ“¢vfÆW‚rÂv¢B×Óà¢µ4õ%EôõD”ôå2æÖ†÷BÓâ€¢Æ'WGFöâ¶W“×¶÷Bæ¶W—Òöä6Æ–6³×²‚’Óâ°¢–b‡6÷'D'’ÓÓÒ÷Bæ¶W’’6WE6÷'DF—"†BÓâBÓÓÒvFW62ròv62r¢vFW62r“°¢VÇ6R²6WE6÷'D'’†÷Bæ¶W’“²6WE6÷'DF—"‚vFW62r“²Ğ¢×Ò7G–ÆS×·°¢FF–æs¢sG‚‚rÂ&÷&FW%&F—W3¢bÂ&÷&FW#¢‚6öÆ–BG·6÷'D'’ÓÓÒ÷Bæ¶W’ò4ôÄõ%2æ66VçB¢4ôÄõ%2æ&÷&FW'ÖÀ¢föçE6—¦S¢Â&6¶w&÷VæC¢6÷'D'’ÓÓÒ÷Bæ¶W’ò4ôÄõ%2æ66VçB²sr¢wv†—FRrÀ¢6öÆ÷#¢6÷'D'’ÓÓÒ÷Bæ¶W’ò4ôÄõ%2æ66VçB¢4ôÄõ%2çFW‡E6V6öæF'’À¢7W'6÷#¢wö–çFW"rÂföçEvV–v‡C¢6÷'D'’ÓÓÒ÷Bæ¶W’òc¢CÀ¢G&ç6—F–öã¢vÆÂãW2rÀ¢×Óà¢¶÷BæÆ&VÇÒ·6÷'D'’ÓÓÒ÷Bæ¶W’ò‡6÷'DF—"ÓÓÒvFW62rò~(i2r¢~(ir’¢rwĞ¢Âö'WGFöãà¢’—Ğ¢ÂöF—cà¢ÂöF—cà ¢¶ÆöF–ærò€¢ÆF—b7G–ÆS×·²FF–æs¢#×Óà¢µ³Â"Â5ÒæÖ†’ÓâÅ6¶VÆWFöâ¶W“×¶—Ò†V–v‡C×³SgÒ7G–ÆS×·²Ö&v–ä&÷GFöÓ¢‚×Òóâ—Ğ¢ÂöF—cà¢’¢f–ÇFW&VE÷7G2æÆVæwF‚ÓÓÒò€¢ÆF—b7G–ÆS×·²FF–æs¢C‚ÂFW‡DÆ–vã¢v6VçFW"rÂ6öÆ÷#¢4ôÄõ%2çFW‡D×WFVB×Óà¢ÆF—b7G–ÆS×·²föçE6—¦S¢3"ÂÖ&v–ä&÷GFöÓ¢‚×Óï	ù:ÓÂöF—cà¢Ç7G–ÆS×·²föçE6—¦S¢BÂÖ&v–ä&÷GFöÓ¢B×Óà¢·6V&6‚ò~«(È8’«+«;Î«ÉxnÈ«^¸¸¸ºBr¢~ÉXNÊxËiNÊÊIÉÛ‚ØúÎÈªNØ««ÉxnÈ«^¸¸¸ºBwĞ¢Â÷à¢Ç7G–ÆS×·²föçE6—¦S¢"×Óäæf•w&—FRÙ™^Éê^ÙHNºÎ«{¹êÉyÈIÂØúÎÈªNØ«º[Â¹;ºŞÙYÈKÉ©CÂ÷à¢ÂöF—cà¢’¢€¢ÆF—cà¢¶f–ÇFW&VE÷7G2æÖ‡÷7BÓâ€¢Å÷7E&÷p¢¶W“×·÷7Bæ–GĞ¢÷7C×·÷7GĞ¢W‡æFVC×¶W‡æFVE÷7BÓÓÒ÷7Bæ–GĞ¢öåFövvÆS×²‚’Óâ6WDW‡æFVE÷7B†W‡æFVE÷7BÓÓÒ÷7Bæ–BòçVÆÂ¢÷7Bæ–B—Ğ¢óà¢’—Ğ¢ÂöF—cà¢—Ğ¢ÂöF—cà ¢²ò¢)H)H)H)H)H)HÆW'G26V7F–öâ)H)H)H)H)H)H¢÷Ğ¢²ÆöF–ærbb6–væ–f–6çDÆW'G2æÆVæwF‚âbb€¢ÆF—b7G–ÆS×·²ââç6V7F–öå7G–ÆRÂæ–ÖF–öã¢vfFT–âãW2V6Rr×Óà¢ÆF—b7G–ÆS×·²FF–æs¢sG‚#‚rÂ&÷&FW$&÷GFöÓ¢‚6öÆ–BG´4ôÄõ%2æ&÷&FW'Ö×Óà¢Æƒ"7G–ÆS×·²föçE6—¦S¢RÂföçEvV–v‡C¢sÂ6öÆ÷#¢4ôÄõ%2ç&–Ö'’×Óà¢È‰ÎÉÈB»8¸ù’ÉXÎºkÂÇ7â7G–ÆS×·²föçE6—¦S¢"ÂföçEvV–v‡C¢CÂ6öÆ÷#¢4ôÄõ%2çFW‡D×WFVB×Óâ‡·6–væ–f–6çDÆW'G2æÆVæwF‡Ò“Â÷7ãà¢Âöƒ#à¢ÂöF—cà¢ÆF—b7G–ÆS×·²FF–æs¢"×Óà¢·6–væ–f–6çDÆW'G2æÖ‚†Â’’ÓâÄÆW'D—FVÒ¶W“×¶—ÒÆW'C×¶Òóâ—Ğ¢ÂöF—cà¢ÂöF—cà¢—Ğ ¢²ò¢)H)H)H)H)H)HfVVF&6·26V7F–öâ)H)H)H)H)H)H¢÷Ğ¢²ÆöF–ærbbVæF–ætfVVF&6·2æÆVæwF‚âbb€¢ÆF—b7G–ÆS×·²ââç6V7F–öå7G–ÆRÂæ–ÖF–öã¢vfFT–âãW2V6Rr×Óà¢ÆF—b7G–ÆS×·²FF–æs¢sG‚#‚rÂ&÷&FW$&÷GFöÓ¢‚6öÆ–BG´4ôÄõ%2æ&÷&FW'Ö×Óà¢Æƒ"7G–ÆS×·²föçE6—¦S¢RÂföçEvV–v‡C¢sÂ6öÆ÷#¢4ôÄõ%2ç&–Ö'’×Óà¢¸È«‹ÊIÙKÎ¹9Î»Ç7â7G–ÆS×·²föçE6—¦S¢"ÂföçEvV–v‡C¢CÂ6öÆ÷#¢4ôÄõ%2çFW‡D×WFVB×Óâ‡·VæF–ætfVVF&6·2æÆVæwF‡Ò“Â÷7ãà¢Âöƒ#à¢ÂöF—cà¢ÆF—cà¢·VæF–ætfVVF&6·2æÖ†f"Óâ€¢ÄfVVF&6´—FVĞ¢¶W“×¶f"æ–GĞ¢f#×¶f'Ğ¢öäÇ“×²‚’Óâ°¢6WE7FG2‡&WbÓâ&Wbò²ââç&WbÂVæF–ætfVVF&6·3¢ÖF‚æÖ‚ƒÂ‡&WbçVæF–ætfVVF&6·2ÇÂ’Ò’Ò¢&Wb“°¢×Ğ¢óà¢’—Ğ¢ÂöF—cà¢ÂöF—cà¢—Ğ ¢²ò¢)H)H)H)H)H)Hfö÷FW")H)H)H)H)H)H¢÷Ğ¢Æfö÷FW"7G–ÆS×·²FW‡DÆ–vã¢v6VçFW"rÂFF–æs¢s#G‚g‚rÂföçE6—¦S¢Â6öÆ÷#¢4ôÄõ%2çFW‡D×WFVB×Óà¢WFò&Æörcãã+ræf•w&—FR+r÷vW&VB'’&–Çv¢Âöfö÷FW#à¢ÂöF—cà¢ÂöF—cà¢“°§Ğ 
