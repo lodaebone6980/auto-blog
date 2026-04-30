@@ -492,6 +492,132 @@ function PostRow({ post, expanded, onToggle }) {
   );
 }
 
+function StatusPill({ value }) {
+  const colors = {
+    '대기중': COLORS.textMuted,
+    '본문 생성 완료': COLORS.accent,
+    'QR 생성 필요': COLORS.warning,
+    'QR 생성 완료': COLORS.success,
+    '에디터 삽입 완료': COLORS.primary,
+    '검수 필요': COLORS.warning,
+    '오류': COLORS.danger,
+    '동기화 완료': COLORS.success,
+    '설정필요': COLORS.warning,
+    '시트에서 가져옴': COLORS.accent,
+  };
+  const color = colors[value] || COLORS.textSecondary;
+  return (
+    <span style={{
+      display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+      padding: '3px 8px', borderRadius: 999, fontSize: 10, fontWeight: 700,
+      background: `${color}18`, color, whiteSpace: 'nowrap',
+    }}>
+      {value || '대기중'}
+    </span>
+  );
+}
+
+function ContentJobRow({ job, onRefresh }) {
+  const [syncing, setSyncing] = useState(false);
+  const [exporting, setExporting] = useState(false);
+
+  const syncSheet = async () => {
+    setSyncing(true);
+    await safeFetch(`${API}/content-jobs/${job.id}/sync-sheet`, { method: 'POST' });
+    setSyncing(false);
+    if (onRefresh) onRefresh();
+  };
+
+  const markNotionExported = async () => {
+    setExporting(true);
+    await safeFetch(`${API}/content-jobs/${job.id}/notion-export`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ notion_url: job.notion_url || null }),
+    });
+    setExporting(false);
+    if (onRefresh) onRefresh();
+  };
+
+  return (
+    <div style={{
+      display: 'grid',
+      gridTemplateColumns: 'minmax(220px, 1.5fr) 110px 110px 120px minmax(160px, auto)',
+      gap: 12,
+      alignItems: 'center',
+      padding: '13px 20px',
+      borderBottom: `1px solid ${COLORS.border}`,
+      background: 'white',
+      minWidth: 820,
+    }}>
+      <div style={{ minWidth: 0 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.textPrimary, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+          {job.title || job.keyword}
+        </div>
+        <div style={{ fontSize: 11, color: COLORS.textMuted, marginTop: 3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+          {job.keyword} · {job.category} · {job.naver_qr_name || 'QR 이름 대기'}
+        </div>
+      </div>
+      <StatusPill value={job.generation_status} />
+      <StatusPill value={job.qr_status} />
+      <StatusPill value={job.sheet_sync_status} />
+      <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+        {job.naver_qr_manage_url && (
+          <a
+            href={job.naver_qr_manage_url}
+            target="_blank"
+            rel="noreferrer"
+            style={{ fontSize: 11, color: COLORS.accent, fontWeight: 700, textDecoration: 'none' }}
+          >
+            QR 관리
+          </a>
+        )}
+        {job.naver_qr_image_url && (
+          <a
+            href={job.naver_qr_image_url}
+            target="_blank"
+            rel="noreferrer"
+            style={{ fontSize: 11, color: COLORS.success, fontWeight: 700, textDecoration: 'none' }}
+          >
+            이미지
+          </a>
+        )}
+        <button
+          onClick={syncSheet}
+          disabled={syncing}
+          style={{
+            border: `1px solid ${COLORS.border}`, background: 'white', borderRadius: 6,
+            padding: '4px 8px', fontSize: 10, fontWeight: 700, color: COLORS.primary,
+            cursor: syncing ? 'wait' : 'pointer',
+          }}
+        >
+          {syncing ? '동기화...' : 'Sheets'}
+        </button>
+        <button
+          onClick={markNotionExported}
+          disabled={exporting}
+          style={{
+            border: 0, background: COLORS.primary, borderRadius: 6,
+            padding: '4px 8px', fontSize: 10, fontWeight: 700, color: 'white',
+            cursor: exporting ? 'wait' : 'pointer',
+          }}
+        >
+          {exporting ? '저장...' : 'Notion'}
+        </button>
+      </div>
+      <div style={{ gridColumn: '1 / -1', display: 'flex', gap: 12, flexWrap: 'wrap', fontSize: 11, color: COLORS.textSecondary }}>
+        <span>글자수 {job.char_count || 0}</span>
+        <span>KW {job.kw_count || 0}</span>
+        <span>이미지 {job.image_count || 0}</span>
+        <span>SEO {Number(job.seo_score || 0).toFixed(1)}</span>
+        <span>GEO {Number(job.geo_score || 0).toFixed(1)}</span>
+        <span>AEO {Number(job.aeo_score || 0).toFixed(1)}</span>
+        {job.qr_target_url && <span style={{ wordBreak: 'break-all' }}>QR 링크 {job.qr_target_url}</span>}
+      </div>
+    </div>
+  );
+}
+
 /* ────────────────────── Shared Styles ────────────────────── */
 
 const cardStyle = {
@@ -515,6 +641,7 @@ export default function App() {
   const [health, setHealth] = useState(null);
   const [stats, setStats] = useState(null);
   const [posts, setPosts] = useState([]);
+  const [contentJobs, setContentJobs] = useState([]);
   const [dashboard, setDashboard] = useState(null);
   const [alerts, setAlerts] = useState([]);
   const [period, setPeriod] = useState('week');
@@ -544,14 +671,16 @@ export default function App() {
   // Fetch main data
   const fetchData = useCallback(async () => {
     setLoading(true);
-    const [s, p, d, a] = await Promise.all([
+    const [s, p, j, d, a] = await Promise.all([
       safeFetch(`${API}/stats`),
       safeFetch(`${API}/posts`),
+      safeFetch(`${API}/content-jobs?limit=80`),
       safeFetch(`${API}/track/dashboard?period=${period}`),
       safeFetch(`${API}/track/alerts`),
     ]);
     if (s) setStats(s);
     if (p) setPosts(Array.isArray(p) ? p : []);
+    if (j) setContentJobs(Array.isArray(j) ? j : []);
     if (d) setDashboard(d);
     if (a) setAlerts(Array.isArray(a) ? a : []);
     setLoading(false);
@@ -711,6 +840,10 @@ export default function App() {
           <StatCard loading={loading} label="평균 점수" value={stats?.avgScore ?? '0.0'} change={stats?.scoreChange} color={COLORS.accent} icon="📊" />
           <StatCard loading={loading} label="총 조회수" value={totalViews.toLocaleString()} change={stats?.viewsChange ?? null} color={COLORS.success} icon="👁" />
           <StatCard loading={loading} label="대기 피드백" value={stats?.pendingFeedbacks ?? 0} change={null} color={COLORS.warning} icon="💬" />
+          <StatCard loading={loading} label="글/QR 작업" value={stats?.contentJobs ?? 0} change={null} color={COLORS.primary} icon="🔗" />
+          <StatCard loading={loading} label="QR 완료" value={stats?.qrReady ?? 0} change={null} color={COLORS.success} icon="▦" />
+          <StatCard loading={loading} label="QR 필요" value={stats?.qrNeeded ?? 0} change={null} color={COLORS.warning} icon="!" />
+          <StatCard loading={loading} label="Sheets 오류" value={stats?.sheetErrors ?? 0} change={null} color={COLORS.danger} icon="S" />
         </div>
 
         {/* ────── Charts ────── */}
@@ -720,6 +853,48 @@ export default function App() {
             <BarChart title="일별 조회수 추이" data={viewsChartData} />
           </div>
         )}
+
+        {/* ────── Content Jobs / QR / Sheets ────── */}
+        <div style={{ ...sectionStyle, animation: loading ? 'none' : 'fadeIn 0.4s ease' }}>
+          <div style={{ padding: '14px 20px', borderBottom: `1px solid ${COLORS.border}`, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+            <div style={{ marginRight: 'auto' }}>
+              <h2 style={{ fontSize: 15, fontWeight: 700, color: COLORS.primary }}>
+                글 생성 · 네이버 QR · Google Sheets <span style={{ fontSize: 12, fontWeight: 400, color: COLORS.textMuted }}>({contentJobs.length})</span>
+              </h2>
+              <p style={{ fontSize: 11, color: COLORS.textMuted, marginTop: 2 }}>
+                단건 등록, 네이버 QR 생성, 시트 동기화 상태를 한 화면에서 확인합니다
+              </p>
+            </div>
+            <button
+              onClick={() => safeFetch(`${API}/content-jobs/sheets/pull`, { method: 'POST' }).then(fetchData)}
+              style={{
+                padding: '6px 12px', borderRadius: 8, border: `1px solid ${COLORS.accent}`,
+                background: 'white', color: COLORS.accent, fontSize: 11, fontWeight: 700,
+                cursor: 'pointer',
+              }}
+            >
+              Sheets 작업 가져오기
+            </button>
+          </div>
+
+          {loading ? (
+            <div style={{ padding: 20 }}>
+              {[1, 2].map(i => <Skeleton key={i} height={74} style={{ marginBottom: 8 }} />)}
+            </div>
+          ) : contentJobs.length === 0 ? (
+            <div style={{ padding: 38, textAlign: 'center', color: COLORS.textMuted }}>
+              <div style={{ fontSize: 28, marginBottom: 8 }}>▦</div>
+              <p style={{ fontSize: 14, marginBottom: 4 }}>아직 글/QR 작업이 없습니다</p>
+              <p style={{ fontSize: 12 }}>확장프로그램에서 단건 등록하거나 Google Sheets 작업을 가져오세요</p>
+            </div>
+          ) : (
+            <div style={{ overflowX: 'auto' }}>
+              {contentJobs.map(job => (
+                <ContentJobRow key={job.id} job={job} onRefresh={fetchData} />
+              ))}
+            </div>
+          )}
+        </div>
 
         {/* ────── Posts Table ────── */}
         <div style={{ ...sectionStyle, animation: loading ? 'none' : 'fadeIn 0.4s ease' }}>
@@ -766,7 +941,7 @@ export default function App() {
             <div style={{ padding: 48, textAlign: 'center', color: COLORS.textMuted }}>
               <div style={{ fontSize: 32, marginBottom: 8 }}>📭</div>
               <p style={{ fontSize: 14, marginBottom: 4 }}>
-                {search ? '검색 결과가 없습니다' : '아지 추적 중인 포스트가 없습니다'}
+                {search ? '검색 결과가 없습니다' : '아직 추적 중인 포스트가 없습니다'}
               </p>
               <p style={{ fontSize: 12 }}>NaviWrite 확장프로그램에서 포스트를 등록하세요</p>
             </div>

@@ -96,11 +96,63 @@ export async function initDB() {
         updated_at TIMESTAMPTZ DEFAULT NOW()
       );
 
+      -- Content Jobs (generated drafts + QR + sheet sync)
+      CREATE TABLE IF NOT EXISTS content_jobs (
+        id SERIAL PRIMARY KEY,
+        keyword TEXT NOT NULL,
+        category TEXT DEFAULT 'general',
+        platform TEXT DEFAULT 'blog',
+        source_url TEXT,
+        cta_url TEXT,
+        qr_target_url TEXT,
+        tone TEXT,
+        campaign_name TEXT,
+        title TEXT,
+        body TEXT,
+        plain_text TEXT,
+        char_count INTEGER DEFAULT 0,
+        kw_count INTEGER DEFAULT 0,
+        image_count INTEGER DEFAULT 0,
+        seo_score REAL DEFAULT 0,
+        geo_score REAL DEFAULT 0,
+        aeo_score REAL DEFAULT 0,
+        total_score REAL DEFAULT 0,
+        naver_qr_name TEXT,
+        naver_qr_image_url TEXT,
+        naver_qr_manage_url TEXT,
+        qr_status TEXT DEFAULT 'QR 생성 필요',
+        generation_status TEXT DEFAULT '대기중',
+        editor_status TEXT DEFAULT '검수 필요',
+        sheet_row_id TEXT,
+        sheet_sync_status TEXT DEFAULT '대기중',
+        sheet_synced_at TIMESTAMPTZ,
+        notion_url TEXT,
+        notion_exported_at TIMESTAMPTZ,
+        error_message TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );
+
+      -- Content Job Event Log
+      CREATE TABLE IF NOT EXISTS content_job_events (
+        id SERIAL PRIMARY KEY,
+        job_id INTEGER REFERENCES content_jobs(id) ON DELETE CASCADE,
+        event_type TEXT NOT NULL,
+        message TEXT,
+        payload JSONB DEFAULT '{}',
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+
       -- Indexes
       CREATE INDEX IF NOT EXISTS idx_ranking_post_id ON ranking_records(post_id);
       CREATE INDEX IF NOT EXISTS idx_ranking_checked_at ON ranking_records(checked_at);
       CREATE INDEX IF NOT EXISTS idx_views_post_id ON view_records(post_id);
       CREATE INDEX IF NOT EXISTS idx_feedbacks_post_id ON feedbacks(post_id);
+      CREATE INDEX IF NOT EXISTS idx_content_jobs_created_at ON content_jobs(created_at);
+      CREATE INDEX IF NOT EXISTS idx_content_jobs_keyword ON content_jobs(keyword);
+      CREATE INDEX IF NOT EXISTS idx_content_jobs_qr_status ON content_jobs(qr_status);
+      CREATE INDEX IF NOT EXISTS idx_content_jobs_sheet_sync_status ON content_jobs(sheet_sync_status);
+      CREATE INDEX IF NOT EXISTS idx_content_job_events_job_id ON content_job_events(job_id);
     `);
     console.log('[DB] Tables initialized successfully');
   } finally {
