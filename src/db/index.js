@@ -99,6 +99,7 @@ export async function initDB() {
       -- Source Analysis (URL/text learning before draft generation)
       CREATE TABLE IF NOT EXISTS source_analyses (
         id SERIAL PRIMARY KEY,
+        source_link_id INTEGER,
         source_url TEXT,
         source_text_preview TEXT,
         keyword TEXT,
@@ -113,10 +114,52 @@ export async function initDB() {
         links JSONB DEFAULT '[]',
         has_video BOOLEAN DEFAULT FALSE,
         platform_guess TEXT,
+        keyword_candidates JSONB DEFAULT '[]',
+        main_keyword TEXT,
+        category_guess TEXT,
+        structure_json JSONB DEFAULT '{}',
+        tone_summary TEXT,
         fetch_status TEXT DEFAULT 'pending',
         error_message TEXT,
         created_at TIMESTAMPTZ DEFAULT NOW()
       );
+
+      -- Collection batches created from pasted URL lists
+      CREATE TABLE IF NOT EXISTS collection_batches (
+        id SERIAL PRIMARY KEY,
+        name TEXT,
+        raw_input TEXT,
+        status TEXT DEFAULT '대기중',
+        total_count INTEGER DEFAULT 0,
+        pending_count INTEGER DEFAULT 0,
+        collecting_count INTEGER DEFAULT 0,
+        collected_count INTEGER DEFAULT 0,
+        failed_count INTEGER DEFAULT 0,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );
+
+      -- Individual source links processed by the extension collector
+      CREATE TABLE IF NOT EXISTS source_links (
+        id SERIAL PRIMARY KEY,
+        batch_id INTEGER REFERENCES collection_batches(id) ON DELETE CASCADE,
+        url TEXT NOT NULL,
+        platform_guess TEXT,
+        status TEXT DEFAULT '대기중',
+        source_analysis_id INTEGER,
+        error_message TEXT,
+        collected_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE(batch_id, url)
+      );
+
+      ALTER TABLE source_analyses ADD COLUMN IF NOT EXISTS source_link_id INTEGER;
+      ALTER TABLE source_analyses ADD COLUMN IF NOT EXISTS keyword_candidates JSONB DEFAULT '[]';
+      ALTER TABLE source_analyses ADD COLUMN IF NOT EXISTS main_keyword TEXT;
+      ALTER TABLE source_analyses ADD COLUMN IF NOT EXISTS category_guess TEXT;
+      ALTER TABLE source_analyses ADD COLUMN IF NOT EXISTS structure_json JSONB DEFAULT '{}';
+      ALTER TABLE source_analyses ADD COLUMN IF NOT EXISTS tone_summary TEXT;
 
       -- Content Jobs (generated drafts + QR + sheet sync)
       CREATE TABLE IF NOT EXISTS content_jobs (
@@ -183,6 +226,10 @@ export async function initDB() {
       CREATE INDEX IF NOT EXISTS idx_content_job_events_job_id ON content_job_events(job_id);
       CREATE INDEX IF NOT EXISTS idx_source_analyses_created_at ON source_analyses(created_at);
       CREATE INDEX IF NOT EXISTS idx_source_analyses_keyword ON source_analyses(keyword);
+      CREATE INDEX IF NOT EXISTS idx_source_analyses_source_link_id ON source_analyses(source_link_id);
+      CREATE INDEX IF NOT EXISTS idx_collection_batches_created_at ON collection_batches(created_at);
+      CREATE INDEX IF NOT EXISTS idx_source_links_batch_id ON source_links(batch_id);
+      CREATE INDEX IF NOT EXISTS idx_source_links_status ON source_links(status);
     `);
     console.log('[DB] Tables initialized successfully');
   } finally {

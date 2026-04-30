@@ -91,7 +91,162 @@ function guessPlatform(sourceUrl, fallback = 'blog') {
   if (/blog\.naver\.com|m\.blog\.naver\.com/i.test(sourceUrl)) return 'blog';
   if (/brunch\.co\.kr/i.test(sourceUrl)) return 'brunch';
   if (/contents\.premium\.naver\.com/i.test(sourceUrl)) return 'premium';
-  return fallback;
+  return fallback || 'web';
+}
+
+function normalizePlatform(value, sourceUrl) {
+  const guessed = guessPlatform(sourceUrl, 'web');
+  const allowed = new Set(['blog', 'cafe', 'premium', 'brunch', 'web']);
+  return allowed.has(value) ? value : guessed;
+}
+
+function parseUrlsFromInput(input = '') {
+  const seen = new Set();
+  return String(input)
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => line.replace(/^[-*\d.)\s]+/, '').trim())
+    .filter((line) => /^https?:\/\//i.test(line))
+    .filter((url) => {
+      if (seen.has(url)) return false;
+      seen.add(url);
+      return true;
+    });
+}
+
+function tokenizeKoreanText(text = '') {
+  const stopwords = new Set([
+    '그리고', '하지만', '그래서', '이번', '오늘', '정리', '확인', '방법', '정보', '내용',
+    '정도', '경우', '부분', '바로', '아래', '위해', '대한', '있는', '없는', '하면',
+    '합니다', '했습니다', '됩니다', '있습니다', '있어요', '때문', '이후', '관련',
+    '네이버', '블로그', '카페', '브런치', '프리미엄', '콘텐츠',
+  ]);
+
+  return String(text)
+    .replace(/https?:\/\/\S+/gi, ' ')
+    .match(/[가-힣A-Za-z0-9][가-힣A-Za-z0-9.+#/-]{1,}/g)?.map((token) => token.trim())
+    .filter((token) => {
+      if (token.length < 2 || token.length > 24) return false;
+      if (/^\d+$/.test(token)) return false;
+      if (stopwords.has(token)) return false;
+      return true;
+    }) || [];
+}
+
+function inferKeywordCandidates({ title = '', text = '', subheadings = [] }) {
+  const source = [title, subheadings.join(' '), text].join(' ');
+  const tokens = tokenizeKoreanText(source);
+  const scores = new Map();
+  const counts = new Map();
+
+  for (let size = 1; size <= 3; size += 1) {
+    for (let i = 0; i <= tokens.length - size; i += 1) {
+      const phrase = tokens.slice(i, i + size).join(' ');
+      if (phrase.replace(/\s/g, '').length < 2 || phrase.length > 30) continue;
+      const base = size === 1 ? 1 : size === 2 ? 2.4 : 3;
+      const titleBoost = title.includes(phrase) ? 7 : 0;
+      const headingBoost = subheadings.some((heading) => heading.includes(phrase)) ? 4 : 0;
+      counts.set(phrase, (counts.get(phrase) || 0) + 1);
+      scores.set(phrase, (scores.get(phrase) || 0) + base + titleBoost + headingBoost);
+    }
+  }
+
+  return [...scores.entries()]
+    .map(([keyword, score]) => ({ keyword, score: Number(score.toFixed(2)), count: counts.get(keyword) || 0 }))
+    .filter((item) => item.count >= 2 || title.includes(item.keyword))
+    .sort((a, b) => b.score - a.score || b.count - a.count)
+    .slice(0, 10);
+}
+
+function guessCategoryFromText(text = '', title = '') {
+  const source = `${title} ${text}`.toLowerCase();
+  const banks = [
+    ['IT/테크', ['테스트', '앱', '사이트', '링크', 'ai', '스마트폰', '프로그램', '검사', '유형']],
+    ['맛집', ['맛집', '메뉴', '가격', '식당', '카페', '예약', '후기']],
+    ['여행', ['여행', '숙소', '일정', '항공', '호텔', '코스', '관광']],
+    ['건강/의료', ['병원', '증상', '건강', '치료', '검진', '의료', '질환']],
+    ['재테크/금융', ['금리', '대출', '주식', '코인', '투자', '은행', '보험']],
+    ['육아/육품', ['육아', '아이', '아기', '유아', '장난감', '어린이']],
+    ['부동산', ['아파트', '분양', '임대', '전세', '매매', '청약', '부동산']],
+    ['정부정책', ['지원금', '신청', '지급', '대상', '정부', '정책', '복지']],
+  ];
+
+  let best = { category: 'IT/테크', score: 0 };
+  for (const [category, words] of banks) {
+    const score = words.reduce((sum, word) => sum + (source.includes(word.toLowerCase()) ? 1 : 0), 0);
+    if (score > best.score) best = { category, score };
+  }
+  return best.category;
+}
+
+function summarizeStructure({ text = '', subheadings = [], links = [], imageCount = 0, hasVideo = false }) {
+  const paragraphs = String(text).split(/\n{2,}|[.!?。]\s+/).map((p) => p.trim()).filter(Boolean);
+  return {
+    paragraphCount: paragraphs.length,
+    avgParagraphLength: paragraphs.length
+      ? Math.round(paragraphs.reduce((sum, p) => sum + p.length, 0) / paragraphs.length)
+      : 0,
+    headingCount: subheadings.length,
+    headings: subheadings.slice(0, 12),
+    linkCount: links.length,
+    imageCount,
+    hasVideo,
+    introPreview: String(text).trim().slice(0, 180),
+  };
+}
+
+function summarizeTone(text = '') {
+  const source = String(text);
+  const polite = (source.match(/습니다|합니다|하세요|드립니다/g) || []).length;
+  const casual = (source.match(/해요|이에요|죠|거예요|네요/g) || []).length;
+  if (polite >= casual * 1.4) return '정보형 존댓말';
+  if (casual > polite) return '경험담형 부드러운 말투';
+  return '설명형 혼합 톤';
+}
+
+async function refreshCollectionBatchCounts(batchId) {
+  if (!batchId) return null;
+  const { rows } = await pool.query(
+    `SELECT
+       COUNT(*)::int AS total_count,
+       COUNT(*) FILTER (WHERE status = '대기중')::int AS pending_count,
+       COUNT(*) FILTER (WHERE status = '수집중')::int AS collecting_count,
+       COUNT(*) FILTER (WHERE status = '수집완료')::int AS collected_count,
+       COUNT(*) FILTER (WHERE status = '오류')::int AS failed_count
+     FROM source_links
+     WHERE batch_id = $1`,
+    [batchId]
+  );
+  const counts = rows[0];
+  const status =
+    counts.total_count === counts.collected_count + counts.failed_count
+      ? '완료'
+      : counts.collecting_count > 0
+        ? '수집중'
+        : '대기중';
+  const updated = await pool.query(
+    `UPDATE collection_batches
+     SET total_count = $2,
+         pending_count = $3,
+         collecting_count = $4,
+         collected_count = $5,
+         failed_count = $6,
+         status = $7,
+         updated_at = NOW()
+     WHERE id = $1
+     RETURNING *`,
+    [
+      batchId,
+      counts.total_count,
+      counts.pending_count,
+      counts.collecting_count,
+      counts.collected_count,
+      counts.failed_count,
+      status,
+    ]
+  );
+  return updated.rows[0] || null;
 }
 
 async function fetchSourceHtml(sourceUrl) {
@@ -139,13 +294,23 @@ function buildSourceAnalysis({ sourceUrl, sourceText, html, keyword, category, p
   const imageCount = html ? (html.match(/<img\b/gi) || []).length : 0;
   const subheadings = html ? extractHeadings(html) : [];
   const links = html ? extractLinks(html) : [];
+  const keywordCandidates = inferKeywordCandidates({ title, text: plainText, subheadings });
+  const mainKeyword = keyword || keywordCandidates[0]?.keyword || '';
+  const categoryGuess = category && category !== 'general' ? category : guessCategoryFromText(plainText, title);
+  const structure = summarizeStructure({
+    text: plainText,
+    subheadings,
+    links,
+    imageCount,
+    hasVideo: html ? /<video\b|youtube\.com|tv\.naver\.com|<iframe\b/i.test(html) : false,
+  });
 
   return {
     sourceUrl: sourceUrl || null,
     sourceTextPreview: plainText.slice(0, 500),
-    keyword,
-    category,
-    platform,
+    keyword: mainKeyword,
+    category: categoryGuess,
+    platform: normalizePlatform(platform, sourceUrl),
     title,
     plainText: plainText.slice(0, 12000),
     charCount: compactText.length,
@@ -153,8 +318,13 @@ function buildSourceAnalysis({ sourceUrl, sourceText, html, keyword, category, p
     imageCount,
     subheadings,
     links,
-    hasVideo: html ? /<video\b|youtube\.com|tv\.naver\.com|<iframe\b/i.test(html) : false,
+    hasVideo: structure.hasVideo,
     platformGuess: guessPlatform(sourceUrl, platform),
+    keywordCandidates,
+    mainKeyword,
+    categoryGuess,
+    structure,
+    toneSummary: summarizeTone(plainText),
     fetchStatus,
     errorMessage,
   };
@@ -459,9 +629,10 @@ router.post('/content-jobs/source/analyze', async (req, res) => {
       `INSERT INTO source_analyses (
         source_url, source_text_preview, keyword, category, platform, title, plain_text,
         char_count, kw_count, image_count, subheadings, links, has_video,
-        platform_guess, fetch_status, error_message
+        platform_guess, keyword_candidates, main_keyword, category_guess, structure_json,
+        tone_summary, fetch_status, error_message
        )
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
        RETURNING *`,
       [
         analysis.sourceUrl,
@@ -478,6 +649,11 @@ router.post('/content-jobs/source/analyze', async (req, res) => {
         JSON.stringify(analysis.links),
         analysis.hasVideo,
         analysis.platformGuess,
+        JSON.stringify(analysis.keywordCandidates),
+        analysis.mainKeyword,
+        analysis.categoryGuess,
+        JSON.stringify(analysis.structure),
+        analysis.toneSummary,
         analysis.fetchStatus,
         analysis.errorMessage,
       ]
@@ -499,6 +675,11 @@ router.post('/content-jobs/source/analyze', async (req, res) => {
         links: rows[0].links || [],
         hasVideo: rows[0].has_video,
         platformGuess: rows[0].platform_guess,
+        keywordCandidates: rows[0].keyword_candidates || [],
+        mainKeyword: rows[0].main_keyword,
+        categoryGuess: rows[0].category_guess,
+        structure: rows[0].structure_json || {},
+        toneSummary: rows[0].tone_summary,
         fetchStatus: rows[0].fetch_status,
         errorMessage: rows[0].error_message,
         createdAt: rows[0].created_at,
@@ -509,6 +690,238 @@ router.post('/content-jobs/source/analyze', async (req, res) => {
       },
     });
   } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --- Collection batches and extension queue ---
+router.get('/collections/batches', async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit || '30', 10), 100);
+    const { rows } = await pool.query(
+      `SELECT *
+       FROM collection_batches
+       ORDER BY created_at DESC
+       LIMIT $1`,
+      [limit]
+    );
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/collections/batches', async (req, res) => {
+  try {
+    const rawInput = req.body?.urlsText || req.body?.rawInput || '';
+    const links = Array.isArray(req.body?.links) ? req.body.links : parseUrlsFromInput(rawInput);
+    const uniqueLinks = [...new Set(links.map((url) => String(url).trim()).filter((url) => /^https?:\/\//i.test(url)))];
+
+    if (uniqueLinks.length === 0) {
+      return res.status(400).json({ error: '등록할 URL이 없습니다' });
+    }
+
+    const batch = await pool.query(
+      `INSERT INTO collection_batches (name, raw_input, total_count, pending_count, status)
+       VALUES ($1,$2,$3,$3,'대기중')
+       RETURNING *`,
+      [req.body?.name || `수집 배치 ${new Date().toLocaleString('ko-KR')}`, rawInput || uniqueLinks.join('\n'), uniqueLinks.length]
+    );
+
+    let inserted = 0;
+    for (const url of uniqueLinks) {
+      const result = await pool.query(
+        `INSERT INTO source_links (batch_id, url, platform_guess, status)
+         VALUES ($1,$2,$3,'대기중')
+         ON CONFLICT (batch_id, url) DO NOTHING
+         RETURNING id`,
+        [batch.rows[0].id, url, guessPlatform(url, 'web')]
+      );
+      inserted += result.rowCount;
+    }
+
+    const updatedBatch = await refreshCollectionBatchCounts(batch.rows[0].id);
+    res.json({ batch: updatedBatch || batch.rows[0], inserted, skipped: uniqueLinks.length - inserted });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/collections/links', async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit || '100', 10), 300);
+    const values = [];
+    const where = [];
+
+    if (req.query.status) {
+      values.push(req.query.status);
+      where.push(`sl.status = $${values.length}`);
+    }
+    if (req.query.batchId) {
+      values.push(req.query.batchId);
+      where.push(`sl.batch_id = $${values.length}`);
+    }
+
+    values.push(limit);
+    const { rows } = await pool.query(
+      `SELECT sl.*,
+              cb.name AS batch_name,
+              sa.main_keyword,
+              sa.category_guess,
+              sa.char_count,
+              sa.kw_count,
+              sa.image_count,
+              sa.subheadings,
+              sa.keyword_candidates
+       FROM source_links sl
+       LEFT JOIN collection_batches cb ON cb.id = sl.batch_id
+       LEFT JOIN source_analyses sa ON sa.id = sl.source_analysis_id
+       ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+       ORDER BY sl.created_at DESC
+       LIMIT $${values.length}`,
+      values
+    );
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.patch('/collections/links/:id/claim', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `UPDATE source_links
+       SET status = '수집중',
+           error_message = NULL,
+           updated_at = NOW()
+       WHERE id = $1 AND status IN ('대기중','오류')
+       RETURNING *`,
+      [req.params.id]
+    );
+    if (rows.length === 0) return res.status(404).json({ error: '수집 가능한 링크가 없습니다' });
+    await refreshCollectionBatchCounts(rows[0].batch_id);
+    res.json(rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.patch('/collections/links/:id/status', async (req, res) => {
+  try {
+    const status = req.body?.status || '오류';
+    const { rows } = await pool.query(
+      `UPDATE source_links
+       SET status = $2,
+           error_message = $3,
+           updated_at = NOW()
+       WHERE id = $1
+       RETURNING *`,
+      [req.params.id, status, req.body?.errorMessage || req.body?.error_message || null]
+    );
+    if (rows.length === 0) return res.status(404).json({ error: 'Source link not found' });
+    await refreshCollectionBatchCounts(rows[0].batch_id);
+    res.json(rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/collections/links/:id/analysis', async (req, res) => {
+  try {
+    const current = await pool.query('SELECT * FROM source_links WHERE id = $1', [req.params.id]);
+    if (current.rows.length === 0) return res.status(404).json({ error: 'Source link not found' });
+    const link = current.rows[0];
+    const body = req.body || {};
+    const text = decodeHtmlEntities(body.text || body.plainText || '');
+    const title = body.title || '';
+    const subheadings = Array.isArray(body.subheadings) ? body.subheadings.filter(Boolean) : [];
+    const links = Array.isArray(body.links) ? body.links.filter(Boolean).slice(0, 80) : [];
+    const keywordCandidates = inferKeywordCandidates({ title, text, subheadings });
+    const mainKeyword = body.mainKeyword || keywordCandidates[0]?.keyword || '';
+    const categoryGuess = body.categoryGuess || guessCategoryFromText(text, title);
+    const platformGuess = normalizePlatform(body.platform, link.url);
+    const imageCount = Number(body.imageCount || 0);
+    const hasVideo = Boolean(body.hasVideo);
+    const charCount = Number(body.charCount || text.replace(/\s/g, '').length);
+    const kwCount = mainKeyword ? (text.match(new RegExp(escapeRegExp(mainKeyword), 'gi')) || []).length : 0;
+    const structure = summarizeStructure({ text, subheadings, links, imageCount, hasVideo });
+
+    const inserted = await pool.query(
+      `INSERT INTO source_analyses (
+        source_link_id, source_url, source_text_preview, keyword, category, platform, title,
+        plain_text, char_count, kw_count, image_count, subheadings, links, has_video,
+        platform_guess, keyword_candidates, main_keyword, category_guess, structure_json,
+        tone_summary, fetch_status, error_message
+       )
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,'extension_collected',NULL)
+       RETURNING *`,
+      [
+        link.id,
+        body.url || link.url,
+        text.slice(0, 500),
+        mainKeyword,
+        categoryGuess,
+        platformGuess,
+        title,
+        text.slice(0, 12000),
+        charCount,
+        kwCount,
+        imageCount,
+        JSON.stringify(subheadings.slice(0, 40)),
+        JSON.stringify(links),
+        hasVideo,
+        platformGuess,
+        JSON.stringify(keywordCandidates),
+        mainKeyword,
+        categoryGuess,
+        JSON.stringify(structure),
+        summarizeTone(text),
+      ]
+    );
+
+    const analysis = inserted.rows[0];
+    const updated = await pool.query(
+      `UPDATE source_links
+       SET status = '수집완료',
+           platform_guess = $2,
+           source_analysis_id = $3,
+           collected_at = NOW(),
+           updated_at = NOW(),
+           error_message = NULL
+       WHERE id = $1
+       RETURNING *`,
+      [link.id, platformGuess, analysis.id]
+    );
+    const batch = await refreshCollectionBatchCounts(link.batch_id);
+
+    res.json({
+      link: updated.rows[0],
+      batch,
+      analysis: {
+        id: analysis.id,
+        sourceUrl: analysis.source_url,
+        title: analysis.title,
+        mainKeyword: analysis.main_keyword,
+        categoryGuess: analysis.category_guess,
+        platformGuess: analysis.platform_guess,
+        charCount: analysis.char_count,
+        kwCount: analysis.kw_count,
+        imageCount: analysis.image_count,
+        subheadings: analysis.subheadings || [],
+        keywordCandidates: analysis.keyword_candidates || [],
+        structure: analysis.structure_json || {},
+        toneSummary: analysis.tone_summary,
+      },
+    });
+  } catch (err) {
+    const failed = await pool.query(
+      `UPDATE source_links
+       SET status = '오류', error_message = $2, updated_at = NOW()
+       WHERE id = $1
+       RETURNING batch_id`,
+      [req.params.id, err.message]
+    ).catch(() => ({ rows: [] }));
+    if (failed.rows[0]?.batch_id) await refreshCollectionBatchCounts(failed.rows[0].batch_id);
     res.status(500).json({ error: err.message });
   }
 });

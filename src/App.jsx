@@ -827,6 +827,461 @@ function GuideModal({ onClose }) {
   );
 }
 
+function StatusBadge({ value }) {
+  const colors = {
+    대기중: COLORS.warning,
+    수집중: COLORS.accent,
+    수집완료: COLORS.success,
+    완료: COLORS.success,
+    오류: COLORS.danger,
+  };
+  const color = colors[value] || COLORS.textSecondary;
+  return (
+    <span style={{
+      display: 'inline-flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      padding: '3px 8px',
+      borderRadius: 999,
+      fontSize: 10,
+      fontWeight: 800,
+      background: `${color}18`,
+      color,
+      whiteSpace: 'nowrap',
+    }}>
+      {value || '대기중'}
+    </span>
+  );
+}
+
+function SourceCollectionPanel() {
+  const [batchName, setBatchName] = useState('');
+  const [urlsText, setUrlsText] = useState('');
+  const [batches, setBatches] = useState([]);
+  const [links, setLinks] = useState([]);
+  const [creating, setCreating] = useState(false);
+  const [message, setMessage] = useState('');
+
+  const loadCollections = useCallback(async () => {
+    const [batchRes, linkRes] = await Promise.all([
+      safeFetch(`${API}/collections/batches?limit=20`),
+      safeFetch(`${API}/collections/links?limit=100`),
+    ]);
+    if (Array.isArray(batchRes)) setBatches(batchRes);
+    if (Array.isArray(linkRes)) setLinks(linkRes);
+  }, []);
+
+  useEffect(() => {
+    loadCollections();
+  }, [loadCollections]);
+
+  const urlCount = useMemo(
+    () => urlsText.split(/\r?\n/).map((line) => line.trim()).filter((line) => /^https?:\/\//i.test(line)).length,
+    [urlsText]
+  );
+
+  const createBatch = async () => {
+    if (urlCount === 0) {
+      setMessage('등록할 URL을 줄바꿈으로 입력해 주세요.');
+      return;
+    }
+
+    setCreating(true);
+    setMessage('');
+    const res = await safeFetch(`${API}/collections/batches`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: batchName || `수집 배치 ${new Date().toLocaleString('ko-KR')}`,
+        urlsText,
+      }),
+    });
+    setCreating(false);
+
+    if (res?.batch) {
+      setMessage(`배치 #${res.batch.id} 생성 완료 · ${res.inserted}개 등록`);
+      setUrlsText('');
+      setBatchName('');
+      loadCollections();
+    } else {
+      setMessage('배치 생성에 실패했습니다. URL 형식을 확인해 주세요.');
+    }
+  };
+
+  const stats = useMemo(() => ({
+    total: links.length,
+    pending: links.filter((link) => link.status === '대기중').length,
+    collecting: links.filter((link) => link.status === '수집중').length,
+    collected: links.filter((link) => link.status === '수집완료').length,
+    failed: links.filter((link) => link.status === '오류').length,
+  }), [links]);
+
+  return (
+    <div style={{ display: 'grid', gap: 18 }}>
+      <section style={{ ...cardStyle, padding: 20 }}>
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16, marginBottom: 14 }}>
+          <div>
+            <h2 style={{ fontSize: 18, fontWeight: 850, color: COLORS.primary, marginBottom: 4 }}>수집 링크</h2>
+            <p style={{ fontSize: 12, color: COLORS.textSecondary }}>
+              URL을 줄바꿈으로 넣으면 DB에 수집 큐가 생기고, 확장프로그램의 수집 탭이 실제 페이지에 들어가 분석합니다.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={loadCollections}
+            style={{
+              height: 34,
+              padding: '0 13px',
+              borderRadius: 8,
+              border: `1px solid ${COLORS.border}`,
+              background: 'white',
+              color: COLORS.textSecondary,
+              fontSize: 12,
+              fontWeight: 800,
+              cursor: 'pointer',
+            }}
+          >
+            새로고침
+          </button>
+        </div>
+
+        <input
+          value={batchName}
+          onChange={(e) => setBatchName(e.target.value)}
+          placeholder="배치명 예: IT/테크 상위글 1차 수집"
+          style={{
+            width: '100%',
+            height: 38,
+            border: `1px solid ${COLORS.border}`,
+            borderRadius: 8,
+            padding: '0 12px',
+            fontSize: 13,
+            outline: 'none',
+            marginBottom: 10,
+          }}
+        />
+        <textarea
+          value={urlsText}
+          onChange={(e) => setUrlsText(e.target.value)}
+          placeholder={`https://blog.naver.com/...\nhttps://cafe.naver.com/...\nhttps://contents.premium.naver.com/...\nhttps://brunch.co.kr/...`}
+          rows={8}
+          style={{
+            width: '100%',
+            border: `1px solid ${COLORS.border}`,
+            borderRadius: 10,
+            padding: 12,
+            fontSize: 13,
+            lineHeight: 1.55,
+            resize: 'vertical',
+            outline: 'none',
+            marginBottom: 12,
+          }}
+        />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <button
+            type="button"
+            onClick={createBatch}
+            disabled={creating || urlCount === 0}
+            style={{
+              height: 40,
+              padding: '0 18px',
+              borderRadius: 9,
+              border: 'none',
+              background: creating || urlCount === 0 ? COLORS.textMuted : COLORS.primary,
+              color: 'white',
+              fontSize: 13,
+              fontWeight: 850,
+              cursor: creating || urlCount === 0 ? 'not-allowed' : 'pointer',
+            }}
+          >
+            {creating ? '등록 중...' : `수집 큐 등록 (${urlCount})`}
+          </button>
+          <span style={{ fontSize: 12, color: COLORS.textSecondary }}>
+            등록 후 확장프로그램의 `수집` 탭에서 큐 처리를 시작하세요.
+          </span>
+          {message && <span style={{ fontSize: 12, color: message.includes('완료') ? COLORS.success : COLORS.warning, fontWeight: 700 }}>{message}</span>}
+        </div>
+      </section>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12 }}>
+        {[
+          ['전체 링크', stats.total, COLORS.primary],
+          ['대기중', stats.pending, COLORS.warning],
+          ['수집중', stats.collecting, COLORS.accent],
+          ['수집완료', stats.collected, COLORS.success],
+          ['오류', stats.failed, COLORS.danger],
+        ].map(([label, value, color]) => (
+          <div key={label} style={{ ...cardStyle, padding: 16 }}>
+            <p style={{ fontSize: 11, color: COLORS.textSecondary, fontWeight: 700, marginBottom: 6 }}>{label}</p>
+            <p style={{ fontSize: 28, color, fontWeight: 900, lineHeight: 1 }}>{value}</p>
+          </div>
+        ))}
+      </div>
+
+      <section style={sectionStyle}>
+        <div style={{ padding: '14px 18px', borderBottom: `1px solid ${COLORS.border}` }}>
+          <h3 style={{ fontSize: 15, fontWeight: 850, color: COLORS.primary }}>최근 수집 링크</h3>
+        </div>
+        <div style={{ overflowX: 'auto' }}>
+          {links.length === 0 ? (
+            <div style={{ padding: 36, textAlign: 'center', color: COLORS.textMuted, fontSize: 13 }}>
+              아직 등록된 수집 링크가 없습니다.
+            </div>
+          ) : (
+            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 920 }}>
+              <thead>
+                <tr style={{ background: '#f8fafc', color: COLORS.textSecondary, fontSize: 11, textAlign: 'left' }}>
+                  {['상태', '플랫폼', '메인키워드', '카테고리', '글자/KW/이미지', 'URL', '오류'].map((head) => (
+                    <th key={head} style={{ padding: '10px 12px', borderBottom: `1px solid ${COLORS.border}` }}>{head}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {links.map((link) => (
+                  <tr key={link.id} style={{ fontSize: 12, borderBottom: `1px solid ${COLORS.border}` }}>
+                    <td style={{ padding: '10px 12px' }}><StatusBadge value={link.status} /></td>
+                    <td style={{ padding: '10px 12px', fontWeight: 700, color: COLORS.textSecondary }}>{link.platform_guess || '-'}</td>
+                    <td style={{ padding: '10px 12px', fontWeight: 800, color: COLORS.primary }}>{link.main_keyword || '-'}</td>
+                    <td style={{ padding: '10px 12px' }}>{link.category_guess || '-'}</td>
+                    <td style={{ padding: '10px 12px', color: COLORS.textSecondary }}>
+                      {(link.char_count || 0).toLocaleString()} / {link.kw_count || 0} / {link.image_count || 0}
+                    </td>
+                    <td style={{ padding: '10px 12px', maxWidth: 340 }}>
+                      <a href={link.url} target="_blank" rel="noreferrer" style={{ display: 'block', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {link.url}
+                      </a>
+                    </td>
+                    <td style={{ padding: '10px 12px', color: COLORS.danger, maxWidth: 220, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      {link.error_message || ''}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </section>
+
+      <section style={sectionStyle}>
+        <div style={{ padding: '14px 18px', borderBottom: `1px solid ${COLORS.border}` }}>
+          <h3 style={{ fontSize: 15, fontWeight: 850, color: COLORS.primary }}>수집 배치</h3>
+        </div>
+        <div style={{ display: 'grid', gap: 8, padding: 14 }}>
+          {batches.map((batch) => (
+            <div key={batch.id} style={{
+              display: 'grid',
+              gridTemplateColumns: 'minmax(160px, 1fr) 90px 240px 110px',
+              gap: 12,
+              alignItems: 'center',
+              padding: 12,
+              border: `1px solid ${COLORS.border}`,
+              borderRadius: 10,
+              background: 'white',
+            }}>
+              <div>
+                <p style={{ fontSize: 13, fontWeight: 850, color: COLORS.textPrimary }}>{batch.name || `배치 #${batch.id}`}</p>
+                <p style={{ fontSize: 10, color: COLORS.textMuted }}>{formatDate(batch.created_at)}</p>
+              </div>
+              <StatusBadge value={batch.status} />
+              <div style={{ height: 8, borderRadius: 999, background: '#eef2f7', overflow: 'hidden' }}>
+                <div style={{
+                  width: `${batch.total_count ? ((batch.collected_count + batch.failed_count) / batch.total_count) * 100 : 0}%`,
+                  height: '100%',
+                  background: batch.failed_count > 0 ? COLORS.warning : COLORS.success,
+                }} />
+              </div>
+              <p style={{ fontSize: 11, color: COLORS.textSecondary, textAlign: 'right' }}>
+                {batch.collected_count}/{batch.total_count} 완료
+              </p>
+            </div>
+          ))}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function OperationsSettingsPanel() {
+  const emptySettings = {
+    accounts: [],
+    qrAccounts: [],
+    vpnProfiles: [],
+  };
+  const [settings, setSettings] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem('naviwrite.opsSettings') || 'null') || emptySettings;
+    } catch {
+      return emptySettings;
+    }
+  });
+  const [accountForm, setAccountForm] = useState({ platform: 'blog', label: '', memo: '' });
+  const [qrForm, setQrForm] = useState({ label: '', naverIdHint: '', dailyLimit: 100 });
+  const [vpnForm, setVpnForm] = useState({ label: '', provider: 'nordvpn', target: '', mode: '수동 승인' });
+
+  const saveSettings = (next) => {
+    setSettings(next);
+    localStorage.setItem('naviwrite.opsSettings', JSON.stringify(next));
+  };
+
+  const addAccount = () => {
+    if (!accountForm.label.trim()) return;
+    saveSettings({
+      ...settings,
+      accounts: [...settings.accounts, {
+        id: `acc_${Date.now()}`,
+        ...accountForm,
+        loginStatus: '로그인 체크 필요',
+        lastCheckedAt: null,
+      }],
+    });
+    setAccountForm({ platform: 'blog', label: '', memo: '' });
+  };
+
+  const addQr = () => {
+    if (!qrForm.label.trim()) return;
+    saveSettings({
+      ...settings,
+      qrAccounts: [...settings.qrAccounts, {
+        id: `qr_${Date.now()}`,
+        ...qrForm,
+        usedToday: 0,
+        status: '사용가능',
+      }],
+    });
+    setQrForm({ label: '', naverIdHint: '', dailyLimit: 100 });
+  };
+
+  const addVpn = () => {
+    if (!vpnForm.label.trim()) return;
+    saveSettings({
+      ...settings,
+      vpnProfiles: [...settings.vpnProfiles, {
+        id: `vpn_${Date.now()}`,
+        ...vpnForm,
+        lastPublicIp: '',
+        lastCheckedAt: null,
+      }],
+    });
+    setVpnForm({ label: '', provider: 'nordvpn', target: '', mode: '수동 승인' });
+  };
+
+  const removeItem = (key, id) => {
+    saveSettings({ ...settings, [key]: settings[key].filter((item) => item.id !== id) });
+  };
+
+  return (
+    <div style={{ display: 'grid', gap: 18 }}>
+      <section style={{ ...cardStyle, padding: 20 }}>
+        <h2 style={{ fontSize: 18, fontWeight: 850, color: COLORS.primary, marginBottom: 5 }}>운영 설정</h2>
+        <p style={{ fontSize: 12, color: COLORS.textSecondary }}>
+          계정 슬롯, 네이버 QR 계정 풀, VPN 프로필을 이 브라우저 로컬에 저장합니다. 비밀번호와 세션은 저장하지 않습니다.
+        </p>
+      </section>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 14 }}>
+        <section style={{ ...cardStyle, padding: 18 }}>
+          <h3 style={{ fontSize: 15, fontWeight: 850, color: COLORS.primary, marginBottom: 12 }}>발행 계정 슬롯</h3>
+          <select value={accountForm.platform} onChange={(e) => setAccountForm({ ...accountForm, platform: e.target.value })} style={inputStyle}>
+            <option value="blog">네이버 블로그</option>
+            <option value="cafe">네이버 카페</option>
+            <option value="premium">네프콘</option>
+            <option value="brunch">브런치</option>
+          </select>
+          <input value={accountForm.label} onChange={(e) => setAccountForm({ ...accountForm, label: e.target.value })} placeholder="예: 네이버 블로그 계정 1" style={inputStyle} />
+          <input value={accountForm.memo} onChange={(e) => setAccountForm({ ...accountForm, memo: e.target.value })} placeholder="메모 또는 운영 채널 URL" style={inputStyle} />
+          <button type="button" onClick={addAccount} style={primaryButtonStyle}>계정 슬롯 추가</button>
+          <SettingList items={settings.accounts} onRemove={(id) => removeItem('accounts', id)} meta={(item) => `${item.platform} · ${item.loginStatus}`} />
+        </section>
+
+        <section style={{ ...cardStyle, padding: 18 }}>
+          <h3 style={{ fontSize: 15, fontWeight: 850, color: COLORS.primary, marginBottom: 12 }}>네이버 QR 계정 풀</h3>
+          <input value={qrForm.label} onChange={(e) => setQrForm({ ...qrForm, label: e.target.value })} placeholder="예: QR 계정 1" style={inputStyle} />
+          <input value={qrForm.naverIdHint} onChange={(e) => setQrForm({ ...qrForm, naverIdHint: e.target.value })} placeholder="네이버 ID 힌트" style={inputStyle} />
+          <input type="number" value={qrForm.dailyLimit} onChange={(e) => setQrForm({ ...qrForm, dailyLimit: Number(e.target.value) })} placeholder="일일 한도" style={inputStyle} />
+          <button type="button" onClick={addQr} style={primaryButtonStyle}>QR 계정 추가</button>
+          <SettingList items={settings.qrAccounts} onRemove={(id) => removeItem('qrAccounts', id)} meta={(item) => `${item.usedToday}/${item.dailyLimit} · ${item.status}`} />
+        </section>
+
+        <section style={{ ...cardStyle, padding: 18 }}>
+          <h3 style={{ fontSize: 15, fontWeight: 850, color: COLORS.primary, marginBottom: 12 }}>VPN 프로필</h3>
+          <input value={vpnForm.label} onChange={(e) => setVpnForm({ ...vpnForm, label: e.target.value })} placeholder="예: 블로그 계정 1 KR" style={inputStyle} />
+          <select value={vpnForm.provider} onChange={(e) => setVpnForm({ ...vpnForm, provider: e.target.value })} style={inputStyle}>
+            <option value="nordvpn">NordVPN CLI</option>
+            <option value="mullvad">Mullvad CLI</option>
+            <option value="manual">수동 전환</option>
+          </select>
+          <input value={vpnForm.target} onChange={(e) => setVpnForm({ ...vpnForm, target: e.target.value })} placeholder="국가/서버 예: South Korea" style={inputStyle} />
+          <button type="button" onClick={addVpn} style={primaryButtonStyle}>VPN 프로필 추가</button>
+          <SettingList items={settings.vpnProfiles} onRemove={(id) => removeItem('vpnProfiles', id)} meta={(item) => `${item.provider} · ${item.target || 'target 없음'} · ${item.mode}`} />
+        </section>
+      </div>
+
+      <section style={{ ...cardStyle, padding: 16, background: '#fff7ed', borderColor: '#fed7aa' }}>
+        <p style={{ fontSize: 12, color: '#9a3412', lineHeight: 1.65 }}>
+          VPN 자동 전환은 별도 Local Runner가 있어야 가능합니다. 여기서는 계정별 고정 VPN 프로필을 먼저 설계값으로 저장하고,
+          실제 전환은 수동 승인 기반으로 붙이는 순서가 안전합니다.
+        </p>
+      </section>
+    </div>
+  );
+}
+
+function SettingList({ items, onRemove, meta }) {
+  return (
+    <div style={{ display: 'grid', gap: 8, marginTop: 12 }}>
+      {items.length === 0 ? (
+        <div style={{ padding: 16, border: `1px dashed ${COLORS.border}`, borderRadius: 9, color: COLORS.textMuted, fontSize: 12, textAlign: 'center' }}>
+          아직 등록된 항목이 없습니다.
+        </div>
+      ) : items.map((item) => (
+        <div key={item.id} style={{ display: 'flex', gap: 10, alignItems: 'center', padding: 10, border: `1px solid ${COLORS.border}`, borderRadius: 9 }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <p style={{ fontSize: 12, fontWeight: 850, color: COLORS.textPrimary }}>{item.label}</p>
+            <p style={{ fontSize: 10, color: COLORS.textMuted, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{meta(item)}</p>
+          </div>
+          <button type="button" onClick={() => onRemove(item.id)} style={{
+            height: 28,
+            padding: '0 9px',
+            borderRadius: 7,
+            border: 'none',
+            background: '#fef2f2',
+            color: COLORS.danger,
+            fontSize: 11,
+            fontWeight: 800,
+            cursor: 'pointer',
+          }}>
+            삭제
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+const inputStyle = {
+  width: '100%',
+  height: 38,
+  border: `1px solid ${COLORS.border}`,
+  borderRadius: 8,
+  padding: '0 11px',
+  fontSize: 12,
+  outline: 'none',
+  marginBottom: 8,
+  background: 'white',
+};
+
+const primaryButtonStyle = {
+  width: '100%',
+  height: 38,
+  border: 'none',
+  borderRadius: 8,
+  background: COLORS.primary,
+  color: 'white',
+  fontSize: 12,
+  fontWeight: 850,
+  cursor: 'pointer',
+};
+
 /* ────────────────────── Main App ────────────────────── */
 
 export default function App() {
@@ -840,6 +1295,7 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [currentTime, setCurrentTime] = useState(new Date());
   const [guideOpen, setGuideOpen] = useState(false);
+  const [activeView, setActiveView] = useState('dashboard');
 
   // Posts table state
   const [search, setSearch] = useState('');
@@ -1048,6 +1504,40 @@ export default function App() {
       </header>
 
       <div style={{ maxWidth: 1200, margin: '0 auto', padding: '20px 16px' }}>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 18 }}>
+          {[
+            ['dashboard', '대시보드'],
+            ['collect', '수집 링크'],
+            ['settings', '운영 설정'],
+          ].map(([view, label]) => (
+            <button
+              key={view}
+              type="button"
+              onClick={() => setActiveView(view)}
+              style={{
+                height: 36,
+                padding: '0 16px',
+                borderRadius: 9,
+                border: `1px solid ${activeView === view ? COLORS.primary : COLORS.border}`,
+                background: activeView === view ? COLORS.primary : 'white',
+                color: activeView === view ? 'white' : COLORS.textSecondary,
+                fontSize: 12,
+                fontWeight: 850,
+                cursor: 'pointer',
+                boxShadow: activeView === view ? '0 2px 10px rgba(27,58,92,0.18)' : '0 1px 2px rgba(0,0,0,0.04)',
+              }}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {activeView === 'collect' ? (
+          <SourceCollectionPanel />
+        ) : activeView === 'settings' ? (
+          <OperationsSettingsPanel />
+        ) : (
+          <>
 
         {/* ────── Period Filter ────── */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 20 }}>
@@ -1224,6 +1714,9 @@ export default function App() {
               ))}
             </div>
           </div>
+        )}
+
+          </>
         )}
 
         {/* ────── Footer ────── */}
