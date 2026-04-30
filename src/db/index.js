@@ -96,6 +96,28 @@ export async function initDB() {
         updated_at TIMESTAMPTZ DEFAULT NOW()
       );
 
+      -- Source Analysis (URL/text learning before draft generation)
+      CREATE TABLE IF NOT EXISTS source_analyses (
+        id SERIAL PRIMARY KEY,
+        source_url TEXT,
+        source_text_preview TEXT,
+        keyword TEXT,
+        category TEXT,
+        platform TEXT DEFAULT 'blog',
+        title TEXT,
+        plain_text TEXT,
+        char_count INTEGER DEFAULT 0,
+        kw_count INTEGER DEFAULT 0,
+        image_count INTEGER DEFAULT 0,
+        subheadings JSONB DEFAULT '[]',
+        links JSONB DEFAULT '[]',
+        has_video BOOLEAN DEFAULT FALSE,
+        platform_guess TEXT,
+        fetch_status TEXT DEFAULT 'pending',
+        error_message TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+
       -- Content Jobs (generated drafts + QR + sheet sync)
       CREATE TABLE IF NOT EXISTS content_jobs (
         id SERIAL PRIMARY KEY,
@@ -133,6 +155,12 @@ export async function initDB() {
         updated_at TIMESTAMPTZ DEFAULT NOW()
       );
 
+      ALTER TABLE content_jobs ADD COLUMN IF NOT EXISTS source_analysis_id INTEGER;
+      ALTER TABLE content_jobs ADD COLUMN IF NOT EXISTS publish_account_id TEXT;
+      ALTER TABLE content_jobs ADD COLUMN IF NOT EXISTS publish_account_label TEXT;
+      ALTER TABLE content_jobs ADD COLUMN IF NOT EXISTS learning_status TEXT DEFAULT '학습 필요';
+      ALTER TABLE content_jobs ADD COLUMN IF NOT EXISTS login_status TEXT DEFAULT '계정 확인 필요';
+
       -- Content Job Event Log
       CREATE TABLE IF NOT EXISTS content_job_events (
         id SERIAL PRIMARY KEY,
@@ -153,6 +181,8 @@ export async function initDB() {
       CREATE INDEX IF NOT EXISTS idx_content_jobs_qr_status ON content_jobs(qr_status);
       CREATE INDEX IF NOT EXISTS idx_content_jobs_sheet_sync_status ON content_jobs(sheet_sync_status);
       CREATE INDEX IF NOT EXISTS idx_content_job_events_job_id ON content_job_events(job_id);
+      CREATE INDEX IF NOT EXISTS idx_source_analyses_created_at ON source_analyses(created_at);
+      CREATE INDEX IF NOT EXISTS idx_source_analyses_keyword ON source_analyses(keyword);
     `);
     console.log('[DB] Tables initialized successfully');
   } finally {

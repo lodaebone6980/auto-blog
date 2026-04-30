@@ -20,6 +20,146 @@ function makeNaverQrName(keyword, campaignName) {
   return `${safeKeyword}_${date}_${safeCampaign}`;
 }
 
+function escapeRegExp(value) {
+  return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function decodeHtmlEntities(text = '') {
+  const named = {
+    amp: '&',
+    lt: '<',
+    gt: '>',
+    quot: '"',
+    apos: "'",
+    nbsp: ' ',
+  };
+  return String(text)
+    .replace(/&(#x?[0-9a-f]+|[a-z]+);/gi, (_, entity) => {
+      if (entity[0] === '#') {
+        const isHex = entity[1]?.toLowerCase() === 'x';
+        const code = parseInt(entity.slice(isHex ? 2 : 1), isHex ? 16 : 10);
+        return Number.isFinite(code) ? String.fromCodePoint(code) : '';
+      }
+      return named[entity.toLowerCase()] || '';
+    })
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function stripHtml(html = '') {
+  return decodeHtmlEntities(
+    String(html)
+      .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+      .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+      .replace(/<noscript[\s\S]*?<\/noscript>/gi, ' ')
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/(p|div|li|h[1-6]|section|article)>/gi, '\n')
+      .replace(/<[^>]+>/g, ' ')
+  );
+}
+
+function pickMetaContent(html, property) {
+  const safeProperty = escapeRegExp(property);
+  const meta = html.match(new RegExp(`<meta[^>]+(?:property|name)=["']${safeProperty}["'][^>]+content=["']([^"']+)["'][^>]*>`, 'i'));
+  return meta ? decodeHtmlEntities(meta[1]) : '';
+}
+
+function extractTitle(html, fallback = '') {
+  const ogTitle = pickMetaContent(html, 'og:title');
+  if (ogTitle) return ogTitle;
+  const title = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  return title ? stripHtml(title[1]) : fallback;
+}
+
+function extractHeadings(html) {
+  return [...html.matchAll(/<h[1-4][^>]*>([\s\S]*?)<\/h[1-4]>/gi)]
+    .map((match) => stripHtml(match[1]))
+    .filter(Boolean)
+    .slice(0, 20);
+}
+
+function extractLinks(html) {
+  return [...html.matchAll(/<a[^>]+href=["']([^"']+)["']/gi)]
+    .map((match) => match[1])
+    .filter((href) => href && !href.startsWith('#') && !href.startsWith('javascript:'))
+    .slice(0, 40);
+}
+
+function guessPlatform(sourceUrl, fallback = 'blog') {
+  if (!sourceUrl) return fallback;
+  if (/cafe\.naver\.com/i.test(sourceUrl)) return 'cafe';
+  if (/blog\.naver\.com|m\.blog\.naver\.com/i.test(sourceUrl)) return 'blog';
+  if (/brunch\.co\.kr/i.test(sourceUrl)) return 'brunch';
+  if (/contents\.premium\.naver\.com/i.test(sourceUrl)) return 'premium';
+  return fallback;
+}
+
+async function fetchSourceHtml(sourceUrl) {
+  const url = new URL(sourceUrl);
+  if (!['http:', 'https:'].includes(url.protocol)) {
+    throw new Error('http/https URL만 분석할 수 있습니다');
+  }
+
+  const response = await fetch(url.toString(), {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 NaviWrite/1.0',
+      'Accept': 'text/html,application/xhtml+xml',
+      'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.7,en;q=0.6',
+    },
+    redirect: 'follow',
+  });
+
+  if (!response.ok) {
+    throw new Error(`원문 URL 응답 오류 (${response.status})`);
+  }
+
+  let html = await response.text();
+  const frameMatch = html.match(/<iframe[^>]+(?:id|name)=["']mainFrame["'][^>]+src=["']([^"']+)["']/i);
+  if (frameMatch) {
+    const frameUrl = new URL(frameMatch[1], url).toString();
+    const frameResponse = await fetch(frameUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 NaviWrite/1.0',
+        'Accept': 'text/html,application/xhtml+xml',
+        'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.7,en;q=0.6',
+      },
+      redirect: 'follow',
+    });
+    if (frameResponse.ok) html = await frameResponse.text();
+  }
+
+  return html.slice(0, 1_500_000);
+}
+
+function buildSourceAnalysis({ sourceUrl, sourceText, html, keyword, category, platform, fetchStatus, errorMessage }) {
+  const title = html ? extractTitle(html, sourceUrl || '붙여넣기 원문') : '붙여넣기 원문';
+  const plainText = sourceText ? decodeHtmlEntities(sourceText) : stripHtml(html || '');
+  const compactText = plainText.replace(/\s/g, '');
+  const kwCount = keyword ? (plainText.match(new RegExp(escapeRegExp(keyword), 'gi')) || []).length : 0;
+  const imageCount = html ? (html.match(/<img\b/gi) || []).length : 0;
+  const subheadings = html ? extractHeadings(html) : [];
+  const links = html ? extractLinks(html) : [];
+
+  return {
+    sourceUrl: sourceUrl || null,
+    sourceTextPreview: plainText.slice(0, 500),
+    keyword,
+    category,
+    platform,
+    title,
+    plainText: plainText.slice(0, 12000),
+    charCount: compactText.length,
+    kwCount,
+    imageCount,
+    subheadings,
+    links,
+    hasVideo: html ? /<video\b|youtube\.com|tv\.naver\.com|<iframe\b/i.test(html) : false,
+    platformGuess: guessPlatform(sourceUrl, platform),
+    fetchStatus,
+    errorMessage,
+  };
+}
+
 function normalizeJobInput(body = {}) {
   const scores = body.scores || {};
   const qrStatus = body.qr_status || body.qrStatus || 'QR 생성 필요';
@@ -55,6 +195,11 @@ function normalizeJobInput(body = {}) {
     sheet_sync_status: body.sheet_sync_status || body.sheetSyncStatus || '대기중',
     notion_url: body.notion_url || body.notionUrl || null,
     error_message: body.error_message || body.errorMessage || null,
+    source_analysis_id: body.source_analysis_id || body.sourceAnalysisId || null,
+    publish_account_id: body.publish_account_id || body.publishAccountId || null,
+    publish_account_label: body.publish_account_label || body.publishAccountLabel || null,
+    learning_status: body.learning_status || body.learningStatus || '학습 필요',
+    login_status: body.login_status || body.loginStatus || '계정 확인 필요',
   };
 }
 
@@ -75,6 +220,11 @@ function jobToSheetPayload(job) {
     generationStatus: job.generation_status,
     editorStatus: job.editor_status,
     sheetSyncStatus: job.sheet_sync_status,
+    sourceAnalysisId: job.source_analysis_id,
+    publishAccountId: job.publish_account_id,
+    publishAccountLabel: job.publish_account_label,
+    learningStatus: job.learning_status,
+    loginStatus: job.login_status,
     charCount: job.char_count,
     kwCount: job.kw_count,
     imageCount: job.image_count,
@@ -272,6 +422,97 @@ router.delete('/posts/:id', async (req, res) => {
   }
 });
 
+// --- Source URL/Text Learning ---
+router.post('/content-jobs/source/analyze', async (req, res) => {
+  const { sourceUrl, sourceText, keyword, category = 'general', platform = 'blog' } = req.body || {};
+
+  if (!sourceUrl && !sourceText) {
+    return res.status(400).json({ error: 'sourceUrl or sourceText is required' });
+  }
+
+  let html = '';
+  let fetchStatus = sourceText ? 'text_provided' : 'fetched';
+  let errorMessage = null;
+
+  try {
+    if (sourceUrl) {
+      html = await fetchSourceHtml(sourceUrl);
+    }
+  } catch (err) {
+    fetchStatus = 'fetch_failed';
+    errorMessage = err.message;
+  }
+
+  const analysis = buildSourceAnalysis({
+    sourceUrl,
+    sourceText,
+    html,
+    keyword,
+    category,
+    platform,
+    fetchStatus,
+    errorMessage,
+  });
+
+  try {
+    const { rows } = await pool.query(
+      `INSERT INTO source_analyses (
+        source_url, source_text_preview, keyword, category, platform, title, plain_text,
+        char_count, kw_count, image_count, subheadings, links, has_video,
+        platform_guess, fetch_status, error_message
+       )
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+       RETURNING *`,
+      [
+        analysis.sourceUrl,
+        analysis.sourceTextPreview,
+        analysis.keyword,
+        analysis.category,
+        analysis.platform,
+        analysis.title,
+        analysis.plainText,
+        analysis.charCount,
+        analysis.kwCount,
+        analysis.imageCount,
+        JSON.stringify(analysis.subheadings),
+        JSON.stringify(analysis.links),
+        analysis.hasVideo,
+        analysis.platformGuess,
+        analysis.fetchStatus,
+        analysis.errorMessage,
+      ]
+    );
+
+    res.json({
+      analysis: {
+        id: rows[0].id,
+        sourceUrl: rows[0].source_url,
+        keyword: rows[0].keyword,
+        category: rows[0].category,
+        platform: rows[0].platform,
+        title: rows[0].title,
+        plainText: rows[0].plain_text,
+        charCount: rows[0].char_count,
+        kwCount: rows[0].kw_count,
+        imageCount: rows[0].image_count,
+        subheadings: rows[0].subheadings || [],
+        links: rows[0].links || [],
+        hasVideo: rows[0].has_video,
+        platformGuess: rows[0].platform_guess,
+        fetchStatus: rows[0].fetch_status,
+        errorMessage: rows[0].error_message,
+        createdAt: rows[0].created_at,
+      },
+      recommendations: {
+        nextStep: '발행 계정과 채널을 확인한 뒤 글 생성을 진행하세요.',
+        qrPosition: '도입 CTA 이후 또는 2번째 섹션 뒤',
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // --- Content Jobs (draft + Naver QR + Google Sheets workflow) ---
 router.get('/content-jobs', async (req, res) => {
   try {
@@ -321,7 +562,8 @@ router.post('/content-jobs', async (req, res) => {
         seo_score, geo_score, aeo_score, total_score,
         naver_qr_name, naver_qr_image_url, naver_qr_manage_url,
         qr_status, generation_status, editor_status, sheet_row_id, sheet_sync_status,
-        notion_url, error_message
+        notion_url, error_message, source_analysis_id, publish_account_id,
+        publish_account_label, learning_status, login_status
        )
        VALUES (
         $1,$2,$3,$4,$5,$6,$7,$8,
@@ -329,7 +571,7 @@ router.post('/content-jobs', async (req, res) => {
         $15,$16,$17,$18,
         $19,$20,$21,
         $22,$23,$24,$25,$26,
-        $27,$28
+        $27,$28,$29,$30,$31,$32,$33
        )
        RETURNING *`,
       [
@@ -339,7 +581,8 @@ router.post('/content-jobs', async (req, res) => {
         job.seo_score, job.geo_score, job.aeo_score, job.total_score,
         qrName, job.naver_qr_image_url, job.naver_qr_manage_url,
         job.qr_status, generationStatus, job.editor_status, job.sheet_row_id,
-        job.sheet_sync_status, job.notion_url, job.error_message,
+        job.sheet_sync_status, job.notion_url, job.error_message, job.source_analysis_id,
+        job.publish_account_id, job.publish_account_label, job.learning_status, job.login_status,
       ]
     );
 
@@ -376,6 +619,8 @@ router.patch('/content-jobs/:id', async (req, res) => {
       'seo_score', 'geo_score', 'aeo_score', 'total_score', 'naver_qr_name',
       'naver_qr_image_url', 'naver_qr_manage_url', 'qr_status', 'generation_status',
       'editor_status', 'sheet_row_id', 'sheet_sync_status', 'notion_url', 'error_message',
+      'source_analysis_id', 'publish_account_id', 'publish_account_label',
+      'learning_status', 'login_status',
     ];
     const normalized = normalizeJobInput(req.body);
     const aliases = {
@@ -401,6 +646,11 @@ router.patch('/content-jobs/:id', async (req, res) => {
       sheet_sync_status: ['sheet_sync_status', 'sheetSyncStatus'],
       notion_url: ['notion_url', 'notionUrl'],
       error_message: ['error_message', 'errorMessage'],
+      source_analysis_id: ['source_analysis_id', 'sourceAnalysisId'],
+      publish_account_id: ['publish_account_id', 'publishAccountId'],
+      publish_account_label: ['publish_account_label', 'publishAccountLabel'],
+      learning_status: ['learning_status', 'learningStatus'],
+      login_status: ['login_status', 'loginStatus'],
     };
     const values = [];
     const sets = [];
