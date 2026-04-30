@@ -635,6 +635,198 @@ const sectionStyle = {
   padding: 0,
 };
 
+function GuideModal({ onClose }) {
+  const steps = [
+    {
+      title: '확장프로그램 설치',
+      items: [
+        '우측 상단의 확장프로그램 버튼을 눌러 zip 파일을 내려받습니다.',
+        '크롬 확장 프로그램 관리 화면에서 개발자 모드를 켠 뒤 압축을 푼 폴더를 로드합니다.',
+        '네이버 블로그, 카페, 프리미엄콘텐츠, 브런치 작업 전 이 사이트와 확장프로그램을 함께 열어둡니다.',
+      ],
+    },
+    {
+      title: '단건 글 등록',
+      items: [
+        '확장프로그램에서 키워드, 카테고리, 참고 URL, CTA 링크, QR 연결 링크를 입력합니다.',
+        '톤/어체 옵션을 선택하면 예시 문장을 재사용하지 않고 새 글 구조로 생성합니다.',
+        '등록된 작업은 대시보드의 글/QR 작업 목록에 바로 저장됩니다.',
+      ],
+    },
+    {
+      title: 'Google Sheets 일괄 등록',
+      items: [
+        '시트에 키워드, 링크, 참고 URL, 상태값을 행 단위로 입력합니다.',
+        '백엔드가 시트를 읽어 작업을 생성하고 결과 요약을 다시 동기화합니다.',
+        '상태가 오류로 바뀐 행은 대시보드에서 원인을 확인한 뒤 다시 실행합니다.',
+      ],
+    },
+    {
+      title: '네이버 QR 생성',
+      items: [
+        'QR 생성 필요 상태의 작업에서 네이버 QR 버튼을 누르면 qr.naver.com 생성 화면이 열립니다.',
+        '로그인은 사용자가 직접 하고, 비밀번호는 저장하지 않습니다.',
+        'QR 이름, 연결 링크, QR 이미지, 관리 URL이 수집되어 DB와 대시보드에 저장됩니다.',
+      ],
+    },
+    {
+      title: '검수와 발행',
+      items: [
+        '글자수, 키워드 반복수, 이미지 수, SEO/GEO/AEO 점수를 확인합니다.',
+        'QR 이미지는 도입 CTA 이후 또는 2번째 섹션 뒤에 삽입하는 구성을 기본으로 봅니다.',
+        'Notion은 자동 동기화하지 않고 선택한 글만 수동으로 내보냅니다.',
+      ],
+    },
+  ];
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="guide-title"
+      onMouseDown={onClose}
+      style={{
+        position: 'fixed',
+        inset: 0,
+        zIndex: 50,
+        background: 'rgba(15, 23, 42, 0.52)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: 18,
+      }}
+    >
+      <div
+        onMouseDown={e => e.stopPropagation()}
+        style={{
+          width: 'min(760px, 100%)',
+          maxHeight: '88vh',
+          overflowY: 'auto',
+          background: 'white',
+          borderRadius: 12,
+          boxShadow: '0 22px 60px rgba(15,23,42,0.28)',
+          border: `1px solid ${COLORS.border}`,
+        }}
+      >
+        <div style={{
+          padding: '22px 24px 16px',
+          borderBottom: `1px solid ${COLORS.border}`,
+          display: 'flex',
+          alignItems: 'flex-start',
+          justifyContent: 'space-between',
+          gap: 16,
+        }}>
+          <div>
+            <div style={{
+              fontSize: 11,
+              fontWeight: 800,
+              color: COLORS.accent,
+              letterSpacing: 0,
+              marginBottom: 6,
+            }}>
+              QUICK GUIDE
+            </div>
+            <h2 id="guide-title" style={{ fontSize: 22, fontWeight: 850, color: COLORS.primary, marginBottom: 6 }}>
+              자동발행 사이트 사용법
+            </h2>
+            <p style={{ fontSize: 13, color: COLORS.textSecondary, lineHeight: 1.6 }}>
+              확장프로그램 설치부터 글 생성, 네이버 QR 저장, 검수까지 한 번에 확인하세요.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="사용법 닫기"
+            style={{
+              width: 34,
+              height: 34,
+              borderRadius: 8,
+              border: `1px solid ${COLORS.border}`,
+              background: '#f8fafc',
+              color: COLORS.textSecondary,
+              fontSize: 18,
+              fontWeight: 800,
+              cursor: 'pointer',
+              lineHeight: 1,
+            }}
+          >
+            x
+          </button>
+        </div>
+
+        <div style={{ padding: '18px 24px 24px' }}>
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))',
+            gap: 12,
+          }}>
+            {steps.map((step, idx) => (
+              <section
+                key={step.title}
+                style={{
+                  border: `1px solid ${COLORS.border}`,
+                  borderRadius: 10,
+                  padding: 16,
+                  background: idx === 0 ? '#f8fbff' : 'white',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+                  <span style={{
+                    width: 28,
+                    height: 28,
+                    borderRadius: 8,
+                    background: idx === 0 ? COLORS.primary : '#eef2f7',
+                    color: idx === 0 ? 'white' : COLORS.primary,
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    fontSize: 12,
+                    fontWeight: 850,
+                    flex: '0 0 auto',
+                  }}>
+                    {String(idx + 1).padStart(2, '0')}
+                  </span>
+                  <h3 style={{ fontSize: 15, fontWeight: 850, color: COLORS.textPrimary }}>
+                    {step.title}
+                  </h3>
+                </div>
+                <ul style={{ listStyle: 'none', display: 'grid', gap: 8 }}>
+                  {step.items.map(item => (
+                    <li key={item} style={{
+                      display: 'flex',
+                      gap: 8,
+                      fontSize: 12,
+                      color: COLORS.textSecondary,
+                      lineHeight: 1.55,
+                    }}>
+                      <span style={{ color: COLORS.success, fontWeight: 900, marginTop: 1 }}>✓</span>
+                      <span>{item}</span>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            ))}
+          </div>
+
+          <div style={{
+            marginTop: 14,
+            padding: '13px 14px',
+            borderRadius: 10,
+            background: '#fff7ed',
+            border: '1px solid #fed7aa',
+            color: '#9a3412',
+            fontSize: 12,
+            lineHeight: 1.6,
+          }}>
+            운영 기준: DB를 원본 저장소로 사용하고 Google Sheets는 작업 큐와 결과 요약 동기화용으로 씁니다.
+            네이버 QR은 화면 자동화 방식이라 로그인 세션이 필요합니다.
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ────────────────────── Main App ────────────────────── */
 
 export default function App() {
@@ -647,6 +839,7 @@ export default function App() {
   const [period, setPeriod] = useState('week');
   const [loading, setLoading] = useState(true);
   const [currentTime, setCurrentTime] = useState(new Date());
+  const [guideOpen, setGuideOpen] = useState(false);
 
   // Posts table state
   const [search, setSearch] = useState('');
@@ -687,6 +880,15 @@ export default function App() {
   }, [period]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
+
+  useEffect(() => {
+    if (!guideOpen) return undefined;
+    const onKeyDown = event => {
+      if (event.key === 'Escape') setGuideOpen(false);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [guideOpen]);
 
   // Filtered + sorted posts
   const filteredPosts = useMemo(() => {
@@ -777,6 +979,8 @@ export default function App() {
         ::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 3px; }
       `}</style>
 
+      {guideOpen && <GuideModal onClose={() => setGuideOpen(false)} />}
+
       {/* ────── Header ────── */}
       <header style={{
         background: 'linear-gradient(135deg, #1B3A5C 0%, #2E75B6 100%)',
@@ -797,6 +1001,20 @@ export default function App() {
           </div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+          <button
+            type="button"
+            onClick={() => setGuideOpen(true)}
+            style={{
+              display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+              height: 34, padding: '0 14px', borderRadius: 18,
+              border: '1px solid rgba(255,255,255,0.26)',
+              background: 'rgba(255,255,255,0.14)', color: 'white',
+              fontSize: 12, fontWeight: 800, boxShadow: '0 2px 10px rgba(0,0,0,0.10)',
+              whiteSpace: 'nowrap', cursor: 'pointer',
+            }}
+          >
+            사용법
+          </button>
           <a
             href="/downloads/naviwrite-extension.zip"
             download
