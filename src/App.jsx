@@ -792,11 +792,24 @@ export default function App() {
             color: 'white', fontWeight: 800, fontSize: 18, backdropFilter: 'blur(4px)',
           }}>N</div>
           <div>
-            <h1 style={{ fontSize: 18, fontWeight: 800, color: 'white', letterSpacing: '-0.3px' }}>Auto Blog Dashboard</h1>
-            <p style={{ fontSize: 11, color: 'rgba(255,255,255,0.7)' }}>NaviWrite SEO/GEO/AEO 관리</p>
+            <h1 style={{ fontSize: 18, fontWeight: 800, color: 'white', letterSpacing: '-0.3px' }}>자동발행 사이트</h1>
+            <p style={{ fontSize: 11, color: 'rgba(255,255,255,0.7)' }}>NaviWrite SEO/GEO/AEO 자동 발행 관리</p>
           </div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+          <a
+            href="/downloads/naviwrite-extension.zip"
+            download
+            style={{
+              display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+              height: 34, padding: '0 14px', borderRadius: 18,
+              background: 'white', color: COLORS.primary, textDecoration: 'none',
+              fontSize: 12, fontWeight: 800, boxShadow: '0 2px 10px rgba(0,0,0,0.12)',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            확장프로그램
+          </a>
           <div style={{
             display: 'flex', alignItems: 'center', gap: 6,
             background: 'rgba(255,255,255,0.12)', padding: '5px 12px', borderRadius: 20,
@@ -997,7 +1010,7 @@ export default function App() {
 
         {/* ────── Footer ────── */}
         <footer style={{ textAlign: 'center', padding: '24px 0 16px', fontSize: 11, color: COLORS.textMuted }}>
-          Auto Blog v1.0.0 · NaviWrite · Powered by Railway
+          자동발행 사이트 v1.0.0 · NaviWrite · Powered by Railway
         </footer>
       </div>
     </div>
