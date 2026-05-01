@@ -24,6 +24,10 @@ function safeId(value) {
   return String(value || `profile_${Date.now()}`).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80);
 }
 
+function credentialFileFor(id) {
+  return path.join(DATA_DIR, `${safeId(id)}.credential.json`);
+}
+
 async function ensureStore() {
   await fs.mkdir(PROFILE_DIR, { recursive: true });
   if (!existsSync(STORE_FILE)) {
@@ -86,6 +90,7 @@ function sessionStatus(profile) {
   const inactivityAge = lastActivity ? now - lastActivity : 0;
   const needsLoginCheck = !lastLoginChecked || loginCheckAge > (profile.loginCheckIntervalMs || LOGIN_CHECK_INTERVAL_MS);
   const needsActivityCheck = Boolean(lastActivity && inactivityAge > (profile.inactivityRecheckMs || INACTIVITY_RECHECK_MS));
+
   return {
     loginStatus: profile.loginStatus || '로그인 체크 필요',
     needsLoginCheck: needsLoginCheck || needsActivityCheck,
@@ -94,6 +99,55 @@ function sessionStatus(profile) {
     inactivityAgeMs: inactivityAge || null,
     lastLoginCheckedAt: profile.lastLoginCheckedAt || null,
     lastActivityAt: profile.lastActivityAt || null,
+  };
+}
+
+async function credentialStatus(id) {
+  const file = credentialFileFor(id);
+  if (!existsSync(file)) {
+    return {
+      hasCredential: false,
+      username: '',
+      mode: 'none',
+      updatedAt: null,
+      verifiedAt: null,
+    };
+  }
+
+  const raw = await fs.readFile(file, 'utf8');
+  const data = JSON.parse(raw || '{}');
+  return {
+    hasCredential: Boolean(data.encryptedPassword),
+    username: data.username || '',
+    mode: data.mode || 'windows-dpapi',
+    updatedAt: data.updatedAt || null,
+    verifiedAt: data.verifiedAt || null,
+  };
+}
+
+async function loginPlanFor(profile) {
+  const session = sessionStatus(profile);
+  const credential = await credentialStatus(profile.id);
+  let recommendedAction = 'ready';
+  let reason = '최근 로그인 체크 기준으로 바로 사용할 수 있습니다.';
+
+  if (session.needsLoginCheck && credential.hasCredential) {
+    recommendedAction = 'verify_saved_credential_or_open_login';
+    reason = '체크 주기가 지났습니다. 저장된 로컬 자격증명을 확인하거나 로그인 창을 열어 재확인하세요.';
+  } else if (session.needsLoginCheck) {
+    recommendedAction = 'open_login_and_confirm';
+    reason = '저장된 자격증명이 없어 로그인 창에서 직접 확인해야 합니다.';
+  } else if (!credential.hasCredential) {
+    recommendedAction = 'session_only';
+    reason = '세션은 최근 확인됐지만 저장된 ID/PW는 없습니다.';
+  }
+
+  return {
+    profileId: profile.id,
+    recommendedAction,
+    reason,
+    session,
+    credential,
   };
 }
 
@@ -142,6 +196,11 @@ async function updateProfile(id, patch) {
   return found;
 }
 
+async function readProfile(id) {
+  const store = await readStore();
+  return store.profiles.find((item) => item.id === id) || null;
+}
+
 function runPowerShell(command, env = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], {
@@ -162,10 +221,23 @@ function runPowerShell(command, env = {}) {
 
 async function encryptSecretLocal(secret) {
   if (process.platform !== 'win32') {
-    throw new Error('현재 로컬 암호화 저장은 Windows DPAPI에서만 지원됩니다');
+    throw new Error('Local credential encryption currently requires Windows DPAPI.');
   }
   return runPowerShell('$s=ConvertTo-SecureString $env:NAVIWRITE_SECRET -AsPlainText -Force; ConvertFrom-SecureString $s', {
     NAVIWRITE_SECRET: secret,
+  });
+}
+
+async function verifyEncryptedSecret(encryptedSecret) {
+  if (process.platform !== 'win32') {
+    throw new Error('Local credential verification currently requires Windows DPAPI.');
+  }
+  await runPowerShell(`
+    $s=ConvertTo-SecureString $env:NAVIWRITE_SECRET
+    $b=[Runtime.InteropServices.Marshal]::SecureStringToBSTR($s)
+    try { [void][Runtime.InteropServices.Marshal]::PtrToStringBSTR($b) } finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($b) }
+  `, {
+    NAVIWRITE_SECRET: encryptedSecret,
   });
 }
 
@@ -175,16 +247,34 @@ function vpnPlan({ provider = 'nordvpn', target = '', execute = false }) {
       provider,
       execute,
       command: target ? ['nordvpn', '-c', '-g', target] : ['nordvpn', '-c'],
+      note: 'execute=true 요청일 때만 실제 명령을 실행합니다.',
     };
   }
   if (provider === 'mullvad') {
     return {
       provider,
       execute,
-      command: target ? ['mullvad', 'relay', 'set', 'location', target, '&&', 'mullvad', 'connect'] : ['mullvad', 'connect'],
+      command: target ? ['mullvad', 'relay', 'set', 'location', target] : ['mullvad', 'connect'],
+      followUpCommand: target ? ['mullvad', 'connect'] : [],
+      note: 'Mullvad 위치 변경 뒤 연결은 수동 확인 권장입니다.',
     };
   }
-  return { provider: 'manual', execute: false, command: [] };
+  return {
+    provider: 'manual',
+    execute: false,
+    command: [],
+    note: '수동 VPN 전환 프로필입니다.',
+  };
+}
+
+async function profilePayload(profile) {
+  const credential = await credentialStatus(profile.id);
+  return {
+    ...profile,
+    session: sessionStatus(profile),
+    credential,
+    hasCredential: credential.hasCredential,
+  };
 }
 
 async function router(req, res) {
@@ -198,50 +288,83 @@ async function router(req, res) {
       return send(res, 200, {
         status: 'ok',
         service: 'naviwrite-runner',
-        version: '0.1.0',
+        version: '0.2.0',
         dataDir: DATA_DIR,
         profileDir: PROFILE_DIR,
         browserFound: Boolean(findBrowserExecutable()),
+        credentialStore: process.platform === 'win32' ? 'windows-dpapi-local' : 'unsupported',
         time: nowIso(),
+      });
+    }
+
+    if (req.method === 'GET' && requestUrl.pathname === '/startup-check') {
+      const store = await readStore();
+      const profiles = await Promise.all(store.profiles.map(loginPlanFor));
+      return send(res, 200, {
+        ok: true,
+        checkedAt: nowIso(),
+        profiles,
       });
     }
 
     if (req.method === 'GET' && requestUrl.pathname === '/profiles') {
       const store = await readStore();
-      return send(res, 200, store.profiles.map((profile) => ({
-        ...profile,
-        session: sessionStatus(profile),
-        hasCredential: profile.credentialMode === 'dpapi',
-      })));
+      const profiles = await Promise.all(store.profiles.map(profilePayload));
+      return send(res, 200, profiles);
     }
 
     if (req.method === 'POST' && requestUrl.pathname === '/profiles') {
       const profile = await upsertProfile(await readBody(req));
-      return send(res, 200, { profile, session: sessionStatus(profile) });
+      return send(res, 200, {
+        profile: await profilePayload(profile),
+        plan: await loginPlanFor(profile),
+      });
     }
 
     if (parts[0] === 'profiles' && parts[1]) {
-      const id = parts[1];
+      const id = safeId(parts[1]);
 
       if (req.method === 'PATCH' && parts.length === 2) {
         const profile = await updateProfile(id, await readBody(req));
         if (!profile) return send(res, 404, { error: 'profile not found' });
-        return send(res, 200, { profile, session: sessionStatus(profile) });
+        return send(res, 200, {
+          profile: await profilePayload(profile),
+          plan: await loginPlanFor(profile),
+        });
       }
 
       if (req.method === 'GET' && parts[2] === 'session-status') {
-        const store = await readStore();
-        const profile = store.profiles.find((item) => item.id === id);
+        const profile = await readProfile(id);
         if (!profile) return send(res, 404, { error: 'profile not found' });
-        return send(res, 200, { profileId: id, session: sessionStatus(profile) });
+        return send(res, 200, {
+          profileId: id,
+          session: sessionStatus(profile),
+          credential: await credentialStatus(id),
+          plan: await loginPlanFor(profile),
+        });
+      }
+
+      if (req.method === 'GET' && parts[2] === 'login-plan') {
+        const profile = await readProfile(id);
+        if (!profile) return send(res, 404, { error: 'profile not found' });
+        return send(res, 200, await loginPlanFor(profile));
+      }
+
+      if (req.method === 'POST' && parts[2] === 'startup-check') {
+        const profile = await readProfile(id);
+        if (!profile) return send(res, 404, { error: 'profile not found' });
+        return send(res, 200, {
+          ok: true,
+          checkedAt: nowIso(),
+          plan: await loginPlanFor(profile),
+        });
       }
 
       if (req.method === 'POST' && parts[2] === 'open-login') {
-        const store = await readStore();
-        const profile = store.profiles.find((item) => item.id === id);
+        const profile = await readProfile(id);
         if (!profile) return send(res, 404, { error: 'profile not found' });
         const browser = findBrowserExecutable();
-        if (!browser) return send(res, 500, { error: 'Chrome 또는 Edge 실행 파일을 찾지 못했습니다' });
+        if (!browser) return send(res, 500, { error: 'Chrome or Edge executable was not found.' });
         const child = spawn(browser, [
           `--user-data-dir=${profile.profilePath}`,
           '--no-first-run',
@@ -259,39 +382,89 @@ async function router(req, res) {
           lastActivityAt: nowIso(),
         });
         if (!profile) return send(res, 404, { error: 'profile not found' });
-        return send(res, 200, { profile, session: sessionStatus(profile) });
+        return send(res, 200, {
+          profile: await profilePayload(profile),
+          plan: await loginPlanFor(profile),
+        });
       }
 
       if (req.method === 'POST' && parts[2] === 'activity') {
         const profile = await updateProfile(id, { lastActivityAt: nowIso() });
         if (!profile) return send(res, 404, { error: 'profile not found' });
-        return send(res, 200, { profile, session: sessionStatus(profile) });
+        return send(res, 200, {
+          profile: await profilePayload(profile),
+          plan: await loginPlanFor(profile),
+        });
       }
 
-      if (req.method === 'POST' && parts[2] === 'credentials') {
+      if (req.method === 'GET' && parts[2] === 'credential-status') {
+        const profile = await readProfile(id);
+        if (!profile) return send(res, 404, { error: 'profile not found' });
+        return send(res, 200, { profileId: id, credential: await credentialStatus(id) });
+      }
+
+      if (req.method === 'POST' && parts[2] === 'credentials' && parts[3] === 'verify') {
+        const profile = await readProfile(id);
+        if (!profile) return send(res, 404, { error: 'profile not found' });
+        const file = credentialFileFor(id);
+        if (!existsSync(file)) return send(res, 404, { error: 'credential not found' });
+        const raw = JSON.parse(await fs.readFile(file, 'utf8'));
+        await verifyEncryptedSecret(raw.encryptedPassword);
+        raw.verifiedAt = nowIso();
+        await fs.writeFile(file, JSON.stringify(raw, null, 2), 'utf8');
+        return send(res, 200, { ok: true, profileId: id, credential: await credentialStatus(id) });
+      }
+
+      if (req.method === 'POST' && parts[2] === 'credentials' && parts.length === 3) {
         const body = await readBody(req);
-        if (!body.username || !body.password) return send(res, 400, { error: 'username and password are required' });
+        if (!body.username || !body.password) {
+          return send(res, 400, { error: 'username and password are required' });
+        }
         const encryptedPassword = await encryptSecretLocal(body.password);
-        const credentialFile = path.join(DATA_DIR, `${id}.credential.json`);
+        const credentialFile = credentialFileFor(id);
         await fs.writeFile(credentialFile, JSON.stringify({
           username: body.username,
           encryptedPassword,
           mode: 'windows-dpapi',
           updatedAt: nowIso(),
+          verifiedAt: null,
         }, null, 2), 'utf8');
         const profile = await updateProfile(id, {
           usernameHint: body.username,
           credentialMode: 'dpapi',
           credentialKey: `naviwrite/${id}`,
         });
-        return send(res, 200, { ok: true, profileId: id, profile, stored: 'local-dpapi' });
+        return send(res, 200, {
+          ok: true,
+          profileId: id,
+          profile: profile ? await profilePayload(profile) : null,
+          credential: await credentialStatus(id),
+          stored: 'local-windows-dpapi',
+        });
+      }
+
+      if (req.method === 'DELETE' && parts[2] === 'credentials') {
+        const profile = await readProfile(id);
+        if (!profile) return send(res, 404, { error: 'profile not found' });
+        const file = credentialFileFor(id);
+        if (existsSync(file)) await fs.unlink(file);
+        const updated = await updateProfile(id, {
+          credentialMode: 'none',
+          usernameHint: '',
+        });
+        return send(res, 200, {
+          ok: true,
+          profileId: id,
+          profile: await profilePayload(updated),
+          credential: await credentialStatus(id),
+        });
       }
     }
 
     if (req.method === 'GET' && requestUrl.pathname === '/vpn/status') {
       return send(res, 200, {
         status: 'manual',
-        message: 'VPN 제어는 수동 승인 또는 execute=true 요청에서만 실행됩니다',
+        message: 'VPN execution is manual/dry-run unless execute=true is explicitly requested.',
         time: nowIso(),
       });
     }
@@ -300,8 +473,11 @@ async function router(req, res) {
       const body = await readBody(req);
       const plan = vpnPlan(body);
       if (!body.execute) return send(res, 200, { ok: true, dryRun: true, plan });
-      if (!plan.command.length || plan.command.includes('&&')) {
-        return send(res, 400, { error: '이 VPN 명령은 수동 실행 계획만 제공합니다', plan });
+      if (!plan.command.length || plan.followUpCommand?.length) {
+        return send(res, 400, {
+          error: 'This VPN profile is available as a manual execution plan only.',
+          plan,
+        });
       }
       const child = spawn(plan.command[0], plan.command.slice(1), { detached: true, stdio: 'ignore', windowsHide: true });
       child.unref();

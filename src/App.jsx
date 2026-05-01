@@ -1101,7 +1101,7 @@ function SourceCollectionPanel() {
   );
 }
 
-function OperationsSettingsPanel() {
+function OperationsSettingsPanelLegacy() {
   const emptySettings = {
     runnerUrl: 'http://127.0.0.1:39271',
     accounts: [],
@@ -1417,6 +1417,475 @@ function AccountSlotList({ items, onRemove, onCreateProfile, onOpenLogin, onMark
           </div>
         </div>
       ))}
+    </div>
+  );
+}
+
+function OperationsSettingsPanel() {
+  const emptySettings = {
+    runnerUrl: 'http://127.0.0.1:39271',
+    accounts: [],
+    qrAccounts: [],
+    vpnProfiles: [],
+  };
+  const [settings, setSettings] = useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem('naviwrite.opsSettings') || 'null') || {};
+      return {
+        ...emptySettings,
+        ...saved,
+        accounts: Array.isArray(saved.accounts) ? saved.accounts : [],
+        qrAccounts: Array.isArray(saved.qrAccounts) ? saved.qrAccounts : [],
+        vpnProfiles: Array.isArray(saved.vpnProfiles) ? saved.vpnProfiles : [],
+      };
+    } catch {
+      return emptySettings;
+    }
+  });
+  const [runnerStatus, setRunnerStatus] = useState({ state: 'idle', message: '' });
+  const [accountForm, setAccountForm] = useState({ platform: 'blog', label: '', memo: '', usernameHint: '' });
+  const [qrForm, setQrForm] = useState({ label: '', naverIdHint: '', dailyLimit: 100 });
+  const [vpnForm, setVpnForm] = useState({ label: '', provider: 'nordvpn', target: '', mode: '수동 확인' });
+  const [credentialDrafts, setCredentialDrafts] = useState({});
+
+  const saveSettings = (next) => {
+    setSettings(next);
+    localStorage.setItem('naviwrite.opsSettings', JSON.stringify(next));
+  };
+
+  const runnerBase = (settings.runnerUrl || 'http://127.0.0.1:39271').replace(/\/$/, '');
+
+  const runnerRequest = async (path, opts = {}) => {
+    const res = await fetch(`${runnerBase}${path}`, {
+      ...opts,
+      headers: {
+        'Content-Type': 'application/json',
+        ...(opts.headers || {}),
+      },
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `Runner error (${res.status})`);
+    return data;
+  };
+
+  const updateAccount = (id, patch) => {
+    saveSettings({
+      ...settings,
+      accounts: settings.accounts.map((account) =>
+        account.id === id ? { ...account, ...patch } : account
+      ),
+    });
+  };
+
+  const applyRunnerState = (account, payload = {}) => {
+    const profile = payload.profile || {};
+    const plan = payload.plan || {};
+    const session = payload.session || plan.session || profile.session || {};
+    const credential = payload.credential || plan.credential || profile.credential || {};
+    updateAccount(account.id, {
+      runnerProfileId: profile.id || plan.profileId || account.runnerProfileId || account.id,
+      usernameHint: credential.username || profile.usernameHint || account.usernameHint || '',
+      loginStatus: session.needsLoginCheck ? '로그인 재확인 필요' : session.loginStatus || account.loginStatus || '로그인 체크 필요',
+      hasCredential: Boolean(credential.hasCredential ?? profile.hasCredential ?? account.hasCredential),
+      credentialUpdatedAt: credential.updatedAt || account.credentialUpdatedAt || null,
+      credentialVerifiedAt: credential.verifiedAt || account.credentialVerifiedAt || null,
+      runnerPlan: plan.recommendedAction || account.runnerPlan || '',
+      runnerReason: plan.reason || account.runnerReason || '',
+      lastCheckedAt: session.lastLoginCheckedAt || account.lastCheckedAt || null,
+      runnerSyncedAt: new Date().toISOString(),
+    });
+  };
+
+  const ensureRunnerProfile = async (account) => {
+    const profileId = account.runnerProfileId || account.id;
+    const data = await runnerRequest('/profiles', {
+      method: 'POST',
+      body: JSON.stringify({
+        id: profileId,
+        label: account.label,
+        platform: account.platform,
+        targetUrl: account.memo,
+        usernameHint: account.usernameHint,
+        loginCheckIntervalHours: 6,
+        inactivityRecheckHours: 2,
+      }),
+    });
+    applyRunnerState(account, data);
+    return data.profile?.id || profileId;
+  };
+
+  const testRunner = async () => {
+    setRunnerStatus({ state: 'testing', message: 'Runner 연결 확인 중...' });
+    try {
+      const health = await runnerRequest('/health');
+      const startup = await runnerRequest('/startup-check').catch(() => null);
+      const checkCount = startup?.profiles?.filter((item) => item.session?.needsLoginCheck).length || 0;
+      setRunnerStatus({
+        state: 'ok',
+        message: `연결됨 · ${health.service} · 브라우저 ${health.browserFound ? '감지됨' : '미감지'} · 재확인 ${checkCount}개`,
+      });
+    } catch (err) {
+      setRunnerStatus({
+        state: 'fail',
+        message: err instanceof Error ? err.message : 'Runner 연결 실패',
+      });
+    }
+  };
+
+  const createRunnerProfile = async (account) => {
+    setRunnerStatus({ state: 'testing', message: `${account.label} Runner 프로필 생성 중...` });
+    try {
+      await ensureRunnerProfile(account);
+      setRunnerStatus({ state: 'ok', message: `${account.label} 프로필을 Runner에 저장했습니다` });
+    } catch (err) {
+      setRunnerStatus({ state: 'fail', message: err instanceof Error ? err.message : '프로필 생성 실패' });
+    }
+  };
+
+  const checkRunnerSession = async (account) => {
+    setRunnerStatus({ state: 'testing', message: `${account.label} 세션 상태 확인 중...` });
+    try {
+      const profileId = account.runnerProfileId || await ensureRunnerProfile(account);
+      const data = await runnerRequest(`/profiles/${profileId}/session-status`);
+      applyRunnerState(account, { ...data, profile: { id: profileId } });
+      setRunnerStatus({ state: 'ok', message: data.plan?.reason || `${account.label} 세션 상태를 확인했습니다` });
+    } catch (err) {
+      setRunnerStatus({ state: 'fail', message: err instanceof Error ? err.message : '세션 확인 실패' });
+    }
+  };
+
+  const openRunnerLogin = async (account) => {
+    setRunnerStatus({ state: 'testing', message: `${account.label} 로그인 창 여는 중...` });
+    try {
+      const profileId = account.runnerProfileId || await ensureRunnerProfile(account);
+      await runnerRequest(`/profiles/${profileId}/open-login`, { method: 'POST', body: '{}' });
+      updateAccount(account.id, { loginStatus: '로그인 확인 중', runnerProfileId: profileId });
+      setRunnerStatus({ state: 'ok', message: `${account.label} 전용 브라우저 프로필을 열었습니다` });
+    } catch (err) {
+      setRunnerStatus({ state: 'fail', message: err instanceof Error ? err.message : '로그인 창 열기 실패' });
+    }
+  };
+
+  const markRunnerLoginChecked = async (account) => {
+    setRunnerStatus({ state: 'testing', message: `${account.label} 로그인 체크 저장 중...` });
+    try {
+      const profileId = account.runnerProfileId || await ensureRunnerProfile(account);
+      const data = await runnerRequest(`/profiles/${profileId}/mark-login-checked`, { method: 'POST', body: '{}' });
+      applyRunnerState(account, data);
+      setRunnerStatus({ state: 'ok', message: `${account.label} 로그인 체크 완료` });
+    } catch (err) {
+      setRunnerStatus({ state: 'fail', message: err instanceof Error ? err.message : '로그인 체크 실패' });
+    }
+  };
+
+  const saveRunnerCredential = async (account) => {
+    const draft = credentialDrafts[account.id] || {};
+    if (!draft.username || !draft.password) {
+      setRunnerStatus({ state: 'fail', message: 'ID와 비밀번호를 모두 입력해야 합니다' });
+      return;
+    }
+    setRunnerStatus({ state: 'testing', message: `${account.label} 자격증명 로컬 저장 중...` });
+    try {
+      const profileId = account.runnerProfileId || await ensureRunnerProfile(account);
+      const data = await runnerRequest(`/profiles/${profileId}/credentials`, {
+        method: 'POST',
+        body: JSON.stringify({ username: draft.username, password: draft.password }),
+      });
+      applyRunnerState(account, data);
+      setCredentialDrafts({ ...credentialDrafts, [account.id]: { username: draft.username, password: '' } });
+      setRunnerStatus({ state: 'ok', message: `${account.label} ID/PW를 Runner PC에만 암호화 저장했습니다` });
+    } catch (err) {
+      setRunnerStatus({ state: 'fail', message: err instanceof Error ? err.message : '자격증명 저장 실패' });
+    }
+  };
+
+  const verifyRunnerCredential = async (account) => {
+    setRunnerStatus({ state: 'testing', message: `${account.label} 로컬 자격증명 검증 중...` });
+    try {
+      const profileId = account.runnerProfileId || await ensureRunnerProfile(account);
+      const data = await runnerRequest(`/profiles/${profileId}/credentials/verify`, { method: 'POST', body: '{}' });
+      applyRunnerState(account, { ...data, profile: { id: profileId } });
+      setRunnerStatus({ state: 'ok', message: `${account.label} 로컬 자격증명을 읽을 수 있습니다` });
+    } catch (err) {
+      setRunnerStatus({ state: 'fail', message: err instanceof Error ? err.message : '자격증명 검증 실패' });
+    }
+  };
+
+  const deleteRunnerCredential = async (account) => {
+    setRunnerStatus({ state: 'testing', message: `${account.label} 자격증명 삭제 중...` });
+    try {
+      const profileId = account.runnerProfileId || await ensureRunnerProfile(account);
+      const data = await runnerRequest(`/profiles/${profileId}/credentials`, { method: 'DELETE' });
+      applyRunnerState(account, data);
+      setCredentialDrafts({ ...credentialDrafts, [account.id]: { username: '', password: '' } });
+      setRunnerStatus({ state: 'ok', message: `${account.label} 로컬 자격증명을 삭제했습니다` });
+    } catch (err) {
+      setRunnerStatus({ state: 'fail', message: err instanceof Error ? err.message : '자격증명 삭제 실패' });
+    }
+  };
+
+  const addAccount = () => {
+    if (!accountForm.label.trim()) return;
+    saveSettings({
+      ...settings,
+      accounts: [...settings.accounts, {
+        id: `acc_${Date.now()}`,
+        ...accountForm,
+        runnerProfileId: '',
+        credentialPolicy: 'Runner 로컬 DPAPI',
+        sessionPolicy: '6시간 체크 · 2시간 무활동 재확인',
+        loginStatus: '로그인 체크 필요',
+        hasCredential: false,
+        lastCheckedAt: null,
+      }],
+    });
+    setAccountForm({ platform: 'blog', label: '', memo: '', usernameHint: '' });
+  };
+
+  const addQr = () => {
+    if (!qrForm.label.trim()) return;
+    saveSettings({
+      ...settings,
+      qrAccounts: [...settings.qrAccounts, {
+        id: `qr_${Date.now()}`,
+        ...qrForm,
+        usedToday: 0,
+        status: '사용가능',
+      }],
+    });
+    setQrForm({ label: '', naverIdHint: '', dailyLimit: 100 });
+  };
+
+  const addVpn = () => {
+    if (!vpnForm.label.trim()) return;
+    saveSettings({
+      ...settings,
+      vpnProfiles: [...settings.vpnProfiles, {
+        id: `vpn_${Date.now()}`,
+        ...vpnForm,
+        lastPublicIp: '',
+        lastCheckedAt: null,
+      }],
+    });
+    setVpnForm({ label: '', provider: 'nordvpn', target: '', mode: '수동 확인' });
+  };
+
+  const removeItem = (key, id) => {
+    saveSettings({ ...settings, [key]: settings[key].filter((item) => item.id !== id) });
+  };
+
+  const updateCredentialDraft = (id, patch) => {
+    setCredentialDrafts({
+      ...credentialDrafts,
+      [id]: { ...(credentialDrafts[id] || {}), ...patch },
+    });
+  };
+
+  return (
+    <div style={{ display: 'grid', gap: 18 }}>
+      <section style={{ ...cardStyle, padding: 20 }}>
+        <h2 style={{ fontSize: 18, fontWeight: 850, color: COLORS.primary, marginBottom: 5 }}>운영 설정</h2>
+        <p style={{ fontSize: 12, color: COLORS.textSecondary, lineHeight: 1.65 }}>
+          이 화면은 발행 계정, QR 계정, VPN 프로필을 로컬 기준으로 준비하는 곳입니다. 비밀번호는 Railway 서버나 DB에 저장하지 않고,
+          브라우저가 <code>127.0.0.1</code> Runner로 직접 보내 Windows DPAPI로 암호화합니다.
+        </p>
+      </section>
+
+      <section style={{ ...cardStyle, padding: 18 }}>
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16, marginBottom: 12 }}>
+          <div>
+            <h3 style={{ fontSize: 15, fontWeight: 850, color: COLORS.primary, marginBottom: 4 }}>Local Runner 연결</h3>
+            <p style={{ fontSize: 12, color: COLORS.textSecondary, lineHeight: 1.6 }}>
+              Runner가 계정별 브라우저 프로필, 로그인 세션, 로컬 암호화 자격증명, VPN 명령 계획을 담당합니다.
+            </p>
+          </div>
+          <StatusBadge value={runnerStatus.state === 'ok' ? '연결됨' : runnerStatus.state === 'fail' ? '오류' : '대기중'} />
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 8 }}>
+          <input
+            value={settings.runnerUrl}
+            onChange={(e) => saveSettings({ ...settings, runnerUrl: e.target.value })}
+            placeholder="http://127.0.0.1:39271"
+            style={{ ...inputStyle, marginBottom: 0 }}
+          />
+          <button type="button" onClick={testRunner} style={{ ...primaryButtonStyle, marginBottom: 0 }}>
+            연결 테스트
+          </button>
+          <a href="/downloads/naviwrite-runner.zip" style={{ ...primaryButtonStyle, marginBottom: 0, display: 'grid', placeItems: 'center', textDecoration: 'none', background: COLORS.success }}>
+            Runner 다운로드
+          </a>
+        </div>
+        {runnerStatus.message && (
+          <p style={{
+            marginTop: 9,
+            fontSize: 11,
+            fontWeight: 700,
+            color: runnerStatus.state === 'fail' ? COLORS.danger : runnerStatus.state === 'ok' ? COLORS.success : COLORS.textSecondary,
+          }}>
+            {runnerStatus.message}
+          </p>
+        )}
+        <p style={{ marginTop: 8, fontSize: 10, color: COLORS.textMuted, lineHeight: 1.6 }}>
+          실행 방식: Runner ZIP을 풀고 <code>start-runner.cmd</code>를 실행합니다. 기본 주소는 <code>http://127.0.0.1:39271</code>입니다.
+        </p>
+      </section>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 14 }}>
+        <section style={{ ...cardStyle, padding: 18 }}>
+          <h3 style={{ fontSize: 15, fontWeight: 850, color: COLORS.primary, marginBottom: 12 }}>발행 계정 슬롯</h3>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 8 }}>
+            <select value={accountForm.platform} onChange={(e) => setAccountForm({ ...accountForm, platform: e.target.value })} style={inputStyle}>
+              <option value="blog">네이버 블로그</option>
+              <option value="cafe">네이버 카페</option>
+              <option value="premium">네프콘</option>
+              <option value="brunch">브런치</option>
+            </select>
+            <input value={accountForm.label} onChange={(e) => setAccountForm({ ...accountForm, label: e.target.value })} placeholder="예: 네이버 블로그 계정 1" style={inputStyle} />
+          </div>
+          <input value={accountForm.usernameHint} onChange={(e) => setAccountForm({ ...accountForm, usernameHint: e.target.value })} placeholder="ID 힌트 또는 담당자명" style={inputStyle} />
+          <input value={accountForm.memo} onChange={(e) => setAccountForm({ ...accountForm, memo: e.target.value })} placeholder="메모 또는 운영 채널 URL" style={inputStyle} />
+          <button type="button" onClick={addAccount} style={primaryButtonStyle}>계정 슬롯 추가</button>
+          <AccountSlotListV2
+            items={settings.accounts}
+            drafts={credentialDrafts}
+            onDraftChange={updateCredentialDraft}
+            onRemove={(id) => removeItem('accounts', id)}
+            onCreateProfile={createRunnerProfile}
+            onCheckSession={checkRunnerSession}
+            onOpenLogin={openRunnerLogin}
+            onMarkChecked={markRunnerLoginChecked}
+            onSaveCredential={saveRunnerCredential}
+            onVerifyCredential={verifyRunnerCredential}
+            onDeleteCredential={deleteRunnerCredential}
+          />
+        </section>
+
+        <div style={{ display: 'grid', gap: 14 }}>
+          <section style={{ ...cardStyle, padding: 18 }}>
+            <h3 style={{ fontSize: 15, fontWeight: 850, color: COLORS.primary, marginBottom: 12 }}>네이버 QR 계정 풀</h3>
+            <input value={qrForm.label} onChange={(e) => setQrForm({ ...qrForm, label: e.target.value })} placeholder="예: QR 계정 1" style={inputStyle} />
+            <input value={qrForm.naverIdHint} onChange={(e) => setQrForm({ ...qrForm, naverIdHint: e.target.value })} placeholder="네이버 ID 힌트" style={inputStyle} />
+            <input type="number" value={qrForm.dailyLimit} onChange={(e) => setQrForm({ ...qrForm, dailyLimit: Number(e.target.value) })} placeholder="일일 한도" style={inputStyle} />
+            <button type="button" onClick={addQr} style={primaryButtonStyle}>QR 계정 추가</button>
+            <SettingList items={settings.qrAccounts} onRemove={(id) => removeItem('qrAccounts', id)} meta={(item) => `${item.usedToday}/${item.dailyLimit} · ${item.status}`} />
+          </section>
+
+          <section style={{ ...cardStyle, padding: 18 }}>
+            <h3 style={{ fontSize: 15, fontWeight: 850, color: COLORS.primary, marginBottom: 12 }}>VPN 프로필</h3>
+            <input value={vpnForm.label} onChange={(e) => setVpnForm({ ...vpnForm, label: e.target.value })} placeholder="예: 블로그 계정 1 KR" style={inputStyle} />
+            <select value={vpnForm.provider} onChange={(e) => setVpnForm({ ...vpnForm, provider: e.target.value })} style={inputStyle}>
+              <option value="nordvpn">NordVPN CLI</option>
+              <option value="mullvad">Mullvad CLI</option>
+              <option value="manual">수동 전환</option>
+            </select>
+            <input value={vpnForm.target} onChange={(e) => setVpnForm({ ...vpnForm, target: e.target.value })} placeholder="국가/서버 예: South Korea" style={inputStyle} />
+            <button type="button" onClick={addVpn} style={primaryButtonStyle}>VPN 프로필 추가</button>
+            <SettingList items={settings.vpnProfiles} onRemove={(id) => removeItem('vpnProfiles', id)} meta={(item) => `${item.provider} · ${item.target || 'target 없음'} · ${item.mode}`} />
+          </section>
+        </div>
+      </div>
+
+      <section style={{ ...cardStyle, padding: 16, background: '#fff7ed', borderColor: '#fed7aa' }}>
+        <p style={{ fontSize: 12, color: '#9a3412', lineHeight: 1.65 }}>
+          운영 기준: 프로그램 시작 시 Runner 연결 테스트와 세션 체크를 먼저 진행합니다. 최근 로그인 체크가 6시간을 넘었거나 2시간 이상 활동이 없으면
+          해당 계정은 발행 전 재확인을 요구합니다. 저장된 자격증명은 자동 로그인 보조용 준비 단계이며, 실제 발행 자동화는 사용자 확인 흐름으로 붙입니다.
+        </p>
+      </section>
+    </div>
+  );
+}
+
+function AccountSlotListV2({
+  items,
+  drafts,
+  onDraftChange,
+  onRemove,
+  onCreateProfile,
+  onCheckSession,
+  onOpenLogin,
+  onMarkChecked,
+  onSaveCredential,
+  onVerifyCredential,
+  onDeleteCredential,
+}) {
+  const platformName = {
+    blog: '네이버 블로그',
+    cafe: '네이버 카페',
+    premium: '네프콘',
+    brunch: '브런치',
+  };
+
+  return (
+    <div style={{ display: 'grid', gap: 10, marginTop: 12 }}>
+      {items.length === 0 ? (
+        <div style={{ padding: 16, border: `1px dashed ${COLORS.border}`, borderRadius: 9, color: COLORS.textMuted, fontSize: 12, textAlign: 'center' }}>
+          아직 등록된 계정 슬롯이 없습니다.
+        </div>
+      ) : items.map((item) => {
+        const draft = drafts[item.id] || {};
+        const usernameValue = draft.username ?? item.usernameHint ?? '';
+        return (
+          <div key={item.id} style={{ padding: 12, border: `1px solid ${COLORS.border}`, borderRadius: 9, background: 'white' }}>
+            <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start', marginBottom: 10 }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <p style={{ fontSize: 13, fontWeight: 850, color: COLORS.textPrimary }}>{item.label}</p>
+                <p style={{ fontSize: 10, color: COLORS.textMuted, marginTop: 2 }}>
+                  {platformName[item.platform] || item.platform} · {item.loginStatus || '로그인 체크 필요'} · {item.runnerProfileId ? `Runner ${item.runnerProfileId}` : 'Runner 미연동'}
+                </p>
+                <p style={{ fontSize: 10, color: item.hasCredential ? COLORS.success : COLORS.textMuted, marginTop: 2 }}>
+                  {item.hasCredential ? `자격증명 저장됨${item.credentialUpdatedAt ? ` · ${formatDate(item.credentialUpdatedAt)}` : ''}` : '자격증명 없음'} · {item.sessionPolicy || '6시간 체크 · 2시간 무활동 재확인'}
+                </p>
+                {item.runnerReason && (
+                  <p style={{ fontSize: 10, color: COLORS.warning, marginTop: 4, lineHeight: 1.45 }}>{item.runnerReason}</p>
+                )}
+              </div>
+              <button type="button" onClick={() => onRemove(item.id)} style={{
+                height: 28,
+                padding: '0 9px',
+                borderRadius: 7,
+                border: 'none',
+                background: '#fef2f2',
+                color: COLORS.danger,
+                fontSize: 11,
+                fontWeight: 800,
+                cursor: 'pointer',
+              }}>
+                삭제
+              </button>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(92px, 1fr))', gap: 6, marginBottom: 10 }}>
+              <button type="button" onClick={() => onCreateProfile(item)} style={smallButtonStyle}>프로필 생성</button>
+              <button type="button" onClick={() => onCheckSession(item)} style={smallButtonStyle}>세션 체크</button>
+              <button type="button" onClick={() => onOpenLogin(item)} style={smallButtonStyle}>로그인 창</button>
+              <button type="button" onClick={() => onMarkChecked(item)} style={{ ...smallButtonStyle, background: COLORS.success, color: 'white', borderColor: COLORS.success }}>
+                체크 완료
+              </button>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 6 }}>
+              <input
+                value={usernameValue}
+                onChange={(e) => onDraftChange(item.id, { username: e.target.value })}
+                placeholder="로그인 ID"
+                style={{ ...inputStyle, marginBottom: 0, height: 34 }}
+              />
+              <input
+                type="password"
+                value={draft.password || ''}
+                onChange={(e) => onDraftChange(item.id, { password: e.target.value })}
+                placeholder="비밀번호, Runner에만 저장"
+                style={{ ...inputStyle, marginBottom: 0, height: 34 }}
+              />
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(105px, 1fr))', gap: 6, marginTop: 6 }}>
+              <button type="button" onClick={() => onSaveCredential(item)} style={{ ...smallButtonStyle, background: COLORS.primary, color: 'white', borderColor: COLORS.primary }}>자격증명 저장</button>
+              <button type="button" onClick={() => onVerifyCredential(item)} style={smallButtonStyle}>저장값 검증</button>
+              <button type="button" onClick={() => onDeleteCredential(item)} style={{ ...smallButtonStyle, color: COLORS.danger }}>자격증명 삭제</button>
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }
