@@ -866,6 +866,7 @@ function SourceCollectionPanel() {
   const [batches, setBatches] = useState([]);
   const [links, setLinks] = useState([]);
   const [creating, setCreating] = useState(false);
+  const [processing, setProcessing] = useState(false);
   const [message, setMessage] = useState('');
 
   const loadCollections = useCallback(async () => {
@@ -886,6 +887,24 @@ function SourceCollectionPanel() {
     [urlsText]
   );
 
+  const processPending = async (batchId = null) => {
+    setProcessing(true);
+    setMessage(batchId ? '등록된 URL을 웹에서 바로 수집 중...' : '대기중 URL을 웹에서 수집 중...');
+    const res = await safeFetch(`${API}/collections/process-pending`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ batchId, limit: 10 }),
+    });
+    setProcessing(false);
+
+    if (res?.ok) {
+      setMessage(`웹 수집 완료 · 성공 ${res.collected}개 · 실패 ${res.failed}개`);
+      await loadCollections();
+    } else {
+      setMessage('웹 수집에 실패했습니다. 공개 페이지인지 확인해 주세요.');
+    }
+  };
+
   const createBatch = async () => {
     if (urlCount === 0) {
       setMessage('등록할 URL을 줄바꿈으로 입력해 주세요.');
@@ -905,10 +924,11 @@ function SourceCollectionPanel() {
     setCreating(false);
 
     if (res?.batch) {
-      setMessage(`배치 #${res.batch.id} 생성 완료 · ${res.inserted}개 등록`);
+      setMessage(`배치 #${res.batch.id} 생성 완료 · ${res.inserted}개 등록 · 웹 수집 시작`);
       setUrlsText('');
       setBatchName('');
-      loadCollections();
+      await loadCollections();
+      await processPending(res.batch.id);
     } else {
       setMessage('배치 생성에 실패했습니다. URL 형식을 확인해 주세요.');
     }
@@ -929,12 +949,13 @@ function SourceCollectionPanel() {
           <div>
             <h2 style={{ fontSize: 18, fontWeight: 850, color: COLORS.primary, marginBottom: 4 }}>수집 링크</h2>
             <p style={{ fontSize: 12, color: COLORS.textSecondary }}>
-              URL을 줄바꿈으로 넣으면 DB에 수집 큐가 생기고, 확장프로그램의 수집 탭이 실제 페이지에 들어가 분석합니다.
+              URL을 줄바꿈으로 넣으면 웹 서버가 공개 페이지를 바로 가져와 본문, 이미지 수, 키워드 반복수, 글 구조를 분석합니다.
             </p>
           </div>
           <button
             type="button"
             onClick={loadCollections}
+            disabled={processing}
             style={{
               height: 34,
               padding: '0 13px',
@@ -944,7 +965,7 @@ function SourceCollectionPanel() {
               color: COLORS.textSecondary,
               fontSize: 12,
               fontWeight: 800,
-              cursor: 'pointer',
+              cursor: processing ? 'not-allowed' : 'pointer',
             }}
           >
             새로고침
@@ -987,23 +1008,41 @@ function SourceCollectionPanel() {
           <button
             type="button"
             onClick={createBatch}
-            disabled={creating || urlCount === 0}
+            disabled={creating || processing || urlCount === 0}
             style={{
               height: 40,
               padding: '0 18px',
               borderRadius: 9,
               border: 'none',
-              background: creating || urlCount === 0 ? COLORS.textMuted : COLORS.primary,
+              background: creating || processing || urlCount === 0 ? COLORS.textMuted : COLORS.primary,
               color: 'white',
               fontSize: 13,
               fontWeight: 850,
-              cursor: creating || urlCount === 0 ? 'not-allowed' : 'pointer',
+              cursor: creating || processing || urlCount === 0 ? 'not-allowed' : 'pointer',
             }}
           >
-            {creating ? '등록 중...' : `수집 큐 등록 (${urlCount})`}
+            {creating ? '등록 중...' : processing ? '웹 수집 중...' : `등록하고 바로 수집 (${urlCount})`}
+          </button>
+          <button
+            type="button"
+            onClick={() => processPending()}
+            disabled={processing || stats.pending === 0}
+            style={{
+              height: 40,
+              padding: '0 18px',
+              borderRadius: 9,
+              border: `1px solid ${COLORS.border}`,
+              background: processing || stats.pending === 0 ? '#f3f4f6' : 'white',
+              color: processing || stats.pending === 0 ? COLORS.textMuted : COLORS.primary,
+              fontSize: 13,
+              fontWeight: 850,
+              cursor: processing || stats.pending === 0 ? 'not-allowed' : 'pointer',
+            }}
+          >
+            대기중 웹 수집
           </button>
           <span style={{ fontSize: 12, color: COLORS.textSecondary }}>
-            등록 후 확장프로그램의 `수집` 탭에서 큐 처리를 시작하세요.
+            공개 페이지는 웹에서 바로 수집하고, 로그인/비공개로 막힌 글만 Runner 인증 수집으로 넘깁니다.
           </span>
           {message && <span style={{ fontSize: 12, color: message.includes('완료') ? COLORS.success : COLORS.warning, fontWeight: 700 }}>{message}</span>}
         </div>
@@ -1028,16 +1067,16 @@ function SourceCollectionPanel() {
         <section style={{ ...cardStyle, padding: 16, background: '#fff7ed', borderColor: '#fed7aa' }}>
           <h3 style={{ fontSize: 14, fontWeight: 850, color: '#9a3412', marginBottom: 6 }}>대기중 처리 방법</h3>
           <p style={{ fontSize: 12, color: '#9a3412', lineHeight: 1.65 }}>
-            대기중은 URL이 DB 큐에만 등록된 상태입니다. 실제 글 본문, 이미지 수, 키워드 반복수, 글 구조 분석은
-            Chrome 확장프로그램의 <b>수집</b> 탭에서 실행해야 합니다.
+            대기중은 URL이 DB 큐에만 등록된 상태입니다. 이제 <b>대기중 웹 수집</b>을 누르면 서버가 공개 페이지를 바로 가져옵니다.
+            로그인, 비공개, 보안 확인이 필요한 글은 오류로 남기고 Runner 인증 수집 대상으로 분리합니다.
           </p>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 8, marginTop: 10 }}>
             {[
-              '1. 확장프로그램 열기',
-              '2. 수집 탭 선택',
-              '3. 새로고침으로 대기 링크 확인',
-              '4. 대기 링크 수집 시작',
-              '5. 완료 후 이 화면 새로고침',
+              '1. 대기중 웹 수집 클릭',
+              '2. 서버가 공개 페이지 fetch',
+              '3. 본문/이미지/KW 분석 저장',
+              '4. 실패 URL은 오류 사유 표시',
+              '5. 필요 시 Runner 인증 수집',
             ].map((item) => (
               <div key={item} style={{ padding: '9px 10px', borderRadius: 8, background: 'white', color: '#9a3412', fontSize: 11, fontWeight: 800 }}>
                 {item}

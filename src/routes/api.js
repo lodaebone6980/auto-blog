@@ -330,6 +330,122 @@ function buildSourceAnalysis({ sourceUrl, sourceText, html, keyword, category, p
   };
 }
 
+async function saveCollectionAnalysis(link, analysis, fetchStatus = 'server_collected') {
+  const inserted = await pool.query(
+    `INSERT INTO source_analyses (
+      source_link_id, source_url, source_text_preview, keyword, category, platform, title,
+      plain_text, char_count, kw_count, image_count, subheadings, links, has_video,
+      platform_guess, keyword_candidates, main_keyword, category_guess, structure_json,
+      tone_summary, fetch_status, error_message
+     )
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
+     RETURNING *`,
+    [
+      link.id,
+      analysis.sourceUrl || link.url,
+      analysis.sourceTextPreview,
+      analysis.keyword,
+      analysis.category,
+      analysis.platform,
+      analysis.title,
+      analysis.plainText,
+      analysis.charCount,
+      analysis.kwCount,
+      analysis.imageCount,
+      JSON.stringify(analysis.subheadings || []),
+      JSON.stringify(analysis.links || []),
+      analysis.hasVideo,
+      analysis.platformGuess,
+      JSON.stringify(analysis.keywordCandidates || []),
+      analysis.mainKeyword,
+      analysis.categoryGuess,
+      JSON.stringify(analysis.structure || {}),
+      analysis.toneSummary,
+      fetchStatus,
+      analysis.errorMessage || null,
+    ]
+  );
+
+  const saved = inserted.rows[0];
+  const updated = await pool.query(
+    `UPDATE source_links
+     SET status = '수집완료',
+         platform_guess = $2,
+         source_analysis_id = $3,
+         collected_at = NOW(),
+         updated_at = NOW(),
+         error_message = NULL
+     WHERE id = $1
+     RETURNING *`,
+    [link.id, analysis.platformGuess, saved.id]
+  );
+  const batch = await refreshCollectionBatchCounts(link.batch_id);
+
+  return {
+    link: updated.rows[0],
+    batch,
+    analysis: {
+      id: saved.id,
+      sourceUrl: saved.source_url,
+      title: saved.title,
+      mainKeyword: saved.main_keyword,
+      categoryGuess: saved.category_guess,
+      platformGuess: saved.platform_guess,
+      charCount: saved.char_count,
+      kwCount: saved.kw_count,
+      imageCount: saved.image_count,
+      subheadings: saved.subheadings || [],
+      keywordCandidates: saved.keyword_candidates || [],
+      structure: saved.structure_json || {},
+      toneSummary: saved.tone_summary,
+    },
+  };
+}
+
+async function collectSourceLinkOnServer(link) {
+  await pool.query(
+    `UPDATE source_links
+     SET status = '수집중',
+         error_message = NULL,
+         updated_at = NOW()
+     WHERE id = $1`,
+    [link.id]
+  );
+  await refreshCollectionBatchCounts(link.batch_id);
+
+  try {
+    const html = await fetchSourceHtml(link.url);
+    const analysis = buildSourceAnalysis({
+      sourceUrl: link.url,
+      html,
+      platform: link.platform_guess || guessPlatform(link.url, 'web'),
+      fetchStatus: 'server_collected',
+      errorMessage: null,
+    });
+
+    if (!analysis.plainText || analysis.plainText.replace(/\s/g, '').length < 80) {
+      throw new Error('본문을 충분히 읽지 못했습니다. 로그인/비공개/차단 페이지일 수 있습니다.');
+    }
+
+    return await saveCollectionAnalysis(link, analysis, 'server_collected');
+  } catch (err) {
+    const failed = await pool.query(
+      `UPDATE source_links
+       SET status = '오류',
+           error_message = $2,
+           updated_at = NOW()
+       WHERE id = $1
+       RETURNING *`,
+      [link.id, err.message]
+    );
+    await refreshCollectionBatchCounts(link.batch_id);
+    return {
+      link: failed.rows[0] || link,
+      error: err.message,
+    };
+  }
+}
+
 function normalizeJobInput(body = {}) {
   const scores = body.scores || {};
   const qrStatus = body.qr_status || body.qrStatus || 'QR 생성 필요';
@@ -742,6 +858,46 @@ router.post('/collections/batches', async (req, res) => {
 
     const updatedBatch = await refreshCollectionBatchCounts(batch.rows[0].id);
     res.json({ batch: updatedBatch || batch.rows[0], inserted, skipped: uniqueLinks.length - inserted });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/collections/process-pending', async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.body?.limit || req.query.limit || '10', 10), 30);
+    const batchId = req.body?.batchId || req.query.batchId || null;
+    const values = [];
+    const where = [`status IN ('대기중','오류')`];
+
+    if (batchId) {
+      values.push(batchId);
+      where.push(`batch_id = $${values.length}`);
+    }
+
+    values.push(limit);
+    const { rows } = await pool.query(
+      `SELECT *
+       FROM source_links
+       WHERE ${where.join(' AND ')}
+       ORDER BY created_at ASC
+       LIMIT $${values.length}`,
+      values
+    );
+
+    const results = [];
+    for (const link of rows) {
+      results.push(await collectSourceLinkOnServer(link));
+    }
+
+    res.json({
+      ok: true,
+      requested: limit,
+      processed: results.length,
+      collected: results.filter((item) => !item.error).length,
+      failed: results.filter((item) => item.error).length,
+      results,
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
