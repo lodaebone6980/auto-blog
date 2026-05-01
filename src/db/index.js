@@ -116,6 +116,7 @@ export async function initDB() {
         platform_guess TEXT,
         keyword_candidates JSONB DEFAULT '[]',
         main_keyword TEXT,
+        corrected_main_keyword TEXT,
         category_guess TEXT,
         structure_json JSONB DEFAULT '{}',
         tone_summary TEXT,
@@ -281,6 +282,7 @@ export async function initDB() {
       ALTER TABLE source_analyses ADD COLUMN IF NOT EXISTS source_link_id INTEGER;
       ALTER TABLE source_analyses ADD COLUMN IF NOT EXISTS keyword_candidates JSONB DEFAULT '[]';
       ALTER TABLE source_analyses ADD COLUMN IF NOT EXISTS main_keyword TEXT;
+      ALTER TABLE source_analyses ADD COLUMN IF NOT EXISTS corrected_main_keyword TEXT;
       ALTER TABLE source_analyses ADD COLUMN IF NOT EXISTS category_guess TEXT;
       ALTER TABLE source_analyses ADD COLUMN IF NOT EXISTS structure_json JSONB DEFAULT '{}';
       ALTER TABLE source_analyses ADD COLUMN IF NOT EXISTS tone_summary TEXT;

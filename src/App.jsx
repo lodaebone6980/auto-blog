@@ -885,6 +885,8 @@ function SourceCollectionPanel({ onOpenRewrite }) {
   const [batches, setBatches] = useState([]);
   const [links, setLinks] = useState([]);
   const [selectedLinks, setSelectedLinks] = useState([]);
+  const [keywordDrafts, setKeywordDrafts] = useState({});
+  const [savingKeywordIds, setSavingKeywordIds] = useState([]);
   const [creating, setCreating] = useState(false);
   const [processing, setProcessing] = useState(false);
   const [message, setMessage] = useState('');
@@ -901,6 +903,16 @@ function SourceCollectionPanel({ onOpenRewrite }) {
   useEffect(() => {
     loadCollections();
   }, [loadCollections]);
+
+  useEffect(() => {
+    setKeywordDrafts((prev) => {
+      const next = { ...prev };
+      links.forEach((link) => {
+        if (next[link.id] === undefined) next[link.id] = link.corrected_main_keyword || '';
+      });
+      return next;
+    });
+  }, [links]);
 
   const urlCount = useMemo(
     () => urlsText.split(/\r?\n/).map((line) => line.trim()).filter((line) => /^https?:\/\//i.test(line)).length,
@@ -967,6 +979,24 @@ function SourceCollectionPanel({ onOpenRewrite }) {
     setSelectedLinks((prev) => (
       prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
     ));
+  };
+
+  const saveCorrectedKeyword = async (link) => {
+    const value = (keywordDrafts[link.id] || '').trim();
+    if ((link.corrected_main_keyword || '') === value) return;
+    setSavingKeywordIds((prev) => [...new Set([...prev, link.id])]);
+    const res = await safeFetch(`${API}/collections/links/${link.id}/main-keyword`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ correctedMainKeyword: value }),
+    });
+    setSavingKeywordIds((prev) => prev.filter((id) => id !== link.id));
+    if (res?.ok) {
+      setMessage(value ? `수정 메인키워드 저장: ${value}` : '수정 메인키워드를 비웠습니다.');
+      await loadCollections();
+    } else {
+      setMessage(res?.error || '수정 메인키워드 저장에 실패했습니다.');
+    }
   };
 
   const formatTerms = (terms) => {
@@ -1160,10 +1190,10 @@ function SourceCollectionPanel({ onOpenRewrite }) {
               아직 등록된 수집 링크가 없습니다.
             </div>
           ) : (
-            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1260 }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1420 }}>
               <thead>
                 <tr style={{ background: '#f8fafc', color: COLORS.textSecondary, fontSize: 11, textAlign: 'left' }}>
-                  {['선택', '상태', '블로그', '플랫폼', '메인키워드', '카테고리', '글자/KW/이미지', '인용구/반복어', 'URL', '오류'].map((head) => (
+                  {['선택', '상태', '블로그', '플랫폼', '메인키워드', '수정 KW', '카테고리', '글자/KW/이미지', '인용구/반복어', 'URL', '오류'].map((head) => (
                     <th key={head} style={{ padding: '10px 12px', borderBottom: `1px solid ${COLORS.border}` }}>{head}</th>
                   ))}
                 </tr>
@@ -1188,6 +1218,32 @@ function SourceCollectionPanel({ onOpenRewrite }) {
                     </td>
                     <td style={{ padding: '10px 12px', fontWeight: 700, color: COLORS.textSecondary }}>{link.platform_guess || '-'}</td>
                     <td style={{ padding: '10px 12px', fontWeight: 800, color: COLORS.primary }}>{link.main_keyword || '-'}</td>
+                    <td style={{ padding: '10px 12px', minWidth: 140 }}>
+                      <input
+                        value={keywordDrafts[link.id] ?? link.corrected_main_keyword ?? ''}
+                        onChange={(e) => setKeywordDrafts((prev) => ({ ...prev, [link.id]: e.target.value }))}
+                        onBlur={() => saveCorrectedKeyword(link)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.currentTarget.blur();
+                          }
+                        }}
+                        placeholder="필요 시 수정"
+                        disabled={!link.source_analysis_id || savingKeywordIds.includes(link.id)}
+                        style={{
+                          width: 126,
+                          height: 30,
+                          border: `1px solid ${COLORS.border}`,
+                          borderRadius: 7,
+                          padding: '0 8px',
+                          fontSize: 11,
+                          fontWeight: 800,
+                          color: COLORS.textPrimary,
+                          outline: 'none',
+                          background: !link.source_analysis_id ? '#f3f4f6' : 'white',
+                        }}
+                      />
+                    </td>
                     <td style={{ padding: '10px 12px' }}>{link.category_guess || '-'}</td>
                     <td style={{ padding: '10px 12px', color: COLORS.textSecondary }}>
                       {(link.char_count || 0).toLocaleString()} / {link.kw_count || 0} / {link.image_count || 0}
@@ -1262,6 +1318,8 @@ function RewritePanel() {
       return [];
     }
   });
+  const [keywordDrafts, setKeywordDrafts] = useState({});
+  const [savingKeywordIds, setSavingKeywordIds] = useState([]);
   const [keywordsText, setKeywordsText] = useState('');
   const [targetTopic, setTargetTopic] = useState('');
   const [platform, setPlatform] = useState('blog');
@@ -1310,6 +1368,16 @@ function RewritePanel() {
   }, [loadRewriteData]);
 
   useEffect(() => {
+    setKeywordDrafts((prev) => {
+      const next = { ...prev };
+      links.forEach((link) => {
+        if (next[link.id] === undefined) next[link.id] = link.corrected_main_keyword || '';
+      });
+      return next;
+    });
+  }, [links]);
+
+  useEffect(() => {
     localStorage.setItem('naviwrite.rewrite.selectedSourceLinkIds', JSON.stringify(selectedSourceLinkIds));
   }, [selectedSourceLinkIds]);
 
@@ -1327,9 +1395,17 @@ function RewritePanel() {
     [collectedLinks, selectedSourceLinkIds]
   );
 
+  const derivedSourceKeywords = useMemo(
+    () => [...new Set(selectedSources
+      .map((link) => (link.corrected_main_keyword || link.main_keyword || '').trim())
+      .filter(Boolean))],
+    [selectedSources]
+  );
+
+  const effectiveKeywordsText = keywordsText.trim() || derivedSourceKeywords.join('\n');
   const keywordCount = useMemo(
-    () => keywordsText.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean).length,
-    [keywordsText]
+    () => effectiveKeywordsText.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean).length,
+    [effectiveKeywordsText]
   );
 
   const patternSummary = useMemo(() => {
@@ -1351,6 +1427,24 @@ function RewritePanel() {
     setSelectedSourceLinkIds((prev) => (
       prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
     ));
+  };
+
+  const saveCorrectedKeyword = async (link) => {
+    const value = (keywordDrafts[link.id] || '').trim();
+    if ((link.corrected_main_keyword || '') === value) return;
+    setSavingKeywordIds((prev) => [...new Set([...prev, link.id])]);
+    const res = await safeFetch(`${API}/collections/links/${link.id}/main-keyword`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ correctedMainKeyword: value }),
+    });
+    setSavingKeywordIds((prev) => prev.filter((id) => id !== link.id));
+    if (res?.ok) {
+      setMessage(value ? `수정 메인키워드 저장: ${value}` : '수정 메인키워드를 비웠습니다.');
+      await loadRewriteData();
+    } else {
+      setMessage(res?.error || '수정 메인키워드 저장에 실패했습니다.');
+    }
   };
 
   const updateRewriteSetting = (key, value) => {
@@ -1380,7 +1474,7 @@ function RewritePanel() {
 
   const createRewriteJobs = async () => {
     if (keywordCount === 0) {
-      setMessage('재각색할 키워드를 줄바꿈으로 입력해 주세요.');
+      setMessage('재각색할 키워드를 입력하거나 메인키워드가 잡힌 수집완료 링크를 선택해 주세요.');
       return;
     }
     if (selectedSourceLinkIds.length === 0) {
@@ -1394,7 +1488,7 @@ function RewritePanel() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        keywordsText,
+        keywordsText: effectiveKeywordsText,
         sourceLinkIds: selectedSourceLinkIds,
         targetTopic,
         platform,
@@ -1483,11 +1577,11 @@ function RewritePanel() {
 
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 14, marginTop: 16 }}>
           <div>
-            <label style={{ display: 'block', fontSize: 11, fontWeight: 800, color: COLORS.textSecondary, marginBottom: 6 }}>재각색 키워드</label>
+            <label style={{ display: 'block', fontSize: 11, fontWeight: 800, color: COLORS.textSecondary, marginBottom: 6 }}>재각색 키워드 · 비우면 선택 소스의 수정/자동 KW 사용</label>
             <textarea
               value={keywordsText}
               onChange={(e) => setKeywordsText(e.target.value)}
-              placeholder={`예: sbti 테스트\n예: 고유가 피해지원금\n줄바꿈으로 대량 등록`}
+              placeholder={`예: sbti 테스트\n예: 고유가 피해지원금\n비워두면 선택한 수집글의 수정 KW를 우선 사용`}
               rows={7}
               style={{
                 width: '100%',
@@ -1500,6 +1594,11 @@ function RewritePanel() {
                 outline: 'none',
               }}
             />
+            {!keywordsText.trim() && derivedSourceKeywords.length > 0 && (
+              <p style={{ marginTop: 6, fontSize: 11, color: COLORS.success, fontWeight: 800 }}>
+                자동 사용 KW: {derivedSourceKeywords.slice(0, 5).join(', ')}{derivedSourceKeywords.length > 5 ? ` 외 ${derivedSourceKeywords.length - 5}개` : ''}
+              </p>
+            )}
           </div>
           <div style={{ display: 'grid', gap: 10 }}>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
@@ -1739,10 +1838,10 @@ function RewritePanel() {
               아직 재각색에 쓸 수집완료 링크가 없습니다.
             </div>
           ) : (
-            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1120 }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1280 }}>
               <thead>
                 <tr style={{ background: '#f8fafc', color: COLORS.textSecondary, fontSize: 11, textAlign: 'left' }}>
-                  {['선택', '블로그/출처', '플랫폼', '메인키워드', '카테고리', '글자/KW/이미지', '인용구/반복어', 'URL'].map((head) => (
+                  {['선택', '블로그/출처', '플랫폼', '메인키워드', '수정 KW', '카테고리', '글자/KW/이미지', '인용구/반복어', 'URL'].map((head) => (
                     <th key={head} style={{ padding: '10px 12px', borderBottom: `1px solid ${COLORS.border}` }}>{head}</th>
                   ))}
                 </tr>
@@ -1764,6 +1863,32 @@ function RewritePanel() {
                     </td>
                     <td style={{ padding: '10px 12px', fontWeight: 800, color: COLORS.textSecondary }}>{platformLabel[link.platform_guess] || link.platform_guess || '-'}</td>
                     <td style={{ padding: '10px 12px', fontWeight: 850, color: COLORS.primary }}>{link.main_keyword || '-'}</td>
+                    <td style={{ padding: '10px 12px', minWidth: 140 }}>
+                      <input
+                        value={keywordDrafts[link.id] ?? link.corrected_main_keyword ?? ''}
+                        onChange={(e) => setKeywordDrafts((prev) => ({ ...prev, [link.id]: e.target.value }))}
+                        onBlur={() => saveCorrectedKeyword(link)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.currentTarget.blur();
+                          }
+                        }}
+                        placeholder="수정 키워드"
+                        disabled={savingKeywordIds.includes(link.id)}
+                        style={{
+                          width: 126,
+                          height: 30,
+                          border: `1px solid ${COLORS.border}`,
+                          borderRadius: 7,
+                          padding: '0 8px',
+                          fontSize: 11,
+                          fontWeight: 800,
+                          color: COLORS.textPrimary,
+                          outline: 'none',
+                          background: 'white',
+                        }}
+                      />
+                    </td>
                     <td style={{ padding: '10px 12px', color: COLORS.textSecondary }}>{link.category_guess || '-'}</td>
                     <td style={{ padding: '10px 12px', color: COLORS.textSecondary }}>
                       {(link.char_count || 0).toLocaleString()} / {link.kw_count || 0} / {link.image_count || 0}

@@ -964,6 +964,20 @@ function normalizeIdList(input = []) {
   return [...new Set(list.map((item) => parseInt(item, 10)).filter(Number.isFinite))].slice(0, 50);
 }
 
+function normalizeKeywordValue(value = '') {
+  return String(value || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+}
+
+function effectiveMainKeyword(row = {}) {
+  return normalizeKeywordValue(row.corrected_main_keyword || row.main_keyword || row.keyword || '');
+}
+
+function countKeywordInText(text = '', keyword = '') {
+  const safeKeyword = normalizeKeywordValue(keyword);
+  if (!safeKeyword) return 0;
+  return (String(text || '').match(new RegExp(escapeRegExp(safeKeyword), 'gi')) || []).length;
+}
+
 function averageNumber(values = [], fallback = 0) {
   const numbers = values.map(Number).filter(Number.isFinite);
   if (numbers.length === 0) return fallback;
@@ -1146,6 +1160,9 @@ function buildRewritePattern(analyses = [], settingsInput = {}) {
   const tone = tones[0] || '정보형 존댓말';
   const platforms = analyses.map((row) => row.platform_guess || row.platform).filter(Boolean);
   const platform = platforms[0] || 'blog';
+  const sourceTitles = analyses.map((row) => row.title).filter(Boolean).slice(0, 20);
+  const sourceKeywords = [...new Set(analyses.map(effectiveMainKeyword).filter(Boolean))].slice(0, 20);
+  const sourceActionTerms = inferTitleActionTerms(sourceTitles.join(' '));
 
   return {
     sampleCount: analyses.length,
@@ -1164,6 +1181,9 @@ function buildRewritePattern(analyses = [], settingsInput = {}) {
     paragraphCount,
     tone,
     platform,
+    sourceTitles,
+    sourceKeywords,
+    sourceActionTerms,
     settings,
     structure: {
       introParagraphs: 3,
@@ -1174,10 +1194,44 @@ function buildRewritePattern(analyses = [], settingsInput = {}) {
   };
 }
 
-function makeRewriteTitle(keyword, topic = '', platform = 'blog') {
-  const subject = topic || keyword;
-  if (platform === 'cafe') return `${subject} ${keyword} 실제로 확인한 핵심 정리`;
-  return `${keyword} ${subject} 기준 방법 핵심 정리`;
+const TITLE_ACTION_TERMS = [
+  '신청', '방법', '대상', '기준', '지급일', '사용처', '결과', '유형', '링크', '사이트',
+  '예매', '티켓팅', '예약', '일정', '가격', '후기', '확인', '정리', '총정리', '바로가기',
+  '비교', '조건', '기간', '재고', '판매처', '추천',
+];
+
+function inferTitleActionTerms(text = '') {
+  const source = String(text || '');
+  return TITLE_ACTION_TERMS
+    .map((term) => ({
+      term,
+      count: (source.match(new RegExp(escapeRegExp(term), 'g')) || []).length,
+    }))
+    .filter((item) => item.count > 0)
+    .sort((a, b) => b.count - a.count || TITLE_ACTION_TERMS.indexOf(a.term) - TITLE_ACTION_TERMS.indexOf(b.term))
+    .map((item) => item.term)
+    .slice(0, 5);
+}
+
+function titleIntentTail(keyword = '', topic = '', actionTerms = []) {
+  const source = `${keyword} ${topic} ${actionTerms.join(' ')}`;
+  if (/신청|지원금|환급|급여|수당|정책|대상|지급/.test(source)) return '대상 기준 신청 방법 정리';
+  if (/예매|티켓팅|공연|콘서트|예약|티켓/.test(source)) return '일정 예매 방법 티켓팅 정리';
+  if (/테스트|검사|유형|결과|성격|링크|사이트/.test(source)) return '링크 결과 유형 확인 방법';
+  if (/가격|재고|판매처|팝콘|상품|제품|구매/.test(source)) return '가격 재고 판매처 확인';
+  if (/맛집|카페|라면|메뉴|식당|후기/.test(source)) return '메뉴 가격 후기 정리';
+  const compact = actionTerms.filter((term) => !keyword.includes(term)).slice(0, 3).join(' ');
+  return compact ? `${compact} 핵심 정리` : '기준 방법 핵심 정리';
+}
+
+function makeRewriteTitle(keyword, topic = '', platform = 'blog', pattern = {}) {
+  const cleanKeyword = normalizeKeywordValue(keyword);
+  const cleanTopic = normalizeKeywordValue(topic);
+  const subject = cleanTopic && !cleanTopic.includes(cleanKeyword) ? `${cleanKeyword} ${cleanTopic}` : cleanKeyword;
+  const actionTerms = Array.isArray(pattern.sourceActionTerms) ? pattern.sourceActionTerms : [];
+  const title = `${subject} ${titleIntentTail(cleanKeyword, cleanTopic, actionTerms)}`.replace(/\s+/g, ' ').trim();
+  if (platform === 'cafe') return `${title} 실제 확인 후기`.slice(0, 76);
+  return title.slice(0, 70);
 }
 
 function makeSectionTitles(keyword, topic, count) {
@@ -1229,7 +1283,7 @@ function makeTemplateImage({ keyword, section, subtitle, index, platform }) {
 }
 
 function buildRewriteDraft({ keyword, topic, platform, ctaUrl, useNaverQr, useAiImages = true, pattern }) {
-  const title = makeRewriteTitle(keyword, topic, platform);
+  const title = makeRewriteTitle(keyword, topic, platform, pattern);
   const bodySectionCount = Math.max(1, (pattern.sectionCount || DEFAULT_REWRITE_SETTINGS.sectionCount) - 1);
   const sectionTitles = makeSectionTitles(keyword, topic, bodySectionCount);
   const subject = topic || '이 내용';
@@ -2130,6 +2184,7 @@ router.get('/collections/links', async (req, res) => {
       `SELECT sl.*,
               cb.name AS batch_name,
               sa.main_keyword,
+              sa.corrected_main_keyword,
               sa.category_guess,
               sa.char_count,
               sa.kw_count,
@@ -2199,6 +2254,39 @@ router.patch('/collections/links/:id/status', async (req, res) => {
     if (rows.length === 0) return res.status(404).json({ error: 'Source link not found' });
     await refreshCollectionBatchCounts(rows[0].batch_id);
     res.json(rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.patch('/collections/links/:id/main-keyword', async (req, res) => {
+  try {
+    const correctedMainKeyword = normalizeKeywordValue(
+      req.body?.correctedMainKeyword ?? req.body?.corrected_main_keyword ?? ''
+    );
+    const current = await pool.query(
+      `SELECT sl.id, sl.source_analysis_id, sa.plain_text, sa.main_keyword, sa.keyword
+       FROM source_links sl
+       LEFT JOIN source_analyses sa ON sa.id = sl.source_analysis_id
+       WHERE sl.id = $1`,
+      [req.params.id]
+    );
+    if (current.rows.length === 0) return res.status(404).json({ error: 'Source link not found' });
+    const row = current.rows[0];
+    if (!row.source_analysis_id) return res.status(400).json({ error: '수집완료 후 수정할 수 있습니다' });
+
+    const effectiveKeyword = correctedMainKeyword || row.main_keyword || row.keyword || '';
+    const kwCount = countKeywordInText(row.plain_text || '', effectiveKeyword);
+    const { rows } = await pool.query(
+      `UPDATE source_analyses
+       SET corrected_main_keyword = $2,
+           keyword = $3,
+           kw_count = $4
+       WHERE id = $1
+       RETURNING id, main_keyword, corrected_main_keyword, keyword, kw_count`,
+      [row.source_analysis_id, correctedMainKeyword || null, effectiveKeyword || null, kwCount]
+    );
+    res.json({ ok: true, analysis: rows[0] });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -2566,8 +2654,7 @@ router.get('/rewrite-jobs/:id', async (req, res) => {
 
 router.post('/rewrite-jobs', async (req, res) => {
   try {
-    const keywords = parseTargetKeywords(req.body?.targetKeywords || req.body?.keywordsText || req.body?.keyword);
-    if (keywords.length === 0) return res.status(400).json({ error: '재각색할 키워드를 입력해 주세요' });
+    let keywords = parseTargetKeywords(req.body?.targetKeywords || req.body?.keywordsText || req.body?.keyword);
 
     const sourceAnalysisIds = normalizeIdList(req.body?.sourceAnalysisIds);
     const sourceLinkIds = normalizeIdList(req.body?.sourceLinkIds);
@@ -2587,6 +2674,16 @@ router.post('/rewrite-jobs', async (req, res) => {
         ]),
       ];
     }
+    if (keywords.length === 0 && resolvedSourceAnalysisIds.length > 0) {
+      const { rows } = await pool.query(
+        `SELECT keyword, main_keyword, corrected_main_keyword
+         FROM source_analyses
+         WHERE id = ANY($1::int[])`,
+        [resolvedSourceAnalysisIds]
+      );
+      keywords = parseTargetKeywords(rows.map(effectiveMainKeyword));
+    }
+    if (keywords.length === 0) return res.status(400).json({ error: '재각색할 키워드를 입력하거나 수집완료 링크를 선택해 주세요' });
 
     const platform = normalizePlatform(req.body?.platform || 'blog');
     const category = req.body?.category || 'general';
