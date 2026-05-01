@@ -237,6 +237,46 @@ export async function initDB() {
         UNIQUE(cafe_post_id, snapshot_date)
       );
 
+      -- Rewrite jobs generated from collected source patterns.
+      CREATE TABLE IF NOT EXISTS rewrite_jobs (
+        id SERIAL PRIMARY KEY,
+        target_keyword TEXT NOT NULL,
+        target_topic TEXT,
+        platform TEXT DEFAULT 'blog',
+        category TEXT DEFAULT 'general',
+        cta_url TEXT,
+        use_naver_qr BOOLEAN DEFAULT FALSE,
+        use_ai_images BOOLEAN DEFAULT FALSE,
+        source_analysis_ids JSONB DEFAULT '[]',
+        status TEXT DEFAULT '대기중',
+        pattern_json JSONB DEFAULT '{}',
+        title TEXT,
+        body TEXT,
+        plain_text TEXT,
+        char_count INTEGER DEFAULT 0,
+        kw_count INTEGER DEFAULT 0,
+        image_count INTEGER DEFAULT 0,
+        quote_count INTEGER DEFAULT 0,
+        seo_score REAL DEFAULT 0,
+        geo_score REAL DEFAULT 0,
+        aeo_score REAL DEFAULT 0,
+        total_score REAL DEFAULT 0,
+        similarity_risk REAL DEFAULT 0,
+        images_json JSONB DEFAULT '[]',
+        error_message TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );
+
+      CREATE TABLE IF NOT EXISTS rewrite_job_events (
+        id SERIAL PRIMARY KEY,
+        rewrite_job_id INTEGER REFERENCES rewrite_jobs(id) ON DELETE CASCADE,
+        event_type TEXT NOT NULL,
+        message TEXT,
+        payload JSONB DEFAULT '{}',
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+
       ALTER TABLE source_analyses ADD COLUMN IF NOT EXISTS source_link_id INTEGER;
       ALTER TABLE source_analyses ADD COLUMN IF NOT EXISTS keyword_candidates JSONB DEFAULT '[]';
       ALTER TABLE source_analyses ADD COLUMN IF NOT EXISTS main_keyword TEXT;
@@ -415,6 +455,10 @@ export async function initDB() {
       CREATE INDEX IF NOT EXISTS idx_collected_cafe_posts_category ON collected_cafe_posts(category);
       CREATE INDEX IF NOT EXISTS idx_collected_cafe_posts_last_view ON collected_cafe_posts(last_view_count DESC);
       CREATE INDEX IF NOT EXISTS idx_cafe_post_view_snapshots_post_date ON cafe_post_view_snapshots(cafe_post_id, snapshot_date DESC);
+      CREATE INDEX IF NOT EXISTS idx_rewrite_jobs_created_at ON rewrite_jobs(created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_rewrite_jobs_status ON rewrite_jobs(status);
+      CREATE INDEX IF NOT EXISTS idx_rewrite_jobs_keyword ON rewrite_jobs(target_keyword);
+      CREATE INDEX IF NOT EXISTS idx_rewrite_job_events_job_id ON rewrite_job_events(rewrite_job_id);
     `);
     console.log('[DB] Tables initialized successfully');
   } finally {

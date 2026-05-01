@@ -948,6 +948,273 @@ async function snapshotCollectedCafePosts({ limit = 100, category = null } = {})
   return results;
 }
 
+function parseTargetKeywords(input = '') {
+  if (Array.isArray(input)) {
+    return [...new Set(input.map((item) => String(item).trim()).filter(Boolean))].slice(0, 50);
+  }
+  return [...new Set(String(input)
+    .split(/\r?\n|,/)
+    .map((item) => item.trim())
+    .filter(Boolean))]
+    .slice(0, 50);
+}
+
+function normalizeIdList(input = []) {
+  const list = Array.isArray(input) ? input : String(input || '').split(',');
+  return [...new Set(list.map((item) => parseInt(item, 10)).filter(Number.isFinite))].slice(0, 50);
+}
+
+function averageNumber(values = [], fallback = 0) {
+  const numbers = values.map(Number).filter(Number.isFinite);
+  if (numbers.length === 0) return fallback;
+  return Math.round(numbers.reduce((sum, value) => sum + value, 0) / numbers.length);
+}
+
+function clampNumber(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function buildRewritePattern(analyses = []) {
+  const quoteCounts = analyses.map((row) => Array.isArray(row.quote_blocks) ? row.quote_blocks.length : 0);
+  const structureRows = analyses.map((row) => row.structure_json || {});
+  const paragraphCount = averageNumber(structureRows.map((item) => item.paragraphCount), 24);
+  const sectionCount = clampNumber(Math.round(averageNumber(quoteCounts, 5) || averageNumber(structureRows.map((item) => item.headingCount), 5) || 5), 3, 8);
+  const imageCount = clampNumber(averageNumber(analyses.map((row) => row.image_count), 6), 3, 12);
+  const charCount = clampNumber(averageNumber(analyses.map((row) => row.char_count), 2200), 1200, 4500);
+  const kwCount = clampNumber(averageNumber(analyses.map((row) => row.kw_count), 10), 5, 25);
+  const tones = analyses.map((row) => row.tone_summary).filter(Boolean);
+  const tone = tones[0] || '정보형 존댓말';
+  const platforms = analyses.map((row) => row.platform_guess || row.platform).filter(Boolean);
+  const platform = platforms[0] || 'blog';
+
+  return {
+    sampleCount: analyses.length,
+    targetCharCount: charCount,
+    targetKwCount: kwCount,
+    imageCount,
+    quoteCount: sectionCount,
+    sectionCount,
+    paragraphCount,
+    tone,
+    platform,
+    structure: {
+      introParagraphs: 3,
+      ctaAfterIntro: true,
+      imageAfterEachSection: true,
+      conclusionParagraphs: 3,
+    },
+  };
+}
+
+function makeRewriteTitle(keyword, topic = '', platform = 'blog') {
+  const subject = topic || keyword;
+  if (platform === 'cafe') return `${subject} ${keyword} 실제로 확인한 핵심 정리`;
+  return `${keyword} ${subject} 기준 방법 핵심 정리`;
+}
+
+function makeSectionTitles(keyword, topic, count) {
+  const subject = topic || keyword;
+  const base = [
+    `${keyword} 먼저 확인해야 할 부분`,
+    `${subject} 핵심 기준`,
+    `${keyword} 진행 방법`,
+    `${subject} 주의할 점`,
+    `${keyword} 자주 묻는 질문`,
+    `${subject} 실제 활용 팁`,
+    `${keyword} 비교 포인트`,
+    `마무리 정리`,
+  ];
+  return base.slice(0, count);
+}
+
+function makeTemplateImage({ keyword, section, subtitle, index, platform }) {
+  const bg = platform === 'cafe' ? '#f8fafc' : '#ffffff';
+  const primary = platform === 'cafe' ? '#1d4ed8' : '#1f5f4a';
+  const accent = platform === 'cafe' ? '#dbeafe' : '#d8ebe4';
+  const badge = index === 0 ? '대표' : `SECTION ${String(index).padStart(2, '0')}`;
+  const safeKeyword = decodeHtmlEntities(keyword).slice(0, 24);
+  const safeSection = decodeHtmlEntities(section).slice(0, 24);
+  const safeSubtitle = decodeHtmlEntities(subtitle || '핵심만 빠르게 정리').slice(0, 28);
+  const svg = `
+  <svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1080" viewBox="0 0 1080 1080">
+    <rect width="1080" height="1080" fill="${bg}"/>
+    <rect x="80" y="80" width="220" height="58" rx="10" fill="${primary}"/>
+    <text x="190" y="119" text-anchor="middle" font-family="Arial, sans-serif" font-size="30" font-weight="800" fill="#fff">${badge}</text>
+    <text x="540" y="410" text-anchor="middle" font-family="Arial, sans-serif" font-size="88" font-weight="900" fill="#111827">${safeKeyword}</text>
+    <rect x="160" y="490" width="760" height="96" rx="6" fill="${primary}"/>
+    <text x="540" y="553" text-anchor="middle" font-family="Arial, sans-serif" font-size="48" font-weight="900" fill="#fff">${safeSection}</text>
+    <rect x="210" y="660" width="660" height="86" rx="4" fill="${accent}"/>
+    <text x="540" y="715" text-anchor="middle" font-family="Arial, sans-serif" font-size="36" font-weight="800" fill="${primary}">${safeSubtitle}</text>
+    <rect x="160" y="820" width="760" height="8" fill="${primary}" opacity="0.22"/>
+  </svg>`;
+  return `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`;
+}
+
+function buildRewriteDraft({ keyword, topic, platform, ctaUrl, useNaverQr, pattern }) {
+  const title = makeRewriteTitle(keyword, topic, platform);
+  const sectionTitles = makeSectionTitles(keyword, topic, pattern.sectionCount);
+  const subject = topic || keyword;
+  const intro = [
+    `${subject}을 알아보다 보면 정보는 많은데 정작 지금 나에게 필요한 기준을 한 번에 잡기 어렵습니다.`,
+    `그래서 이번 글은 ${keyword}를 중심으로 핵심 흐름과 확인 순서, 놓치기 쉬운 부분을 새롭게 정리했습니다.`,
+    `아래 내용은 참고 글의 문장을 가져온 것이 아니라 글 구성과 분량, 반복 밀도만 반영해 새로 작성한 초안입니다.`,
+  ];
+  const cta = ctaUrl
+    ? [`지금 바로 아래에서 ${keyword} 관련 내용을 확인하세요.`, ctaUrl]
+    : [`필요한 부분부터 차근차근 확인해 보세요.`];
+  const bodyParts = [title, '', ...intro, '', ...cta, ''];
+
+  sectionTitles.forEach((section, index) => {
+    bodyParts.push(`> ${section}`);
+    bodyParts.push('');
+    bodyParts.push(`${index + 1}. ${section}에서는 ${keyword}를 판단할 때 먼저 봐야 할 기준을 간단히 나눠서 정리합니다.`);
+    bodyParts.push(`${subject}은 한 가지 조건만 보고 결정하기보다 상황, 목적, 진행 시점까지 같이 비교해야 결과가 자연스럽습니다.`);
+    bodyParts.push(`특히 검색자가 궁금해하는 지점은 “그래서 내가 지금 무엇을 하면 되는가”이기 때문에 설명은 짧게 끊고 실제 확인 순서 중심으로 배치하는 편이 좋습니다.`);
+    bodyParts.push('');
+    bodyParts.push(`[이미지 ${index + 1}: ${section}]`);
+    bodyParts.push('');
+  });
+
+  bodyParts.push('> 마무리');
+  bodyParts.push('');
+  bodyParts.push(`${keyword}는 단순히 정보만 많이 나열한다고 읽히는 주제가 아닙니다.`);
+  bodyParts.push(`처음에는 ${subject}의 핵심 기준을 잡고, 중간에는 실제 확인 방법과 주의사항을 배치한 뒤, 마지막에는 바로 실행할 수 있는 요약으로 닫는 구성이 안정적입니다.`);
+  bodyParts.push(useNaverQr ? `QR을 함께 넣는다면 도입 CTA 이후나 두 번째 섹션 뒤에 배치하는 흐름이 가장 자연스럽습니다.` : `CTA 링크가 있다면 도입부 직후와 마무리 직전에 한 번씩만 배치하는 편이 깔끔합니다.`);
+
+  const body = bodyParts.join('\n');
+  const plainText = body.replace(/\[이미지[^\]]+\]/g, '').replace(/^>\s*/gm, '').trim();
+  const charCount = plainText.replace(/\s/g, '').length;
+  const kwCount = (plainText.match(new RegExp(escapeRegExp(keyword), 'gi')) || []).length;
+  const images = [
+    makeTemplateImage({ keyword, section: title, subtitle: '새 글 초안', index: 0, platform }),
+    ...sectionTitles.slice(0, pattern.imageCount - 1).map((section, index) => (
+      makeTemplateImage({ keyword, section, subtitle: `${index + 1}번째 핵심`, index: index + 1, platform })
+    )),
+  ];
+
+  return {
+    title,
+    body,
+    plainText,
+    charCount,
+    kwCount,
+    imageCount: images.length,
+    quoteCount: sectionTitles.length + 1,
+    images,
+  };
+}
+
+function scoreRewriteOutput(output, pattern) {
+  const charFit = 100 - Math.min(60, Math.abs(output.charCount - pattern.targetCharCount) / Math.max(pattern.targetCharCount, 1) * 100);
+  const kwFit = 100 - Math.min(50, Math.abs(output.kwCount - pattern.targetKwCount) * 5);
+  const imageFit = 100 - Math.min(40, Math.abs(output.imageCount - pattern.imageCount) * 8);
+  const seo = Math.round((charFit * 0.35) + (kwFit * 0.4) + (imageFit * 0.25));
+  const geo = Math.round(Math.min(100, seo + 3));
+  const aeo = Math.round(Math.min(100, 70 + output.quoteCount * 3));
+  const total = Math.round((seo + geo + aeo) / 3);
+  return { seo, geo, aeo, total };
+}
+
+async function addRewriteEvent(rewriteJobId, eventType, message, payload = {}) {
+  await pool.query(
+    `INSERT INTO rewrite_job_events (rewrite_job_id, event_type, message, payload)
+     VALUES ($1,$2,$3,$4)`,
+    [rewriteJobId, eventType, message, JSON.stringify(payload || {})]
+  );
+}
+
+async function processRewriteJob(jobId) {
+  const jobResult = await pool.query('SELECT * FROM rewrite_jobs WHERE id = $1', [jobId]);
+  if (jobResult.rows.length === 0) throw new Error('Rewrite job not found');
+  const job = jobResult.rows[0];
+  const sourceIds = Array.isArray(job.source_analysis_ids) ? job.source_analysis_ids : [];
+
+  await pool.query("UPDATE rewrite_jobs SET status = '패턴 분석중', updated_at = NOW() WHERE id = $1", [jobId]);
+  await addRewriteEvent(jobId, 'pattern_started', '선택한 수집글 패턴 분석을 시작했습니다', { sourceIds });
+
+  const analyses = sourceIds.length
+    ? (await pool.query('SELECT * FROM source_analyses WHERE id = ANY($1::int[])', [sourceIds])).rows
+    : [];
+  const pattern = buildRewritePattern(analyses);
+
+  await pool.query(
+    "UPDATE rewrite_jobs SET status = '초안 생성중', pattern_json = $2, updated_at = NOW() WHERE id = $1",
+    [jobId, JSON.stringify(pattern)]
+  );
+  await addRewriteEvent(jobId, 'draft_started', '재각색 초안을 생성합니다', { pattern });
+
+  const output = buildRewriteDraft({
+    keyword: job.target_keyword,
+    topic: job.target_topic,
+    platform: job.platform,
+    ctaUrl: job.cta_url,
+    useNaverQr: job.use_naver_qr,
+    pattern,
+  });
+
+  await pool.query("UPDATE rewrite_jobs SET status = '이미지 생성중', updated_at = NOW() WHERE id = $1", [jobId]);
+  await addRewriteEvent(jobId, 'images_generated', '템플릿 이미지 세트를 생성했습니다', { count: output.images.length });
+
+  const scores = scoreRewriteOutput(output, pattern);
+  const similarityRisk = 8;
+  const finalStatus = similarityRisk >= 45 ? '검수 필요' : '완료';
+  const { rows } = await pool.query(
+    `UPDATE rewrite_jobs
+     SET status = $2,
+         title = $3,
+         body = $4,
+         plain_text = $5,
+         char_count = $6,
+         kw_count = $7,
+         image_count = $8,
+         quote_count = $9,
+         seo_score = $10,
+         geo_score = $11,
+         aeo_score = $12,
+         total_score = $13,
+         similarity_risk = $14,
+         images_json = $15,
+         error_message = NULL,
+         updated_at = NOW()
+     WHERE id = $1
+     RETURNING *`,
+    [
+      jobId,
+      finalStatus,
+      output.title,
+      output.body,
+      output.plainText,
+      output.charCount,
+      output.kwCount,
+      output.imageCount,
+      output.quoteCount,
+      scores.seo,
+      scores.geo,
+      scores.aeo,
+      scores.total,
+      similarityRisk,
+      JSON.stringify(output.images.map((url, index) => ({ index, type: 'template-svg', url }))),
+    ]
+  );
+
+  await addRewriteEvent(jobId, 'completed', '재각색 작업이 완료되었습니다', { finalStatus, scores });
+  return rows[0];
+}
+
+async function mapLimit(items, limit, mapper) {
+  const results = [];
+  let cursor = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (cursor < items.length) {
+      const index = cursor;
+      cursor += 1;
+      results[index] = await mapper(items[index], index);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
 async function saveCollectionAnalysis(link, analysis, fetchStatus = 'server_collected') {
   const inserted = await pool.query(
     `INSERT INTO source_analyses (
@@ -2017,6 +2284,141 @@ router.post('/views/status/refresh', async (req, res) => {
       failed: results.filter((item) => !item.ok).length,
       results,
     });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/rewrite-jobs', async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit || '100', 10), 300);
+    const values = [];
+    const where = [];
+    if (req.query.status) {
+      values.push(req.query.status);
+      where.push(`status = $${values.length}`);
+    }
+    values.push(limit);
+    const { rows } = await pool.query(
+      `SELECT *
+       FROM rewrite_jobs
+       ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+       ORDER BY created_at DESC
+       LIMIT $${values.length}`,
+      values
+    );
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/rewrite-jobs/:id', async (req, res) => {
+  try {
+    const job = await pool.query('SELECT * FROM rewrite_jobs WHERE id = $1', [req.params.id]);
+    if (job.rows.length === 0) return res.status(404).json({ error: 'Rewrite job not found' });
+    const events = await pool.query(
+      'SELECT * FROM rewrite_job_events WHERE rewrite_job_id = $1 ORDER BY created_at DESC LIMIT 50',
+      [req.params.id]
+    );
+    res.json({ ...job.rows[0], events: events.rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/rewrite-jobs', async (req, res) => {
+  try {
+    const keywords = parseTargetKeywords(req.body?.targetKeywords || req.body?.keywordsText || req.body?.keyword);
+    if (keywords.length === 0) return res.status(400).json({ error: '재각색할 키워드를 입력해 주세요' });
+
+    const sourceAnalysisIds = normalizeIdList(req.body?.sourceAnalysisIds);
+    const sourceLinkIds = normalizeIdList(req.body?.sourceLinkIds);
+    let resolvedSourceAnalysisIds = [...sourceAnalysisIds];
+    if (sourceLinkIds.length > 0) {
+      const { rows } = await pool.query(
+        `SELECT source_analysis_id
+         FROM source_links
+         WHERE id = ANY($1::int[])
+           AND source_analysis_id IS NOT NULL`,
+        [sourceLinkIds]
+      );
+      resolvedSourceAnalysisIds = [
+        ...new Set([
+          ...resolvedSourceAnalysisIds,
+          ...rows.map((row) => row.source_analysis_id).filter(Boolean),
+        ]),
+      ];
+    }
+
+    const platform = normalizePlatform(req.body?.platform || 'blog');
+    const category = req.body?.category || 'general';
+    const targetTopic = req.body?.targetTopic || req.body?.topic || '';
+    const ctaUrl = req.body?.ctaUrl || req.body?.cta_url || null;
+    const useNaverQr = Boolean(req.body?.useNaverQr || req.body?.use_naver_qr);
+    const useAiImages = Boolean(req.body?.useAiImages || req.body?.use_ai_images);
+
+    const insertedJobs = [];
+    for (const keyword of keywords) {
+      const { rows } = await pool.query(
+        `INSERT INTO rewrite_jobs (
+          target_keyword, target_topic, platform, category, cta_url,
+          use_naver_qr, use_ai_images, source_analysis_ids, status
+        )
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'대기중')
+        RETURNING *`,
+        [
+          keyword,
+          targetTopic,
+          platform,
+          category,
+          ctaUrl,
+          useNaverQr,
+          useAiImages,
+          JSON.stringify(resolvedSourceAnalysisIds),
+        ]
+      );
+      await addRewriteEvent(rows[0].id, 'created', '재각색 작업이 등록되었습니다', {
+        sourceAnalysisIds: resolvedSourceAnalysisIds,
+      });
+      insertedJobs.push(rows[0]);
+    }
+
+    const concurrency = clampNumber(parseInt(req.body?.concurrency || '3', 10) || 3, 1, 5);
+    const processed = await mapLimit(insertedJobs, concurrency, async (job) => {
+      try {
+        return await processRewriteJob(job.id);
+      } catch (err) {
+        const failed = await pool.query(
+          `UPDATE rewrite_jobs
+           SET status = '오류',
+               error_message = $2,
+               updated_at = NOW()
+           WHERE id = $1
+           RETURNING *`,
+          [job.id, err.message]
+        );
+        await addRewriteEvent(job.id, 'error', '재각색 작업 중 오류가 발생했습니다', { error: err.message });
+        return failed.rows[0] || { ...job, status: '오류', error_message: err.message };
+      }
+    });
+
+    res.json({
+      ok: true,
+      created: insertedJobs.length,
+      processed: processed.length,
+      concurrency,
+      jobs: processed,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/rewrite-jobs/:id/process', async (req, res) => {
+  try {
+    const job = await processRewriteJob(req.params.id);
+    res.json({ ok: true, job });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

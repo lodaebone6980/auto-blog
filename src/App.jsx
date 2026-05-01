@@ -832,7 +832,11 @@ function StatusBadge({ value }) {
     대기중: COLORS.warning,
     수집중: COLORS.accent,
     수집완료: COLORS.success,
+    '패턴 분석중': COLORS.accent,
+    '초안 생성중': COLORS.accent,
+    '이미지 생성중': COLORS.accent,
     완료: COLORS.success,
+    '검수 필요': COLORS.warning,
     'ID/PW 미저장': COLORS.textMuted,
     'ID/PW 저장 중': COLORS.warning,
     '최초 인증 필요': COLORS.warning,
@@ -860,7 +864,7 @@ function StatusBadge({ value }) {
   );
 }
 
-function SourceCollectionPanel() {
+function SourceCollectionPanel({ onOpenRewrite }) {
   const [batchName, setBatchName] = useState('');
   const [urlsText, setUrlsText] = useState('');
   const [batches, setBatches] = useState([]);
@@ -1114,7 +1118,11 @@ function SourceCollectionPanel() {
             <button
               type="button"
               disabled={selectedCount === 0}
-              onClick={() => setMessage(`선택한 ${selectedCount}개 글은 다음 단계에서 재각색 큐로 연결할 수 있게 만들 예정입니다.`)}
+              onClick={() => {
+                localStorage.setItem('naviwrite.rewrite.selectedSourceLinkIds', JSON.stringify(selectedLinks));
+                setMessage(`선택한 ${selectedCount}개 글을 재각색 메뉴로 넘겼습니다.`);
+                if (onOpenRewrite) onOpenRewrite();
+              }}
               style={{
                 height: 30,
                 padding: '0 12px',
@@ -1222,6 +1230,500 @@ function SourceCollectionPanel() {
               </p>
             </div>
           ))}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function RewritePanel() {
+  const [links, setLinks] = useState([]);
+  const [jobs, setJobs] = useState([]);
+  const [selectedSourceLinkIds, setSelectedSourceLinkIds] = useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem('naviwrite.rewrite.selectedSourceLinkIds') || '[]');
+      return Array.isArray(saved) ? saved : [];
+    } catch {
+      return [];
+    }
+  });
+  const [keywordsText, setKeywordsText] = useState('');
+  const [targetTopic, setTargetTopic] = useState('');
+  const [platform, setPlatform] = useState('blog');
+  const [category, setCategory] = useState('IT/테크');
+  const [ctaUrl, setCtaUrl] = useState('');
+  const [useNaverQr, setUseNaverQr] = useState(true);
+  const [useAiImages, setUseAiImages] = useState(true);
+  const [concurrency, setConcurrency] = useState(3);
+  const [loading, setLoading] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [message, setMessage] = useState('');
+
+  const parseArray = (value) => {
+    if (Array.isArray(value)) return value;
+    if (!value) return [];
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  };
+
+  const loadRewriteData = useCallback(async () => {
+    setLoading(true);
+    const [linkRes, jobRes] = await Promise.all([
+      safeFetch(`${API}/collections/links?limit=150`),
+      safeFetch(`${API}/rewrite-jobs?limit=80`),
+    ]);
+    setLoading(false);
+    if (Array.isArray(linkRes)) setLinks(linkRes);
+    if (Array.isArray(jobRes)) setJobs(jobRes);
+  }, []);
+
+  useEffect(() => {
+    loadRewriteData();
+  }, [loadRewriteData]);
+
+  useEffect(() => {
+    localStorage.setItem('naviwrite.rewrite.selectedSourceLinkIds', JSON.stringify(selectedSourceLinkIds));
+  }, [selectedSourceLinkIds]);
+
+  const collectedLinks = useMemo(
+    () => links.filter((link) => link.status === '수집완료' && link.source_analysis_id),
+    [links]
+  );
+
+  const selectedSources = useMemo(
+    () => collectedLinks.filter((link) => selectedSourceLinkIds.includes(link.id)),
+    [collectedLinks, selectedSourceLinkIds]
+  );
+
+  const keywordCount = useMemo(
+    () => keywordsText.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean).length,
+    [keywordsText]
+  );
+
+  const patternSummary = useMemo(() => {
+    const avg = (field, fallback = 0) => {
+      const values = selectedSources.map((item) => Number(item[field] || 0)).filter((value) => value > 0);
+      if (values.length === 0) return fallback;
+      return Math.round(values.reduce((sum, value) => sum + value, 0) / values.length);
+    };
+    const quoteTotal = selectedSources.reduce((sum, item) => sum + parseArray(item.quote_blocks).length, 0);
+    return {
+      charCount: avg('char_count'),
+      kwCount: avg('kw_count'),
+      imageCount: avg('image_count'),
+      quoteCount: selectedSources.length ? Math.round(quoteTotal / selectedSources.length) : 0,
+    };
+  }, [selectedSources]);
+
+  const toggleSource = (id) => {
+    setSelectedSourceLinkIds((prev) => (
+      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
+    ));
+  };
+
+  const createRewriteJobs = async () => {
+    if (keywordCount === 0) {
+      setMessage('재각색할 키워드를 줄바꿈으로 입력해 주세요.');
+      return;
+    }
+    if (selectedSourceLinkIds.length === 0) {
+      setMessage('패턴으로 삼을 수집완료 링크를 1개 이상 선택해 주세요.');
+      return;
+    }
+
+    setCreating(true);
+    setMessage(`재각색 작업 ${keywordCount}개를 병렬 처리 중입니다.`);
+    const res = await safeFetch(`${API}/rewrite-jobs`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        keywordsText,
+        sourceLinkIds: selectedSourceLinkIds,
+        targetTopic,
+        platform,
+        category,
+        ctaUrl,
+        useNaverQr,
+        useAiImages,
+        concurrency: Number(concurrency) || 3,
+      }),
+    });
+    setCreating(false);
+
+    if (res?.ok) {
+      setMessage(`재각색 완료 · 생성 ${res.created}개 · 병렬 ${res.concurrency}개`);
+      setKeywordsText('');
+      await loadRewriteData();
+    } else {
+      setMessage(res?.error || '재각색 작업 생성에 실패했습니다.');
+    }
+  };
+
+  const reprocessJob = async (jobId) => {
+    setMessage(`작업 #${jobId}을 다시 생성 중입니다.`);
+    const res = await safeFetch(`${API}/rewrite-jobs/${jobId}/process`, { method: 'POST' });
+    if (res?.ok) {
+      setMessage(`작업 #${jobId} 재생성 완료`);
+      await loadRewriteData();
+    } else {
+      setMessage('재생성에 실패했습니다.');
+    }
+  };
+
+  const copyBody = async (job) => {
+    try {
+      await navigator.clipboard.writeText(job.body || job.plain_text || '');
+      setMessage(`작업 #${job.id} 본문을 클립보드에 복사했습니다.`);
+    } catch {
+      setMessage('브라우저 권한 때문에 복사하지 못했습니다.');
+    }
+  };
+
+  const formatTerms = (terms) => {
+    const items = parseArray(terms);
+    if (items.length === 0) return '-';
+    return items.slice(0, 3).map((item) => `${item.term || item.keyword || '-'} ${item.count || ''}`.trim()).join(', ');
+  };
+
+  const platformLabel = {
+    blog: '네이버 블로그',
+    cafe: '네이버 카페',
+    premium: '네이버프리미엄',
+    brunch: '브런치',
+    web: '웹사이트',
+  };
+
+  return (
+    <div style={{ display: 'grid', gap: 18 }}>
+      <section style={{ ...cardStyle, padding: 20 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16, flexWrap: 'wrap' }}>
+          <div>
+            <h2 style={{ fontSize: 18, fontWeight: 850, color: COLORS.primary, marginBottom: 4 }}>재각색</h2>
+            <p style={{ fontSize: 12, color: COLORS.textSecondary, lineHeight: 1.6 }}>
+              수집완료 글의 구성, 글자수, 키워드 반복수, 이미지 수, 인용구 패턴만 참고해서 새 문장으로 초안을 만듭니다.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={loadRewriteData}
+            disabled={loading || creating}
+            style={{
+              height: 36,
+              padding: '0 14px',
+              borderRadius: 9,
+              border: `1px solid ${COLORS.border}`,
+              background: 'white',
+              color: COLORS.primary,
+              fontSize: 12,
+              fontWeight: 850,
+              cursor: loading || creating ? 'wait' : 'pointer',
+            }}
+          >
+            새로고침
+          </button>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(280px, 1.2fr) minmax(260px, 0.8fr)', gap: 14, marginTop: 16 }}>
+          <div>
+            <label style={{ display: 'block', fontSize: 11, fontWeight: 800, color: COLORS.textSecondary, marginBottom: 6 }}>재각색 키워드</label>
+            <textarea
+              value={keywordsText}
+              onChange={(e) => setKeywordsText(e.target.value)}
+              placeholder={`예: sbti 테스트\n예: 고유가 피해지원금\n줄바꿈으로 대량 등록`}
+              rows={7}
+              style={{
+                width: '100%',
+                border: `1px solid ${COLORS.border}`,
+                borderRadius: 10,
+                padding: 12,
+                fontSize: 13,
+                lineHeight: 1.55,
+                resize: 'vertical',
+                outline: 'none',
+              }}
+            />
+          </div>
+          <div style={{ display: 'grid', gap: 10 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+              <div>
+                <label style={{ display: 'block', fontSize: 11, fontWeight: 800, color: COLORS.textSecondary, marginBottom: 6 }}>플랫폼</label>
+                <select
+                  value={platform}
+                  onChange={(e) => setPlatform(e.target.value)}
+                  style={{ width: '100%', height: 38, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: '0 10px', fontSize: 12, color: COLORS.textPrimary, background: 'white' }}
+                >
+                  <option value="blog">네이버 블로그</option>
+                  <option value="cafe">네이버 카페</option>
+                  <option value="premium">네이버프리미엄</option>
+                  <option value="brunch">브런치</option>
+                  <option value="web">웹사이트</option>
+                </select>
+              </div>
+              <div>
+                <label style={{ display: 'block', fontSize: 11, fontWeight: 800, color: COLORS.textSecondary, marginBottom: 6 }}>병렬 수</label>
+                <select
+                  value={concurrency}
+                  onChange={(e) => setConcurrency(e.target.value)}
+                  style={{ width: '100%', height: 38, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: '0 10px', fontSize: 12, color: COLORS.textPrimary, background: 'white' }}
+                >
+                  {[1, 2, 3, 4, 5].map((value) => <option key={value} value={value}>{value}개</option>)}
+                </select>
+              </div>
+            </div>
+            <input
+              value={targetTopic}
+              onChange={(e) => setTargetTopic(e.target.value)}
+              placeholder="주제 보정값 예: 링크 결과 유형 정리"
+              style={{ width: '100%', height: 38, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: '0 12px', fontSize: 12, outline: 'none' }}
+            />
+            <input
+              value={category}
+              onChange={(e) => setCategory(e.target.value)}
+              placeholder="카테고리 예: IT/테크"
+              style={{ width: '100%', height: 38, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: '0 12px', fontSize: 12, outline: 'none' }}
+            />
+            <input
+              value={ctaUrl}
+              onChange={(e) => setCtaUrl(e.target.value)}
+              placeholder="CTA 링크 또는 QR 연결 링크"
+              style={{ width: '100%', height: 38, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: '0 12px', fontSize: 12, outline: 'none' }}
+            />
+            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', fontSize: 12, color: COLORS.textSecondary, fontWeight: 800 }}>
+              <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                <input type="checkbox" checked={useNaverQr} onChange={(e) => setUseNaverQr(e.target.checked)} />
+                네이버 QR 삽입
+              </label>
+              <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                <input type="checkbox" checked={useAiImages} onChange={(e) => setUseAiImages(e.target.checked)} />
+                이미지 초안 생성
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginTop: 14 }}>
+          <button
+            type="button"
+            onClick={createRewriteJobs}
+            disabled={creating || keywordCount === 0 || selectedSourceLinkIds.length === 0}
+            style={{
+              height: 40,
+              padding: '0 18px',
+              borderRadius: 9,
+              border: 'none',
+              background: creating || keywordCount === 0 || selectedSourceLinkIds.length === 0 ? COLORS.textMuted : COLORS.primary,
+              color: 'white',
+              fontSize: 13,
+              fontWeight: 850,
+              cursor: creating || keywordCount === 0 || selectedSourceLinkIds.length === 0 ? 'not-allowed' : 'pointer',
+            }}
+          >
+            {creating ? '재각색 생성 중...' : `재각색 작업 만들기 (${keywordCount})`}
+          </button>
+          {message && <span style={{ fontSize: 12, color: message.includes('완료') || message.includes('복사') ? COLORS.success : COLORS.warning, fontWeight: 800 }}>{message}</span>}
+        </div>
+      </section>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12 }}>
+        {[
+          ['선택 소스', selectedSources.length, COLORS.primary],
+          ['평균 글자수', patternSummary.charCount ? patternSummary.charCount.toLocaleString() : '-', COLORS.textPrimary],
+          ['평균 KW', patternSummary.kwCount || '-', COLORS.accent],
+          ['평균 이미지', patternSummary.imageCount || '-', COLORS.success],
+          ['평균 인용구', patternSummary.quoteCount || '-', COLORS.warning],
+        ].map(([label, value, color]) => (
+          <div key={label} style={{ ...cardStyle, padding: 16 }}>
+            <p style={{ fontSize: 11, color: COLORS.textSecondary, fontWeight: 700, marginBottom: 6 }}>{label}</p>
+            <p style={{ fontSize: 25, color, fontWeight: 900, lineHeight: 1 }}>{value}</p>
+          </div>
+        ))}
+      </div>
+
+      <section style={sectionStyle}>
+        <div style={{ padding: '14px 18px', borderBottom: `1px solid ${COLORS.border}`, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <div style={{ marginRight: 'auto' }}>
+            <h3 style={{ fontSize: 15, fontWeight: 850, color: COLORS.primary }}>패턴 소스 선택</h3>
+            <p style={{ marginTop: 4, fontSize: 11, color: COLORS.textSecondary }}>
+              수집완료 링크만 재각색 패턴으로 사용할 수 있습니다. 예시 문장은 저장하지 않고 수치와 구조만 반영합니다.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setSelectedSourceLinkIds(collectedLinks.map((link) => link.id))}
+            disabled={collectedLinks.length === 0}
+            style={{ height: 30, padding: '0 12px', borderRadius: 8, border: `1px solid ${COLORS.border}`, background: 'white', color: COLORS.primary, fontSize: 11, fontWeight: 850, cursor: collectedLinks.length === 0 ? 'not-allowed' : 'pointer' }}
+          >
+            전체 선택
+          </button>
+          <button
+            type="button"
+            onClick={() => setSelectedSourceLinkIds([])}
+            disabled={selectedSourceLinkIds.length === 0}
+            style={{ height: 30, padding: '0 12px', borderRadius: 8, border: `1px solid ${COLORS.border}`, background: 'white', color: COLORS.textSecondary, fontSize: 11, fontWeight: 850, cursor: selectedSourceLinkIds.length === 0 ? 'not-allowed' : 'pointer' }}
+          >
+            선택 해제
+          </button>
+        </div>
+        <div style={{ overflowX: 'auto', maxHeight: 430 }}>
+          {loading ? (
+            <div style={{ padding: 20 }}>
+              {[1, 2, 3].map((item) => <Skeleton key={item} height={46} style={{ marginBottom: 8 }} />)}
+            </div>
+          ) : collectedLinks.length === 0 ? (
+            <div style={{ padding: 36, textAlign: 'center', color: COLORS.textMuted, fontSize: 13 }}>
+              아직 재각색에 쓸 수집완료 링크가 없습니다.
+            </div>
+          ) : (
+            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1120 }}>
+              <thead>
+                <tr style={{ background: '#f8fafc', color: COLORS.textSecondary, fontSize: 11, textAlign: 'left' }}>
+                  {['선택', '블로그/출처', '플랫폼', '메인키워드', '카테고리', '글자/KW/이미지', '인용구/반복어', 'URL'].map((head) => (
+                    <th key={head} style={{ padding: '10px 12px', borderBottom: `1px solid ${COLORS.border}` }}>{head}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {collectedLinks.map((link) => (
+                  <tr key={link.id} style={{ fontSize: 12, borderBottom: `1px solid ${COLORS.border}` }}>
+                    <td style={{ padding: '10px 12px' }}>
+                      <input
+                        type="checkbox"
+                        checked={selectedSourceLinkIds.includes(link.id)}
+                        onChange={() => toggleSource(link.id)}
+                        aria-label="패턴 소스 선택"
+                      />
+                    </td>
+                    <td style={{ padding: '10px 12px', maxWidth: 180 }}>
+                      <p style={{ fontWeight: 850, color: COLORS.textPrimary, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{link.blog_nickname || link.blog_name || '-'}</p>
+                      <p style={{ marginTop: 2, fontSize: 10, color: COLORS.textMuted, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{link.blog_title || link.blog_id || link.batch_name || ''}</p>
+                    </td>
+                    <td style={{ padding: '10px 12px', fontWeight: 800, color: COLORS.textSecondary }}>{platformLabel[link.platform_guess] || link.platform_guess || '-'}</td>
+                    <td style={{ padding: '10px 12px', fontWeight: 850, color: COLORS.primary }}>{link.main_keyword || '-'}</td>
+                    <td style={{ padding: '10px 12px', color: COLORS.textSecondary }}>{link.category_guess || '-'}</td>
+                    <td style={{ padding: '10px 12px', color: COLORS.textSecondary }}>
+                      {(link.char_count || 0).toLocaleString()} / {link.kw_count || 0} / {link.image_count || 0}
+                    </td>
+                    <td style={{ padding: '10px 12px', color: COLORS.textSecondary, maxWidth: 240 }}>
+                      <p style={{ fontSize: 10, color: COLORS.textMuted }}>인용구 {parseArray(link.quote_blocks).length}개</p>
+                      <p style={{ marginTop: 2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{formatTerms(link.quote_repeated_terms?.length ? link.quote_repeated_terms : link.repeated_terms)}</p>
+                    </td>
+                    <td style={{ padding: '10px 12px', maxWidth: 300 }}>
+                      <a href={link.url} target="_blank" rel="noreferrer" style={{ display: 'block', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {link.url}
+                      </a>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </section>
+
+      <section style={sectionStyle}>
+        <div style={{ padding: '14px 18px', borderBottom: `1px solid ${COLORS.border}` }}>
+          <h3 style={{ fontSize: 15, fontWeight: 850, color: COLORS.primary }}>재각색 작업 목록</h3>
+          <p style={{ marginTop: 4, fontSize: 11, color: COLORS.textSecondary }}>
+            완료된 작업은 본문, 점수, 이미지 초안을 함께 저장합니다. 발행 전에 유사도와 사실 검수 단계를 거치는 흐름으로 운영합니다.
+          </p>
+        </div>
+        <div style={{ display: 'grid', gap: 12, padding: 14 }}>
+          {jobs.length === 0 ? (
+            <div style={{ padding: 24, textAlign: 'center', color: COLORS.textMuted, fontSize: 13 }}>
+              아직 생성된 재각색 작업이 없습니다.
+            </div>
+          ) : jobs.map((job) => {
+            const images = parseArray(job.images_json);
+            const firstImage = images[0]?.url;
+            return (
+              <div key={job.id} style={{
+                border: `1px solid ${COLORS.border}`,
+                borderRadius: 10,
+                background: 'white',
+                padding: 14,
+                display: 'grid',
+                gridTemplateColumns: firstImage ? '140px minmax(0, 1fr)' : '1fr',
+                gap: 14,
+              }}>
+                {firstImage && (
+                  <img
+                    src={firstImage}
+                    alt={`${job.target_keyword} 대표 이미지 초안`}
+                    style={{ width: 140, height: 140, borderRadius: 8, objectFit: 'cover', border: `1px solid ${COLORS.border}` }}
+                  />
+                )}
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, flexWrap: 'wrap', marginBottom: 8 }}>
+                    <div style={{ minWidth: 0, marginRight: 'auto' }}>
+                      <h4 style={{ fontSize: 14, fontWeight: 900, color: COLORS.textPrimary, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {job.title || job.target_keyword}
+                      </h4>
+                      <p style={{ marginTop: 3, fontSize: 11, color: COLORS.textMuted }}>
+                        #{job.id} · {job.target_keyword} · {platformLabel[job.platform] || job.platform} · {job.category || 'general'}
+                      </p>
+                    </div>
+                    <StatusBadge value={job.status} />
+                  </div>
+
+                  <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', fontSize: 11, color: COLORS.textSecondary, marginBottom: 10 }}>
+                    <span>글자 {Number(job.char_count || 0).toLocaleString()}</span>
+                    <span>KW {job.kw_count || 0}</span>
+                    <span>이미지 {job.image_count || 0}</span>
+                    <span>인용구 {job.quote_count || 0}</span>
+                    <span>SEO {Number(job.seo_score || 0).toFixed(0)}</span>
+                    <span>GEO {Number(job.geo_score || 0).toFixed(0)}</span>
+                    <span>AEO {Number(job.aeo_score || 0).toFixed(0)}</span>
+                    <span>유사도 위험 {Number(job.similarity_risk || 0).toFixed(0)}</span>
+                    {job.use_naver_qr && <span>네이버 QR 사용</span>}
+                  </div>
+
+                  {job.plain_text && (
+                    <div style={{
+                      maxHeight: 130,
+                      overflow: 'auto',
+                      padding: 10,
+                      borderRadius: 8,
+                      background: '#f8fafc',
+                      border: `1px solid ${COLORS.border}`,
+                      fontSize: 11,
+                      lineHeight: 1.65,
+                      color: COLORS.textSecondary,
+                      whiteSpace: 'pre-wrap',
+                      marginBottom: 10,
+                    }}>
+                      {job.plain_text}
+                    </div>
+                  )}
+
+                  {job.error_message && (
+                    <p style={{ fontSize: 11, color: COLORS.danger, marginBottom: 10 }}>{job.error_message}</p>
+                  )}
+
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    <button
+                      type="button"
+                      onClick={() => copyBody(job)}
+                      disabled={!job.body && !job.plain_text}
+                      style={{ height: 30, padding: '0 12px', borderRadius: 8, border: `1px solid ${COLORS.border}`, background: 'white', color: COLORS.primary, fontSize: 11, fontWeight: 850, cursor: !job.body && !job.plain_text ? 'not-allowed' : 'pointer' }}
+                    >
+                      본문 복사
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => reprocessJob(job.id)}
+                      style={{ height: 30, padding: '0 12px', borderRadius: 8, border: 'none', background: COLORS.primary, color: 'white', fontSize: 11, fontWeight: 850, cursor: 'pointer' }}
+                    >
+                      다시 생성
+                    </button>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
         </div>
       </section>
     </div>
@@ -2581,6 +3083,7 @@ export default function App() {
           {[
             ['dashboard', '대시보드'],
             ['collect', '수집 링크'],
+            ['rewrite', '재각색'],
             ['views', '조회수 근황'],
             ['settings', '운영 설정'],
           ].map(([view, label]) => (
@@ -2607,7 +3110,9 @@ export default function App() {
         </div>
 
         {activeView === 'collect' ? (
-          <SourceCollectionPanel />
+          <SourceCollectionPanel onOpenRewrite={() => setActiveView('rewrite')} />
+        ) : activeView === 'rewrite' ? (
+          <RewritePanel />
         ) : activeView === 'views' ? (
           <ViewStatusPanel />
         ) : activeView === 'settings' ? (
