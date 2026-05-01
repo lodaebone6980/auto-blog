@@ -833,6 +833,12 @@ function StatusBadge({ value }) {
     수집중: COLORS.accent,
     수집완료: COLORS.success,
     완료: COLORS.success,
+    'ID/PW 미저장': COLORS.textMuted,
+    'ID/PW 저장 중': COLORS.warning,
+    '최초 인증 필요': COLORS.warning,
+    '인증 진행 중': COLORS.accent,
+    '발행 준비 완료': COLORS.success,
+    '로그인 재확인 필요': COLORS.warning,
     오류: COLORS.danger,
   };
   const color = colors[value] || COLORS.textSecondary;
@@ -1018,9 +1024,35 @@ function SourceCollectionPanel() {
         ))}
       </div>
 
+      {stats.pending > 0 && (
+        <section style={{ ...cardStyle, padding: 16, background: '#fff7ed', borderColor: '#fed7aa' }}>
+          <h3 style={{ fontSize: 14, fontWeight: 850, color: '#9a3412', marginBottom: 6 }}>대기중 처리 방법</h3>
+          <p style={{ fontSize: 12, color: '#9a3412', lineHeight: 1.65 }}>
+            대기중은 URL이 DB 큐에만 등록된 상태입니다. 실제 글 본문, 이미지 수, 키워드 반복수, 글 구조 분석은
+            Chrome 확장프로그램의 <b>수집</b> 탭에서 실행해야 합니다.
+          </p>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 8, marginTop: 10 }}>
+            {[
+              '1. 확장프로그램 열기',
+              '2. 수집 탭 선택',
+              '3. 새로고침으로 대기 링크 확인',
+              '4. 대기 링크 수집 시작',
+              '5. 완료 후 이 화면 새로고침',
+            ].map((item) => (
+              <div key={item} style={{ padding: '9px 10px', borderRadius: 8, background: 'white', color: '#9a3412', fontSize: 11, fontWeight: 800 }}>
+                {item}
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
       <section style={sectionStyle}>
         <div style={{ padding: '14px 18px', borderBottom: `1px solid ${COLORS.border}` }}>
-          <h3 style={{ fontSize: 15, fontWeight: 850, color: COLORS.primary }}>최근 수집 링크</h3>
+          <h3 style={{ fontSize: 15, fontWeight: 850, color: COLORS.primary }}>최근 수집 링크와 분석 결과</h3>
+          <p style={{ marginTop: 4, fontSize: 11, color: COLORS.textSecondary }}>
+            수집완료가 되면 메인키워드, 카테고리, 글자수/KW 반복수/이미지 수가 이 표에 표시됩니다.
+          </p>
         </div>
         <div style={{ overflowX: 'auto' }}>
           {links.length === 0 ? (
@@ -1555,26 +1587,27 @@ function OperationsSettingsPanel() {
   };
 
   const openRunnerLogin = async (account) => {
-    setRunnerStatus({ state: 'testing', message: `${account.label} 로그인 창 여는 중...` });
+    setRunnerStatus({ state: 'testing', message: `${account.label} 인증 창 여는 중...` });
     try {
       const profileId = account.runnerProfileId || await ensureRunnerProfile(account);
       await runnerRequest(`/profiles/${profileId}/open-login`, { method: 'POST', body: '{}' });
-      updateAccount(account.id, { loginStatus: '로그인 확인 중', runnerProfileId: profileId });
-      setRunnerStatus({ state: 'ok', message: `${account.label} 전용 브라우저 프로필을 열었습니다` });
+      updateAccount(account.id, { loginStatus: '인증 진행 중', runnerProfileId: profileId });
+      setRunnerStatus({ state: 'ok', message: `${account.label} 인증 창을 열었습니다. 네이버 보안 확인을 끝낸 뒤 인증 완료 저장을 누르세요` });
     } catch (err) {
-      setRunnerStatus({ state: 'fail', message: err instanceof Error ? err.message : '로그인 창 열기 실패' });
+      setRunnerStatus({ state: 'fail', message: err instanceof Error ? err.message : '인증 창 열기 실패' });
     }
   };
 
   const markRunnerLoginChecked = async (account) => {
-    setRunnerStatus({ state: 'testing', message: `${account.label} 로그인 체크 저장 중...` });
+    setRunnerStatus({ state: 'testing', message: `${account.label} 인증 완료 저장 중...` });
     try {
       const profileId = account.runnerProfileId || await ensureRunnerProfile(account);
       const data = await runnerRequest(`/profiles/${profileId}/mark-login-checked`, { method: 'POST', body: '{}' });
       applyRunnerState(account, data);
-      setRunnerStatus({ state: 'ok', message: `${account.label} 로그인 체크 완료` });
+      updateAccount(account.id, { loginStatus: '발행 준비 완료', runnerProfileId: profileId, runnerReason: '인증 완료된 브라우저 세션을 우선 사용합니다.' });
+      setRunnerStatus({ state: 'ok', message: `${account.label} 인증 완료. 발행 준비 상태로 저장했습니다` });
     } catch (err) {
-      setRunnerStatus({ state: 'fail', message: err instanceof Error ? err.message : '로그인 체크 실패' });
+      setRunnerStatus({ state: 'fail', message: err instanceof Error ? err.message : '인증 완료 저장 실패' });
     }
   };
 
@@ -1653,12 +1686,12 @@ function OperationsSettingsPanel() {
         ...item,
         runnerProfileId: profileId,
         usernameHint: credential.username || account.usernameHint,
-        loginStatus: session.needsLoginCheck ? '로그인 재확인 필요' : session.loginStatus || '자격증명 저장 완료',
+        loginStatus: '최초 인증 필요',
         hasCredential: Boolean(credential.hasCredential),
         credentialUpdatedAt: credential.updatedAt || new Date().toISOString(),
         credentialVerifiedAt: credential.verifiedAt || null,
         runnerPlan: plan.recommendedAction || '',
-        runnerReason: plan.reason || 'ID/PW가 Runner PC에 암호화 저장됐습니다.',
+        runnerReason: 'ID/PW는 저장됐습니다. 네이버 IP 보안/2차 인증 확인을 위해 인증 창에서 최초 로그인을 완료해 주세요.',
         runnerSyncedAt: new Date().toISOString(),
       } : item),
     });
@@ -1678,7 +1711,7 @@ function OperationsSettingsPanel() {
       runnerProfileId: '',
       credentialPolicy: 'Runner 로컬 DPAPI',
       sessionPolicy: '6시간 체크 · 2시간 무활동 재확인',
-      loginStatus: password ? '자격증명 저장 중' : 'ID/PW 미저장',
+      loginStatus: password ? 'ID/PW 저장 중' : 'ID/PW 미저장',
       hasCredential: false,
       lastCheckedAt: null,
     };
@@ -1698,7 +1731,7 @@ function OperationsSettingsPanel() {
     setRunnerStatus({ state: 'testing', message: `${newAccount.label} ID/PW를 Runner에 저장 중...` });
     try {
       await saveInitialCredential(newAccount, nextSettings, password);
-      setRunnerStatus({ state: 'ok', message: `${newAccount.label} 계정과 ID/PW를 Runner PC에 암호화 저장했습니다` });
+      setRunnerStatus({ state: 'ok', message: `${newAccount.label} ID/PW 저장 완료. 이제 인증 창을 열어 네이버 보안 확인을 완료하세요` });
     } catch (err) {
       setRunnerStatus({
         state: 'fail',
@@ -1753,8 +1786,8 @@ function OperationsSettingsPanel() {
       <section style={{ ...cardStyle, padding: 20 }}>
         <h2 style={{ fontSize: 18, fontWeight: 850, color: COLORS.primary, marginBottom: 5 }}>운영 설정</h2>
         <p style={{ fontSize: 12, color: COLORS.textSecondary, lineHeight: 1.65 }}>
-          이 화면은 발행 계정, QR 계정, VPN 프로필을 로컬 기준으로 준비하는 곳입니다. 비밀번호는 Railway 서버나 DB에 저장하지 않고,
-          브라우저가 <code>127.0.0.1</code> Runner로 직접 보내 Windows DPAPI로 암호화합니다.
+          이 화면은 발행 계정, QR 계정, VPN 프로필을 로컬 기준으로 준비하는 곳입니다. ID/PW는 Runner PC에만 암호화 저장하고,
+          네이버 IP 보안, 2차 인증, 새 환경 확인은 인증 창에서 직접 완료한 뒤 발행 준비 상태로 저장합니다.
         </p>
       </section>
 
@@ -1763,7 +1796,7 @@ function OperationsSettingsPanel() {
           <div>
             <h3 style={{ fontSize: 15, fontWeight: 850, color: COLORS.primary, marginBottom: 4 }}>Local Runner 연결</h3>
             <p style={{ fontSize: 12, color: COLORS.textSecondary, lineHeight: 1.6 }}>
-              Runner가 계정별 브라우저 프로필, 로그인 세션, 로컬 암호화 자격증명, VPN 명령 계획을 담당합니다.
+            Runner가 계정별 브라우저 세션, 로컬 암호화 ID/PW, 인증 창 열기, VPN 명령 계획을 담당합니다.
             </p>
           </div>
           <StatusBadge value={runnerStatus.state === 'ok' ? '연결됨' : runnerStatus.state === 'fail' ? '오류' : '대기중'} />
@@ -1814,7 +1847,7 @@ function OperationsSettingsPanel() {
           <input value={accountForm.memo} onChange={(e) => setAccountForm({ ...accountForm, memo: e.target.value })} placeholder="발행 채널 URL 또는 메모" style={inputStyle} />
           <button type="button" onClick={addAccount} style={primaryButtonStyle}>계정 저장 + ID/PW 로컬 저장</button>
           <p style={{ marginTop: 6, fontSize: 10, color: COLORS.textMuted, lineHeight: 1.5 }}>
-            ID/PW를 입력하면 Runner가 자동으로 전용 브라우저 프로필을 만들고 로컬 암호화 저장까지 처리합니다. 비밀번호는 이 사이트 DB에 남기지 않습니다.
+            ID/PW 저장은 로그인 완료가 아닙니다. 저장 후 인증 창을 열어 네이버 보안 확인을 끝내고, 인증 완료 저장까지 눌러야 발행 준비 상태가 됩니다.
           </p>
           <AccountSlotListV2
             items={settings.accounts}
@@ -1928,9 +1961,9 @@ function AccountSlotListV2({
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(92px, 1fr))', gap: 6, marginBottom: 10 }}>
               <button type="button" onClick={() => onCreateProfile(item)} style={smallButtonStyle}>Runner 준비</button>
               <button type="button" onClick={() => onCheckSession(item)} style={smallButtonStyle}>세션 체크</button>
-              <button type="button" onClick={() => onOpenLogin(item)} style={smallButtonStyle}>로그인 창</button>
+              <button type="button" onClick={() => onOpenLogin(item)} style={smallButtonStyle}>인증 창 열기</button>
               <button type="button" onClick={() => onMarkChecked(item)} style={{ ...smallButtonStyle, background: COLORS.success, color: 'white', borderColor: COLORS.success }}>
-                체크 완료
+                인증 완료 저장
               </button>
             </div>
 
