@@ -1443,7 +1443,7 @@ function OperationsSettingsPanel() {
     }
   });
   const [runnerStatus, setRunnerStatus] = useState({ state: 'idle', message: '' });
-  const [accountForm, setAccountForm] = useState({ platform: 'blog', label: '', memo: '', usernameHint: '' });
+  const [accountForm, setAccountForm] = useState({ platform: 'blog', label: '', memo: '', usernameHint: '', password: '' });
   const [qrForm, setQrForm] = useState({ label: '', naverIdHint: '', dailyLimit: 100 });
   const [vpnForm, setVpnForm] = useState({ label: '', provider: 'nordvpn', target: '', mode: '수동 확인' });
   const [credentialDrafts, setCredentialDrafts] = useState({});
@@ -1624,22 +1624,89 @@ function OperationsSettingsPanel() {
     }
   };
 
-  const addAccount = () => {
-    if (!accountForm.label.trim()) return;
-    saveSettings({
-      ...settings,
-      accounts: [...settings.accounts, {
-        id: `acc_${Date.now()}`,
-        ...accountForm,
-        runnerProfileId: '',
-        credentialPolicy: 'Runner 로컬 DPAPI',
-        sessionPolicy: '6시간 체크 · 2시간 무활동 재확인',
-        loginStatus: '로그인 체크 필요',
-        hasCredential: false,
-        lastCheckedAt: null,
-      }],
+  const saveInitialCredential = async (account, baseSettings, password) => {
+    const profileData = await runnerRequest('/profiles', {
+      method: 'POST',
+      body: JSON.stringify({
+        id: account.id,
+        label: account.label,
+        platform: account.platform,
+        targetUrl: account.memo,
+        usernameHint: account.usernameHint,
+        loginCheckIntervalHours: 6,
+        inactivityRecheckHours: 2,
+      }),
     });
-    setAccountForm({ platform: 'blog', label: '', memo: '', usernameHint: '' });
+    const profileId = profileData.profile?.id || account.id;
+    const credentialData = await runnerRequest(`/profiles/${profileId}/credentials`, {
+      method: 'POST',
+      body: JSON.stringify({ username: account.usernameHint, password }),
+    });
+    const profile = credentialData.profile || profileData.profile || {};
+    const credential = credentialData.credential || profile.credential || {};
+    const plan = credentialData.plan || profileData.plan || {};
+    const session = plan.session || profile.session || {};
+
+    saveSettings({
+      ...baseSettings,
+      accounts: baseSettings.accounts.map((item) => item.id === account.id ? {
+        ...item,
+        runnerProfileId: profileId,
+        usernameHint: credential.username || account.usernameHint,
+        loginStatus: session.needsLoginCheck ? '로그인 재확인 필요' : session.loginStatus || '자격증명 저장 완료',
+        hasCredential: Boolean(credential.hasCredential),
+        credentialUpdatedAt: credential.updatedAt || new Date().toISOString(),
+        credentialVerifiedAt: credential.verifiedAt || null,
+        runnerPlan: plan.recommendedAction || '',
+        runnerReason: plan.reason || 'ID/PW가 Runner PC에 암호화 저장됐습니다.',
+        runnerSyncedAt: new Date().toISOString(),
+      } : item),
+    });
+  };
+
+  const addAccount = async () => {
+    if (!accountForm.label.trim()) return;
+    if (accountForm.password && !accountForm.usernameHint.trim()) {
+      setRunnerStatus({ state: 'fail', message: 'ID/PW 저장 방식은 로그인 ID가 필요합니다' });
+      return;
+    }
+
+    const { password, ...safeAccountForm } = accountForm;
+    const newAccount = {
+      id: `acc_${Date.now()}`,
+      ...safeAccountForm,
+      runnerProfileId: '',
+      credentialPolicy: 'Runner 로컬 DPAPI',
+      sessionPolicy: '6시간 체크 · 2시간 무활동 재확인',
+      loginStatus: password ? '자격증명 저장 중' : 'ID/PW 미저장',
+      hasCredential: false,
+      lastCheckedAt: null,
+    };
+    const nextSettings = {
+      ...settings,
+      accounts: [...settings.accounts, newAccount],
+    };
+
+    saveSettings(nextSettings);
+    setAccountForm({ platform: 'blog', label: '', memo: '', usernameHint: '', password: '' });
+
+    if (!password) {
+      setRunnerStatus({ state: 'idle', message: '계정 슬롯을 저장했습니다. ID/PW는 아래 계정 카드에서 나중에 저장할 수 있습니다' });
+      return;
+    }
+
+    setRunnerStatus({ state: 'testing', message: `${newAccount.label} ID/PW를 Runner에 저장 중...` });
+    try {
+      await saveInitialCredential(newAccount, nextSettings, password);
+      setRunnerStatus({ state: 'ok', message: `${newAccount.label} 계정과 ID/PW를 Runner PC에 암호화 저장했습니다` });
+    } catch (err) {
+      setRunnerStatus({
+        state: 'fail',
+        message: err instanceof Error
+          ? `${err.message} · 계정 슬롯은 저장됐지만 ID/PW는 저장되지 않았습니다. Runner 실행 후 다시 저장하세요.`
+          : 'ID/PW 저장 실패 · Runner 실행 후 다시 저장하세요.',
+      });
+    }
   };
 
   const addQr = () => {
@@ -1742,9 +1809,13 @@ function OperationsSettingsPanel() {
             </select>
             <input value={accountForm.label} onChange={(e) => setAccountForm({ ...accountForm, label: e.target.value })} placeholder="예: 네이버 블로그 계정 1" style={inputStyle} />
           </div>
-          <input value={accountForm.usernameHint} onChange={(e) => setAccountForm({ ...accountForm, usernameHint: e.target.value })} placeholder="ID 힌트 또는 담당자명" style={inputStyle} />
-          <input value={accountForm.memo} onChange={(e) => setAccountForm({ ...accountForm, memo: e.target.value })} placeholder="메모 또는 운영 채널 URL" style={inputStyle} />
-          <button type="button" onClick={addAccount} style={primaryButtonStyle}>계정 슬롯 추가</button>
+          <input value={accountForm.usernameHint} onChange={(e) => setAccountForm({ ...accountForm, usernameHint: e.target.value })} placeholder="로그인 ID" style={inputStyle} />
+          <input type="password" value={accountForm.password} onChange={(e) => setAccountForm({ ...accountForm, password: e.target.value })} placeholder="비밀번호, Runner PC에만 암호화 저장" style={inputStyle} />
+          <input value={accountForm.memo} onChange={(e) => setAccountForm({ ...accountForm, memo: e.target.value })} placeholder="발행 채널 URL 또는 메모" style={inputStyle} />
+          <button type="button" onClick={addAccount} style={primaryButtonStyle}>계정 저장 + ID/PW 로컬 저장</button>
+          <p style={{ marginTop: 6, fontSize: 10, color: COLORS.textMuted, lineHeight: 1.5 }}>
+            ID/PW를 입력하면 Runner가 자동으로 전용 브라우저 프로필을 만들고 로컬 암호화 저장까지 처리합니다. 비밀번호는 이 사이트 DB에 남기지 않습니다.
+          </p>
           <AccountSlotListV2
             items={settings.accounts}
             drafts={credentialDrafts}
@@ -1855,7 +1926,7 @@ function AccountSlotListV2({
             </div>
 
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(92px, 1fr))', gap: 6, marginBottom: 10 }}>
-              <button type="button" onClick={() => onCreateProfile(item)} style={smallButtonStyle}>프로필 생성</button>
+              <button type="button" onClick={() => onCreateProfile(item)} style={smallButtonStyle}>Runner 준비</button>
               <button type="button" onClick={() => onCheckSession(item)} style={smallButtonStyle}>세션 체크</button>
               <button type="button" onClick={() => onOpenLogin(item)} style={smallButtonStyle}>로그인 창</button>
               <button type="button" onClick={() => onMarkChecked(item)} style={{ ...smallButtonStyle, background: COLORS.success, color: 'white', borderColor: COLORS.success }}>
@@ -1880,7 +1951,7 @@ function AccountSlotListV2({
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(105px, 1fr))', gap: 6, marginTop: 6 }}>
               <button type="button" onClick={() => onSaveCredential(item)} style={{ ...smallButtonStyle, background: COLORS.primary, color: 'white', borderColor: COLORS.primary }}>자격증명 저장</button>
-              <button type="button" onClick={() => onVerifyCredential(item)} style={smallButtonStyle}>저장값 검증</button>
+              <button type="button" onClick={() => onVerifyCredential(item)} style={smallButtonStyle}>저장 확인</button>
               <button type="button" onClick={() => onDeleteCredential(item)} style={{ ...smallButtonStyle, color: COLORS.danger }}>자격증명 삭제</button>
             </div>
           </div>
