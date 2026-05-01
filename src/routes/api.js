@@ -995,8 +995,8 @@ const DEFAULT_REWRITE_SETTINGS = {
   benchmarkSampleCount: 20,
   benchmarkMedianCharCount: 1940,
   benchmarkMedianSectionCount: 7,
-  benchmarkMedianSectionCharCount: 273,
-  benchmarkMedianKwCount: 15,
+  benchmarkMedianSectionCharCount: 280,
+  benchmarkMedianKwCount: 19,
   benchmarkMedianImageCount: 12,
 };
 
@@ -1110,7 +1110,7 @@ async function benchmarkRewriteSettingsFromUrl(sourceUrl, limit = 20) {
     targetCharCount,
     sectionCharCount: clampNumber(roundToNearest(targetCharCount / sectionCount, 10), 150, 700),
     sectionCount,
-    targetKwCount: summary.medianKwCount || DEFAULT_REWRITE_SETTINGS.targetKwCount,
+    targetKwCount: Math.min(summary.medianKwCount || DEFAULT_REWRITE_SETTINGS.targetKwCount, DEFAULT_REWRITE_SETTINGS.targetKwCount),
     imageCount: summary.medianImageCount || DEFAULT_REWRITE_SETTINGS.imageCount,
     benchmarkUrl: sourceUrl,
     benchmarkSampleCount: summary.sampleCount,

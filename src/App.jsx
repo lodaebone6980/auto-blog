@@ -40,8 +40,8 @@ const DEFAULT_REWRITE_SETTINGS = {
   benchmarkSampleCount: 20,
   benchmarkMedianCharCount: 1940,
   benchmarkMedianSectionCount: 7,
-  benchmarkMedianSectionCharCount: 273,
-  benchmarkMedianKwCount: 15,
+  benchmarkMedianSectionCharCount: 280,
+  benchmarkMedianKwCount: 19,
   benchmarkMedianImageCount: 12,
 };
 
@@ -1570,8 +1570,8 @@ function RewritePanel() {
             <div>
               <h3 style={{ fontSize: 14, fontWeight: 900, color: COLORS.primary, marginBottom: 4 }}>재각색 기준값</h3>
               <p style={{ fontSize: 11, color: COLORS.textSecondary, lineHeight: 1.6 }}>
-                openmind200 최근 20개 기준 중앙값은 1,940자 · 7섹션 · 섹션당 273자 · KW 15회 · 이미지 12장입니다.
-                운영 기본값은 2,200자 기준으로 살짝 상향했습니다.
+                openmind200 최근 20개 자동 중앙값은 1,940자 · 7섹션 · 섹션당 약 280자 · KW 19회 · 이미지 12장입니다.
+                운영 기본값은 2,200자 · KW 15회로 보정했습니다.
               </p>
             </div>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
