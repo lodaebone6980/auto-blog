@@ -223,6 +223,85 @@ export async function initDB() {
       ALTER TABLE source_analyses ADD COLUMN IF NOT EXISTS repeated_terms JSONB DEFAULT '[]';
       ALTER TABLE source_analyses ADD COLUMN IF NOT EXISTS quote_repeated_terms JSONB DEFAULT '[]';
 
+      -- Collapse previously duplicated blog rows before adding the one-blog constraint.
+      WITH duplicate_blogs AS (
+        SELECT id
+        FROM (
+          SELECT id,
+                 ROW_NUMBER() OVER (
+                   PARTITION BY platform, blog_id
+                   ORDER BY updated_at DESC NULLS LAST, id DESC
+                 ) AS row_no
+          FROM collected_blogs
+          WHERE blog_id IS NOT NULL
+        ) ranked
+        WHERE row_no > 1
+      )
+      DELETE FROM blog_view_snapshots bvs
+      USING duplicate_blogs db
+      WHERE bvs.collected_blog_id = db.id;
+
+      WITH duplicate_blogs AS (
+        SELECT id
+        FROM (
+          SELECT id,
+                 ROW_NUMBER() OVER (
+                   PARTITION BY platform, blog_id
+                   ORDER BY updated_at DESC NULLS LAST, id DESC
+                 ) AS row_no
+          FROM collected_blogs
+          WHERE blog_id IS NOT NULL
+        ) ranked
+        WHERE row_no > 1
+      )
+      DELETE FROM collected_blogs cb
+      USING duplicate_blogs db
+      WHERE cb.id = db.id;
+
+      -- Keep one queue row per exact source URL so the same article is not learned twice.
+      WITH duplicate_links AS (
+        SELECT id
+        FROM (
+          SELECT id,
+                 ROW_NUMBER() OVER (
+                   PARTITION BY url
+                   ORDER BY collected_at DESC NULLS LAST, updated_at DESC NULLS LAST, id DESC
+                 ) AS row_no
+          FROM source_links
+        ) ranked
+        WHERE row_no > 1
+      )
+      DELETE FROM source_links sl
+      USING duplicate_links dl
+      WHERE sl.id = dl.id;
+
+      WITH counts AS (
+        SELECT
+          cb.id AS batch_id,
+          COUNT(sl.id)::int AS total_count,
+          COUNT(*) FILTER (WHERE sl.status = '대기중')::int AS pending_count,
+          COUNT(*) FILTER (WHERE sl.status = '수집중')::int AS collecting_count,
+          COUNT(*) FILTER (WHERE sl.status = '수집완료')::int AS collected_count,
+          COUNT(*) FILTER (WHERE sl.status = '오류')::int AS failed_count
+        FROM collection_batches cb
+        LEFT JOIN source_links sl ON sl.batch_id = cb.id
+        GROUP BY cb.id
+      )
+      UPDATE collection_batches cb
+      SET total_count = counts.total_count,
+          pending_count = counts.pending_count,
+          collecting_count = counts.collecting_count,
+          collected_count = counts.collected_count,
+          failed_count = counts.failed_count,
+          status = CASE
+            WHEN counts.total_count = counts.collected_count + counts.failed_count THEN '완료'
+            WHEN counts.collecting_count > 0 THEN '수집중'
+            ELSE '대기중'
+          END,
+          updated_at = NOW()
+      FROM counts
+      WHERE cb.id = counts.batch_id;
+
       -- Content Jobs (generated drafts + QR + sheet sync)
       CREATE TABLE IF NOT EXISTS content_jobs (
         id SERIAL PRIMARY KEY,
@@ -292,8 +371,10 @@ export async function initDB() {
       CREATE INDEX IF NOT EXISTS idx_collection_batches_created_at ON collection_batches(created_at);
       CREATE INDEX IF NOT EXISTS idx_source_links_batch_id ON source_links(batch_id);
       CREATE INDEX IF NOT EXISTS idx_source_links_status ON source_links(status);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_source_links_url_unique ON source_links(url);
       CREATE INDEX IF NOT EXISTS idx_collected_blogs_category ON collected_blogs(category);
       CREATE INDEX IF NOT EXISTS idx_collected_blogs_blog_id ON collected_blogs(blog_id);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_collected_blogs_platform_blog_id_unique ON collected_blogs(platform, blog_id);
       CREATE INDEX IF NOT EXISTS idx_blog_view_snapshots_blog_date ON blog_view_snapshots(collected_blog_id, snapshot_date DESC);
     `);
     console.log('[DB] Tables initialized successfully');

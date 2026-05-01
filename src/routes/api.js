@@ -672,8 +672,9 @@ async function upsertCollectedBlogFromAnalysis(link, analysis) {
        last_today_view_count, last_total_view_count, last_checked_at
      )
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NOW())
-     ON CONFLICT (platform, blog_id, category)
+     ON CONFLICT (platform, blog_id)
      DO UPDATE SET
+       category = EXCLUDED.category,
        blog_name = EXCLUDED.blog_name,
        blog_title = EXCLUDED.blog_title,
        blog_nickname = EXCLUDED.blog_nickname,
@@ -1343,7 +1344,7 @@ router.post('/collections/batches', async (req, res) => {
       const result = await pool.query(
         `INSERT INTO source_links (batch_id, url, platform_guess, status)
          VALUES ($1,$2,$3,'대기중')
-         ON CONFLICT (batch_id, url) DO NOTHING
+         ON CONFLICT (url) DO NOTHING
          RETURNING id`,
         [batch.rows[0].id, url, guessPlatform(url, 'web')]
       );

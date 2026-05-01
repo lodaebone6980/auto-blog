@@ -866,6 +866,7 @@ function SourceCollectionPanel() {
   const [batches, setBatches] = useState([]);
   const [links, setLinks] = useState([]);
   const [blogs, setBlogs] = useState([]);
+  const [selectedLinks, setSelectedLinks] = useState([]);
   const [creating, setCreating] = useState(false);
   const [processing, setProcessing] = useState(false);
   const [snapshotting, setSnapshotting] = useState(false);
@@ -966,9 +967,14 @@ function SourceCollectionPanel() {
   const blogStats = useMemo(() => ({
     total: blogs.length,
     categories: new Set(blogs.map((blog) => blog.category).filter(Boolean)).size,
-    totalViews: blogs.reduce((sum, blog) => sum + Number(blog.last_total_view_count || blog.total_view_count || 0), 0),
-    dailyViews: blogs.reduce((sum, blog) => sum + Number(blog.last_daily_view_count || blog.daily_view_count || 0), 0),
   }), [blogs]);
+
+  const selectedCount = selectedLinks.length;
+  const toggleLinkSelection = (id) => {
+    setSelectedLinks((prev) => (
+      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
+    ));
+  };
 
   const formatTerms = (terms) => {
     if (!Array.isArray(terms) || terms.length === 0) return '-';
@@ -1120,8 +1126,6 @@ function SourceCollectionPanel() {
         {[
           ['저장 블로그', blogStats.total, COLORS.primary],
           ['카테고리', blogStats.categories, COLORS.accent],
-          ['오늘 조회 합계', blogStats.dailyViews.toLocaleString(), COLORS.success],
-          ['전체 조회 합계', blogStats.totalViews.toLocaleString(), COLORS.textPrimary],
         ].map(([label, value, color]) => (
           <div key={label} style={{ ...cardStyle, padding: 16 }}>
             <p style={{ fontSize: 11, color: COLORS.textSecondary, fontWeight: 700, marginBottom: 6 }}>{label}</p>
@@ -1157,8 +1161,31 @@ function SourceCollectionPanel() {
         <div style={{ padding: '14px 18px', borderBottom: `1px solid ${COLORS.border}` }}>
           <h3 style={{ fontSize: 15, fontWeight: 850, color: COLORS.primary }}>최근 수집 링크와 분석 결과</h3>
           <p style={{ marginTop: 4, fontSize: 11, color: COLORS.textSecondary }}>
-            수집완료가 되면 블로그 닉네임/제목, 오늘·전체 조회수, 메인키워드, 글자수/KW 반복수/이미지 수, 인용구와 반복어가 이 표에 표시됩니다.
+            수집완료가 되면 블로그 닉네임/제목, 메인키워드, 글자수/KW 반복수/이미지 수, 인용구와 반복어가 이 표에 표시됩니다.
           </p>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 10 }}>
+            <span style={{ fontSize: 11, color: COLORS.textSecondary, fontWeight: 800 }}>
+              재각색 후보 {selectedCount}개 선택
+            </span>
+            <button
+              type="button"
+              disabled={selectedCount === 0}
+              onClick={() => setMessage(`선택한 ${selectedCount}개 글은 다음 단계에서 재각색 큐로 연결할 수 있게 만들 예정입니다.`)}
+              style={{
+                height: 30,
+                padding: '0 12px',
+                borderRadius: 8,
+                border: `1px solid ${COLORS.border}`,
+                background: selectedCount === 0 ? '#f3f4f6' : 'white',
+                color: selectedCount === 0 ? COLORS.textMuted : COLORS.primary,
+                fontSize: 11,
+                fontWeight: 850,
+                cursor: selectedCount === 0 ? 'not-allowed' : 'pointer',
+              }}
+            >
+              선택 글 재각색 준비
+            </button>
+          </div>
         </div>
         <div style={{ overflowX: 'auto' }}>
           {links.length === 0 ? (
@@ -1166,10 +1193,10 @@ function SourceCollectionPanel() {
               아직 등록된 수집 링크가 없습니다.
             </div>
           ) : (
-            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1220 }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1260 }}>
               <thead>
                 <tr style={{ background: '#f8fafc', color: COLORS.textSecondary, fontSize: 11, textAlign: 'left' }}>
-                  {['상태', '블로그/조회', '플랫폼', '메인키워드', '카테고리', '글자/KW/이미지', '인용구/반복어', 'URL', '오류'].map((head) => (
+                  {['선택', '상태', '블로그', '플랫폼', '메인키워드', '카테고리', '글자/KW/이미지', '인용구/반복어', 'URL', '오류'].map((head) => (
                     <th key={head} style={{ padding: '10px 12px', borderBottom: `1px solid ${COLORS.border}` }}>{head}</th>
                   ))}
                 </tr>
@@ -1177,14 +1204,19 @@ function SourceCollectionPanel() {
               <tbody>
                 {links.map((link) => (
                   <tr key={link.id} style={{ fontSize: 12, borderBottom: `1px solid ${COLORS.border}` }}>
+                    <td style={{ padding: '10px 12px' }}>
+                      <input
+                        type="checkbox"
+                        checked={selectedLinks.includes(link.id)}
+                        onChange={() => toggleLinkSelection(link.id)}
+                        aria-label="재각색 후보 선택"
+                      />
+                    </td>
                     <td style={{ padding: '10px 12px' }}><StatusBadge value={link.status} /></td>
                     <td style={{ padding: '10px 12px', color: COLORS.textSecondary, maxWidth: 160 }}>
                       <p style={{ fontWeight: 800, color: COLORS.textPrimary, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{link.blog_nickname || link.blog_name || '-'}</p>
                       <p style={{ marginTop: 2, fontSize: 10, color: COLORS.textMuted, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                         {link.blog_title || link.blog_id || ''}
-                      </p>
-                      <p style={{ marginTop: 2, fontSize: 10, color: COLORS.textMuted }}>
-                        오늘 {link.today_view_count == null ? '-' : Number(link.today_view_count).toLocaleString()} · 전체 {link.total_view_count == null ? '-' : Number(link.total_view_count).toLocaleString()}
                       </p>
                     </td>
                     <td style={{ padding: '10px 12px', fontWeight: 700, color: COLORS.textSecondary }}>{link.platform_guess || '-'}</td>
