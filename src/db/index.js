@@ -119,6 +119,13 @@ export async function initDB() {
         category_guess TEXT,
         structure_json JSONB DEFAULT '{}',
         tone_summary TEXT,
+        blog_name TEXT,
+        today_view_count INTEGER,
+        today_view_source TEXT,
+        view_count_checked_at TIMESTAMPTZ,
+        quote_blocks JSONB DEFAULT '[]',
+        repeated_terms JSONB DEFAULT '[]',
+        quote_repeated_terms JSONB DEFAULT '[]',
         fetch_status TEXT DEFAULT 'pending',
         error_message TEXT,
         created_at TIMESTAMPTZ DEFAULT NOW()
@@ -160,6 +167,13 @@ export async function initDB() {
       ALTER TABLE source_analyses ADD COLUMN IF NOT EXISTS category_guess TEXT;
       ALTER TABLE source_analyses ADD COLUMN IF NOT EXISTS structure_json JSONB DEFAULT '{}';
       ALTER TABLE source_analyses ADD COLUMN IF NOT EXISTS tone_summary TEXT;
+      ALTER TABLE source_analyses ADD COLUMN IF NOT EXISTS blog_name TEXT;
+      ALTER TABLE source_analyses ADD COLUMN IF NOT EXISTS today_view_count INTEGER;
+      ALTER TABLE source_analyses ADD COLUMN IF NOT EXISTS today_view_source TEXT;
+      ALTER TABLE source_analyses ADD COLUMN IF NOT EXISTS view_count_checked_at TIMESTAMPTZ;
+      ALTER TABLE source_analyses ADD COLUMN IF NOT EXISTS quote_blocks JSONB DEFAULT '[]';
+      ALTER TABLE source_analyses ADD COLUMN IF NOT EXISTS repeated_terms JSONB DEFAULT '[]';
+      ALTER TABLE source_analyses ADD COLUMN IF NOT EXISTS quote_repeated_terms JSONB DEFAULT '[]';
 
       -- Content Jobs (generated drafts + QR + sheet sync)
       CREATE TABLE IF NOT EXISTS content_jobs (

@@ -58,6 +58,36 @@ function stripHtml(html = '') {
   );
 }
 
+function extractElementByClass(html = '', className = '') {
+  const classPattern = new RegExp(`<([a-z0-9]+)\\b[^>]*class=["'][^"']*\\b${escapeRegExp(className)}\\b[^"']*["'][^>]*>`, 'i');
+  const match = classPattern.exec(html);
+  if (!match) return '';
+
+  const tagName = match[1].toLowerCase();
+  let depth = 0;
+  const tagPattern = new RegExp(`</?${tagName}\\b[^>]*>`, 'gi');
+  tagPattern.lastIndex = match.index;
+  let tagMatch;
+  while ((tagMatch = tagPattern.exec(html))) {
+    const isClose = tagMatch[0].startsWith('</');
+    depth += isClose ? -1 : 1;
+    if (depth === 0) return html.slice(match.index, tagPattern.lastIndex);
+  }
+  return html.slice(match.index);
+}
+
+function extractNaverBodyHtml(html = '') {
+  return extractElementByClass(html, 'se-main-container')
+    || extractElementByClass(html, 'post_ct')
+    || extractElementByClass(html, 'se_doc_viewer')
+    || '';
+}
+
+function extractAttribute(html = '', attrName = '') {
+  const match = html.match(new RegExp(`${escapeRegExp(attrName)}=["']([^"']+)["']`, 'i'));
+  return match ? decodeHtmlEntities(match[1]) : '';
+}
+
 function pickMetaContent(html, property) {
   const safeProperty = escapeRegExp(property);
   const meta = html.match(new RegExp(`<meta[^>]+(?:property|name)=["']${safeProperty}["'][^>]+content=["']([^"']+)["'][^>]*>`, 'i'));
@@ -83,6 +113,84 @@ function extractLinks(html) {
     .map((match) => match[1])
     .filter((href) => href && !href.startsWith('#') && !href.startsWith('javascript:'))
     .slice(0, 40);
+}
+
+function countBodyImages(html = '') {
+  const sources = new Set();
+
+  for (const match of html.matchAll(/<img\b[^>]*>/gi)) {
+    const tag = match[0];
+    const src = tag.match(/\s(?:src|data-src)=["']([^"']+)["']/i)?.[1];
+    if (src && !/blank|spacer|icon|profile|emoticon/i.test(src)) sources.add(src.split('?')[0]);
+  }
+
+  for (const match of html.matchAll(/data-linkdata='([^']+)'/gi)) {
+    const src = match[1].match(/"src"\s*:\s*"([^"]+)"/i)?.[1];
+    if (src) sources.add(src.split('?')[0]);
+  }
+
+  const seImageModules = (html.match(/\bse-module-image\b/gi) || []).length;
+  return Math.max(sources.size, seImageModules);
+}
+
+function extractQuoteBlocks(html = '') {
+  const blocks = [];
+  for (const match of html.matchAll(/<blockquote\b[^>]*>([\s\S]*?)<\/blockquote>/gi)) {
+    const text = stripHtml(match[1]);
+    if (text) blocks.push(text);
+  }
+
+  if (blocks.length === 0) {
+    for (const match of html.matchAll(/<div\b[^>]*class=["'][^"']*\bse-quote\b[^"']*["'][^>]*>([\s\S]*?)<\/div>/gi)) {
+      const text = stripHtml(match[1]);
+      if (text) blocks.push(text);
+    }
+  }
+
+  return [...new Set(blocks)].slice(0, 30);
+}
+
+function inferRepeatedTerms(text = '', minCount = 2) {
+  const tokens = tokenizeKoreanText(text);
+  const counts = new Map();
+
+  for (let size = 1; size <= 3; size += 1) {
+    for (let i = 0; i <= tokens.length - size; i += 1) {
+      const term = tokens.slice(i, i + size).join(' ');
+      if (term.length < 2 || term.length > 30) continue;
+      counts.set(term, (counts.get(term) || 0) + 1);
+    }
+  }
+
+  return [...counts.entries()]
+    .filter(([, count]) => count >= minCount)
+    .map(([term, count]) => ({ term, count }))
+    .sort((a, b) => b.count - a.count || b.term.length - a.term.length)
+    .slice(0, 30);
+}
+
+function extractBlogName(html = '', mobileHtml = '') {
+  return extractAttribute(mobileHtml, 'blogName')
+    || stripHtml(html.match(/<strong\b[^>]*class=["'][^"']*\buser_blog_name\b[^"']*["'][^>]*>([\s\S]*?)<\/strong>/i)?.[1] || '')
+    || pickMetaContent(html, 'og:site_name')
+    || '';
+}
+
+function extractTodayViewCount(mobileHtml = '') {
+  const patterns = [
+    /(?:todayViewCount|todayReadCount|todayVisitorCount|todayCount)\s*[:=]\s*["']?([0-9,]+)/i,
+    /(?:postViewCount|viewCount|readCount)\s*[:=]\s*["']?([0-9,]+)/i,
+    /(?:오늘\s*)?(?:조회수|조회|방문자|방문)\D{0,30}([0-9,]+)/,
+  ];
+
+  for (const pattern of patterns) {
+    const match = mobileHtml.match(pattern);
+    if (match) {
+      const value = parseInt(String(match[1]).replace(/,/g, ''), 10);
+      if (Number.isFinite(value)) return value;
+    }
+  }
+  return null;
 }
 
 function guessPlatform(sourceUrl, fallback = 'blog') {
@@ -286,13 +394,46 @@ async function fetchSourceHtml(sourceUrl) {
   return html.slice(0, 1_500_000);
 }
 
-function buildSourceAnalysis({ sourceUrl, sourceText, html, keyword, category, platform, fetchStatus, errorMessage }) {
+function naverMobileUrl(sourceUrl) {
+  if (!/blog\.naver\.com/i.test(sourceUrl || '')) return null;
+  const url = new URL(sourceUrl);
+  const pathMatch = url.pathname.match(/^\/([^/]+)\/(\d+)/);
+  if (pathMatch) return `https://m.blog.naver.com/${pathMatch[1]}/${pathMatch[2]}`;
+  const blogId = url.searchParams.get('blogId');
+  const logNo = url.searchParams.get('logNo');
+  if (blogId && logNo) return `https://m.blog.naver.com/${blogId}/${logNo}`;
+  return sourceUrl.replace('https://blog.naver.com/', 'https://m.blog.naver.com/');
+}
+
+async function fetchNaverMobileHtml(sourceUrl) {
+  const mobileUrl = naverMobileUrl(sourceUrl);
+  if (!mobileUrl) return '';
+  try {
+    const response = await fetch(mobileUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148 NaviWrite/1.0',
+        'Accept': 'text/html,application/xhtml+xml',
+        'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.7,en;q=0.6',
+      },
+      redirect: 'follow',
+    });
+    if (!response.ok) return '';
+    return (await response.text()).slice(0, 1_500_000);
+  } catch {
+    return '';
+  }
+}
+
+function buildSourceAnalysis({ sourceUrl, sourceText, html, mobileHtml = '', keyword, category, platform, fetchStatus, errorMessage }) {
   const title = html ? extractTitle(html, sourceUrl || '붙여넣기 원문') : '붙여넣기 원문';
-  const plainText = sourceText ? decodeHtmlEntities(sourceText) : stripHtml(html || '');
+  const bodyHtml = html ? (extractNaverBodyHtml(html) || html) : '';
+  const plainText = sourceText ? decodeHtmlEntities(sourceText) : stripHtml(bodyHtml || html || '');
   const compactText = plainText.replace(/\s/g, '');
-  const imageCount = html ? (html.match(/<img\b/gi) || []).length : 0;
-  const subheadings = html ? extractHeadings(html) : [];
-  const links = html ? extractLinks(html) : [];
+  const imageCount = bodyHtml ? countBodyImages(bodyHtml) : html ? (html.match(/<img\b/gi) || []).length : 0;
+  const subheadings = bodyHtml ? extractHeadings(bodyHtml) : html ? extractHeadings(html) : [];
+  const links = bodyHtml ? extractLinks(bodyHtml) : html ? extractLinks(html) : [];
+  const quoteBlocks = bodyHtml ? extractQuoteBlocks(bodyHtml) : [];
+  const quoteText = quoteBlocks.join('\n');
   const keywordCandidates = inferKeywordCandidates({ title, text: plainText, subheadings });
   const mainKeyword = keyword || keywordCandidates[0]?.keyword || '';
   const kwCount = mainKeyword ? (plainText.match(new RegExp(escapeRegExp(mainKeyword), 'gi')) || []).length : 0;
@@ -302,8 +443,9 @@ function buildSourceAnalysis({ sourceUrl, sourceText, html, keyword, category, p
     subheadings,
     links,
     imageCount,
-    hasVideo: html ? /<video\b|youtube\.com|tv\.naver\.com|<iframe\b/i.test(html) : false,
+    hasVideo: bodyHtml ? /<video\b|youtube\.com|tv\.naver\.com|<iframe\b|attachVideoInfo/i.test(`${bodyHtml} ${mobileHtml}`) : html ? /<video\b|youtube\.com|tv\.naver\.com|<iframe\b/i.test(html) : false,
   });
+  const todayViewCount = extractTodayViewCount(mobileHtml);
 
   return {
     sourceUrl: sourceUrl || null,
@@ -325,6 +467,13 @@ function buildSourceAnalysis({ sourceUrl, sourceText, html, keyword, category, p
     categoryGuess,
     structure,
     toneSummary: summarizeTone(plainText),
+    blogName: extractBlogName(html, mobileHtml),
+    todayViewCount,
+    todayViewSource: todayViewCount === null ? null : 'm.blog.naver.com',
+    viewCountCheckedAt: mobileHtml ? new Date().toISOString() : null,
+    quoteBlocks,
+    repeatedTerms: inferRepeatedTerms(plainText, 2),
+    quoteRepeatedTerms: quoteText ? inferRepeatedTerms(quoteText, 1) : [],
     fetchStatus,
     errorMessage,
   };
@@ -336,9 +485,10 @@ async function saveCollectionAnalysis(link, analysis, fetchStatus = 'server_coll
       source_link_id, source_url, source_text_preview, keyword, category, platform, title,
       plain_text, char_count, kw_count, image_count, subheadings, links, has_video,
       platform_guess, keyword_candidates, main_keyword, category_guess, structure_json,
-      tone_summary, fetch_status, error_message
+      tone_summary, blog_name, today_view_count, today_view_source, view_count_checked_at,
+      quote_blocks, repeated_terms, quote_repeated_terms, fetch_status, error_message
      )
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29)
      RETURNING *`,
     [
       link.id,
@@ -361,6 +511,13 @@ async function saveCollectionAnalysis(link, analysis, fetchStatus = 'server_coll
       analysis.categoryGuess,
       JSON.stringify(analysis.structure || {}),
       analysis.toneSummary,
+      analysis.blogName || null,
+      analysis.todayViewCount,
+      analysis.todayViewSource || null,
+      analysis.viewCountCheckedAt || null,
+      JSON.stringify(analysis.quoteBlocks || []),
+      JSON.stringify(analysis.repeatedTerms || []),
+      JSON.stringify(analysis.quoteRepeatedTerms || []),
       fetchStatus,
       analysis.errorMessage || null,
     ]
@@ -398,6 +555,11 @@ async function saveCollectionAnalysis(link, analysis, fetchStatus = 'server_coll
       keywordCandidates: saved.keyword_candidates || [],
       structure: saved.structure_json || {},
       toneSummary: saved.tone_summary,
+      blogName: saved.blog_name,
+      todayViewCount: saved.today_view_count,
+      quoteBlocks: saved.quote_blocks || [],
+      repeatedTerms: saved.repeated_terms || [],
+      quoteRepeatedTerms: saved.quote_repeated_terms || [],
     },
   };
 }
@@ -415,9 +577,11 @@ async function collectSourceLinkOnServer(link) {
 
   try {
     const html = await fetchSourceHtml(link.url);
+    const mobileHtml = await fetchNaverMobileHtml(link.url);
     const analysis = buildSourceAnalysis({
       sourceUrl: link.url,
       html,
+      mobileHtml,
       platform: link.platform_guess || guessPlatform(link.url, 'web'),
       fetchStatus: 'server_collected',
       errorMessage: null,
@@ -717,12 +881,14 @@ router.post('/content-jobs/source/analyze', async (req, res) => {
   }
 
   let html = '';
+  let mobileHtml = '';
   let fetchStatus = sourceText ? 'text_provided' : 'fetched';
   let errorMessage = null;
 
   try {
     if (sourceUrl) {
       html = await fetchSourceHtml(sourceUrl);
+      mobileHtml = await fetchNaverMobileHtml(sourceUrl);
     }
   } catch (err) {
     fetchStatus = 'fetch_failed';
@@ -733,6 +899,7 @@ router.post('/content-jobs/source/analyze', async (req, res) => {
     sourceUrl,
     sourceText,
     html,
+    mobileHtml,
     keyword,
     category,
     platform,
@@ -746,9 +913,10 @@ router.post('/content-jobs/source/analyze', async (req, res) => {
         source_url, source_text_preview, keyword, category, platform, title, plain_text,
         char_count, kw_count, image_count, subheadings, links, has_video,
         platform_guess, keyword_candidates, main_keyword, category_guess, structure_json,
-        tone_summary, fetch_status, error_message
+        tone_summary, blog_name, today_view_count, today_view_source, view_count_checked_at,
+        quote_blocks, repeated_terms, quote_repeated_terms, fetch_status, error_message
        )
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28)
        RETURNING *`,
       [
         analysis.sourceUrl,
@@ -770,6 +938,13 @@ router.post('/content-jobs/source/analyze', async (req, res) => {
         analysis.categoryGuess,
         JSON.stringify(analysis.structure),
         analysis.toneSummary,
+        analysis.blogName,
+        analysis.todayViewCount,
+        analysis.todayViewSource,
+        analysis.viewCountCheckedAt,
+        JSON.stringify(analysis.quoteBlocks),
+        JSON.stringify(analysis.repeatedTerms),
+        JSON.stringify(analysis.quoteRepeatedTerms),
         analysis.fetchStatus,
         analysis.errorMessage,
       ]
@@ -796,6 +971,11 @@ router.post('/content-jobs/source/analyze', async (req, res) => {
         categoryGuess: rows[0].category_guess,
         structure: rows[0].structure_json || {},
         toneSummary: rows[0].tone_summary,
+        blogName: rows[0].blog_name,
+        todayViewCount: rows[0].today_view_count,
+        quoteBlocks: rows[0].quote_blocks || [],
+        repeatedTerms: rows[0].repeated_terms || [],
+        quoteRepeatedTerms: rows[0].quote_repeated_terms || [],
         fetchStatus: rows[0].fetch_status,
         errorMessage: rows[0].error_message,
         createdAt: rows[0].created_at,
@@ -928,7 +1108,14 @@ router.get('/collections/links', async (req, res) => {
               sa.kw_count,
               sa.image_count,
               sa.subheadings,
-              sa.keyword_candidates
+              sa.keyword_candidates,
+              sa.blog_name,
+              sa.today_view_count,
+              sa.today_view_source,
+              sa.view_count_checked_at,
+              sa.quote_blocks,
+              sa.repeated_terms,
+              sa.quote_repeated_terms
        FROM source_links sl
        LEFT JOIN collection_batches cb ON cb.id = sl.batch_id
        LEFT JOIN source_analyses sa ON sa.id = sl.source_analysis_id
@@ -1001,15 +1188,21 @@ router.post('/collections/links/:id/analysis', async (req, res) => {
     const charCount = Number(body.charCount || text.replace(/\s/g, '').length);
     const kwCount = mainKeyword ? (text.match(new RegExp(escapeRegExp(mainKeyword), 'gi')) || []).length : 0;
     const structure = summarizeStructure({ text, subheadings, links, imageCount, hasVideo });
+    const quoteBlocks = Array.isArray(body.quoteBlocks) ? body.quoteBlocks.filter(Boolean).slice(0, 30) : [];
+    const repeatedTerms = Array.isArray(body.repeatedTerms) ? body.repeatedTerms.slice(0, 30) : inferRepeatedTerms(text, 2);
+    const quoteRepeatedTerms = Array.isArray(body.quoteRepeatedTerms)
+      ? body.quoteRepeatedTerms.slice(0, 30)
+      : quoteBlocks.length ? inferRepeatedTerms(quoteBlocks.join('\n'), 1) : [];
 
     const inserted = await pool.query(
       `INSERT INTO source_analyses (
         source_link_id, source_url, source_text_preview, keyword, category, platform, title,
         plain_text, char_count, kw_count, image_count, subheadings, links, has_video,
         platform_guess, keyword_candidates, main_keyword, category_guess, structure_json,
-        tone_summary, fetch_status, error_message
+        tone_summary, blog_name, today_view_count, today_view_source, view_count_checked_at,
+        quote_blocks, repeated_terms, quote_repeated_terms, fetch_status, error_message
        )
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,'extension_collected',NULL)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,'extension_collected',NULL)
        RETURNING *`,
       [
         link.id,
@@ -1032,6 +1225,13 @@ router.post('/collections/links/:id/analysis', async (req, res) => {
         categoryGuess,
         JSON.stringify(structure),
         summarizeTone(text),
+        body.blogName || null,
+        body.todayViewCount ?? null,
+        body.todayViewSource || null,
+        body.viewCountCheckedAt || null,
+        JSON.stringify(quoteBlocks),
+        JSON.stringify(repeatedTerms),
+        JSON.stringify(quoteRepeatedTerms),
       ]
     );
 
@@ -1067,6 +1267,11 @@ router.post('/collections/links/:id/analysis', async (req, res) => {
         keywordCandidates: analysis.keyword_candidates || [],
         structure: analysis.structure_json || {},
         toneSummary: analysis.tone_summary,
+        blogName: analysis.blog_name,
+        todayViewCount: analysis.today_view_count,
+        quoteBlocks: analysis.quote_blocks || [],
+        repeatedTerms: analysis.repeated_terms || [],
+        quoteRepeatedTerms: analysis.quote_repeated_terms || [],
       },
     });
   } catch (err) {

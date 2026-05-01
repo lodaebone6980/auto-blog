@@ -942,6 +942,11 @@ function SourceCollectionPanel() {
     failed: links.filter((link) => link.status === '오류').length,
   }), [links]);
 
+  const formatTerms = (terms) => {
+    if (!Array.isArray(terms) || terms.length === 0) return '-';
+    return terms.slice(0, 3).map((item) => `${item.term || item.keyword || '-'} ${item.count || ''}`.trim()).join(', ');
+  };
+
   return (
     <div style={{ display: 'grid', gap: 18 }}>
       <section style={{ ...cardStyle, padding: 20 }}>
@@ -1090,7 +1095,7 @@ function SourceCollectionPanel() {
         <div style={{ padding: '14px 18px', borderBottom: `1px solid ${COLORS.border}` }}>
           <h3 style={{ fontSize: 15, fontWeight: 850, color: COLORS.primary }}>최근 수집 링크와 분석 결과</h3>
           <p style={{ marginTop: 4, fontSize: 11, color: COLORS.textSecondary }}>
-            수집완료가 되면 메인키워드, 카테고리, 글자수/KW 반복수/이미지 수가 이 표에 표시됩니다.
+            수집완료가 되면 블로그명, 오늘 조회수, 메인키워드, 글자수/KW 반복수/이미지 수, 인용구와 반복어가 이 표에 표시됩니다.
           </p>
         </div>
         <div style={{ overflowX: 'auto' }}>
@@ -1099,10 +1104,10 @@ function SourceCollectionPanel() {
               아직 등록된 수집 링크가 없습니다.
             </div>
           ) : (
-            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 920 }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1220 }}>
               <thead>
                 <tr style={{ background: '#f8fafc', color: COLORS.textSecondary, fontSize: 11, textAlign: 'left' }}>
-                  {['상태', '플랫폼', '메인키워드', '카테고리', '글자/KW/이미지', 'URL', '오류'].map((head) => (
+                  {['상태', '블로그/조회', '플랫폼', '메인키워드', '카테고리', '글자/KW/이미지', '인용구/반복어', 'URL', '오류'].map((head) => (
                     <th key={head} style={{ padding: '10px 12px', borderBottom: `1px solid ${COLORS.border}` }}>{head}</th>
                   ))}
                 </tr>
@@ -1111,11 +1116,21 @@ function SourceCollectionPanel() {
                 {links.map((link) => (
                   <tr key={link.id} style={{ fontSize: 12, borderBottom: `1px solid ${COLORS.border}` }}>
                     <td style={{ padding: '10px 12px' }}><StatusBadge value={link.status} /></td>
+                    <td style={{ padding: '10px 12px', color: COLORS.textSecondary, maxWidth: 160 }}>
+                      <p style={{ fontWeight: 800, color: COLORS.textPrimary, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{link.blog_name || '-'}</p>
+                      <p style={{ marginTop: 2, fontSize: 10, color: COLORS.textMuted }}>
+                        오늘 조회 {link.today_view_count == null ? '-' : Number(link.today_view_count).toLocaleString()}
+                      </p>
+                    </td>
                     <td style={{ padding: '10px 12px', fontWeight: 700, color: COLORS.textSecondary }}>{link.platform_guess || '-'}</td>
                     <td style={{ padding: '10px 12px', fontWeight: 800, color: COLORS.primary }}>{link.main_keyword || '-'}</td>
                     <td style={{ padding: '10px 12px' }}>{link.category_guess || '-'}</td>
                     <td style={{ padding: '10px 12px', color: COLORS.textSecondary }}>
                       {(link.char_count || 0).toLocaleString()} / {link.kw_count || 0} / {link.image_count || 0}
+                    </td>
+                    <td style={{ padding: '10px 12px', color: COLORS.textSecondary, maxWidth: 230 }}>
+                      <p style={{ fontSize: 10, color: COLORS.textMuted }}>인용구 {Array.isArray(link.quote_blocks) ? link.quote_blocks.length : 0}개</p>
+                      <p style={{ marginTop: 2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{formatTerms(link.quote_repeated_terms?.length ? link.quote_repeated_terms : link.repeated_terms)}</p>
                     </td>
                     <td style={{ padding: '10px 12px', maxWidth: 340 }}>
                       <a href={link.url} target="_blank" rel="noreferrer" style={{ display: 'block', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
