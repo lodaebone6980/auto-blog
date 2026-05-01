@@ -154,6 +154,9 @@ function inferRepeatedTerms(text = '', minCount = 2) {
   const banned = new Set([
     '있습니다', '합니다', '됩니다', '입니다', '주세요', '같습니다', '했습니다',
     '있는', '없는', '그리고', '하지만', '그래서', '이번', '오늘', '바로',
+    '같은', '통해', '아니라', '이런', '저런', '그런', '먼저', '때문에',
+    '있고', '것이', '보면', '조금', '정말', '매우', '많이', '여러',
+    '대한', '위해', '정도', '경우', '부분', '관련', '실제로', '특히',
   ]);
   const tokens = tokenizeKoreanText(text)
     .map((token) => token.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, ''))
@@ -483,7 +486,7 @@ function buildSourceAnalysis({ sourceUrl, sourceText, html, mobileHtml = '', key
     viewCountCheckedAt: mobileHtml ? new Date().toISOString() : null,
     quoteBlocks,
     repeatedTerms: inferRepeatedTerms(plainText, 2),
-    quoteRepeatedTerms: quoteText ? inferRepeatedTerms(quoteText, 1) : [],
+    quoteRepeatedTerms: quoteText ? inferRepeatedTerms(quoteText, 2) : [],
     fetchStatus,
     errorMessage,
   };
