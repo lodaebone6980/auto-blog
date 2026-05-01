@@ -276,6 +276,64 @@ function extractBlogVisitorCounts(blogHomeHtml = '') {
   };
 }
 
+function normalizeSourceUrl(sourceUrl = '') {
+  try {
+    const url = new URL(sourceUrl);
+    url.hash = '';
+    return url.toString();
+  } catch {
+    return sourceUrl;
+  }
+}
+
+function extractCafeIdentity(sourceUrl = '', html = '') {
+  let cafeId = '';
+  let articleId = '';
+  try {
+    const url = new URL(sourceUrl);
+    const cafePath = url.pathname.match(/\/cafes\/([^/]+)\/articles\/([^/?#]+)/i);
+    if (cafePath) {
+      cafeId = cafePath[1];
+      articleId = cafePath[2];
+    }
+    const clubId = url.searchParams.get('clubid') || url.searchParams.get('clubId');
+    const articleIdParam = url.searchParams.get('articleid') || url.searchParams.get('articleId') || url.searchParams.get('articleid');
+    if (clubId) cafeId = clubId;
+    if (articleIdParam) articleId = articleIdParam;
+    if (!cafeId) {
+      const parts = url.pathname.split('/').filter(Boolean);
+      if (parts[0] && !['ArticleRead.nhn', 'ArticleRead.naver'].includes(parts[0])) cafeId = parts[0];
+      if (!articleId && /^\d+$/.test(parts.at(-1) || '')) articleId = parts.at(-1);
+    }
+  } catch {
+    // ignore malformed URLs
+  }
+
+  const cafeName = pickMetaContent(html, 'og:site_name')
+    || stripHtml(html.match(/<h1\b[^>]*class=["'][^"']*cafe_name[^"']*["'][^>]*>([\s\S]*?)<\/h1>/i)?.[1] || '')
+    || '';
+
+  return { cafeId, articleId, cafeName: cleanNaverBlogTitle(cafeName) };
+}
+
+function extractCafePostViewCount(html = '') {
+  if (!html) return null;
+  const text = stripHtml(html);
+  const patterns = [
+    /(?:조회수|조회)\s*[:：]?\s*([0-9,]+)/,
+    /(?:viewCount|readCount|articleReadCount)\s*[:=]\s*["']?([0-9,]+)/i,
+    /"readCount"\s*:\s*([0-9]+)/i,
+  ];
+  for (const pattern of patterns) {
+    const match = html.match(pattern) || text.match(pattern);
+    if (match) {
+      const value = parseInt(String(match[1]).replace(/,/g, ''), 10);
+      if (Number.isFinite(value)) return value;
+    }
+  }
+  return null;
+}
+
 function guessPlatform(sourceUrl, fallback = 'blog') {
   if (!sourceUrl) return fallback;
   if (/cafe\.naver\.com/i.test(sourceUrl)) return 'cafe';
@@ -551,6 +609,8 @@ function buildSourceAnalysis({ sourceUrl, sourceText, html, mobileHtml = '', blo
   const blogVisitorCounts = extractBlogVisitorCounts(blogHomeHtml);
   const todayViewCount = blogVisitorCounts.todayViewCount ?? extractTodayViewCount(mobileHtml);
   const totalViewCount = blogVisitorCounts.totalViewCount;
+  const cafeIdentity = extractCafeIdentity(sourceUrl, html);
+  const postViewCount = guessPlatform(sourceUrl, platform) === 'cafe' ? extractCafePostViewCount(html) : null;
 
   return {
     sourceUrl: sourceUrl || null,
@@ -581,7 +641,12 @@ function buildSourceAnalysis({ sourceUrl, sourceText, html, mobileHtml = '', blo
     totalViewCount,
     todayViewSource: todayViewCount === null ? null : (blogVisitorCounts.source || 'm.blog.naver.com'),
     totalViewSource: totalViewCount === null ? null : (blogVisitorCounts.source || 'm.blog.naver.com'),
-    viewCountCheckedAt: mobileHtml || blogHomeHtml ? new Date().toISOString() : null,
+    cafeId: cafeIdentity.cafeId,
+    cafeArticleId: cafeIdentity.articleId,
+    cafeName: cafeIdentity.cafeName,
+    postViewCount,
+    postViewSource: postViewCount === null ? null : 'cafe.naver.com',
+    viewCountCheckedAt: mobileHtml || blogHomeHtml || postViewCount !== null ? new Date().toISOString() : null,
     quoteBlocks,
     repeatedTerms: inferRepeatedTerms(plainText, 2),
     quoteRepeatedTerms: quoteText ? inferRepeatedTerms(quoteText, 2) : [],
@@ -751,6 +816,138 @@ async function snapshotCollectedBlogs({ limit = 100, category = null } = {}) {
   return results;
 }
 
+async function recordCafePostViewSnapshot(cafePost, viewCount, source = 'cafe.naver.com') {
+  if (!cafePost?.id || !Number.isFinite(viewCount) || viewCount < 10) return null;
+
+  const snapshotDate = kstDateString();
+  const previous = await pool.query(
+    `SELECT view_count
+     FROM cafe_post_view_snapshots
+     WHERE cafe_post_id = $1
+       AND snapshot_date < $2
+       AND view_count IS NOT NULL
+     ORDER BY snapshot_date DESC
+     LIMIT 1`,
+    [cafePost.id, snapshotDate]
+  );
+  const previousViewCount = previous.rows[0]?.view_count ?? null;
+  const dailyIncrease = previousViewCount === null ? viewCount : Math.max(0, viewCount - previousViewCount);
+
+  const { rows } = await pool.query(
+    `INSERT INTO cafe_post_view_snapshots (
+       cafe_post_id, snapshot_date, view_count, previous_view_count, daily_increase, source, checked_at
+     )
+     VALUES ($1,$2,$3,$4,$5,$6,NOW())
+     ON CONFLICT (cafe_post_id, snapshot_date)
+     DO UPDATE SET
+       view_count = EXCLUDED.view_count,
+       previous_view_count = EXCLUDED.previous_view_count,
+       daily_increase = EXCLUDED.daily_increase,
+       source = EXCLUDED.source,
+       checked_at = NOW()
+     RETURNING *`,
+    [cafePost.id, snapshotDate, viewCount, previousViewCount, dailyIncrease, source]
+  );
+
+  await pool.query(
+    `UPDATE collected_cafe_posts
+     SET last_view_count = $2,
+         last_daily_increase = $3,
+         last_checked_at = NOW(),
+         updated_at = NOW()
+     WHERE id = $1`,
+    [cafePost.id, viewCount, dailyIncrease]
+  );
+
+  return rows[0] || null;
+}
+
+async function upsertCollectedCafePostFromAnalysis(link, analysis) {
+  const platform = analysis.platform_guess || analysis.platform || guessPlatform(analysis.source_url || link?.url, 'web');
+  if (platform !== 'cafe') return null;
+  const viewCount = analysis.post_view_count ?? analysis.postViewCount ?? null;
+  if (!Number.isFinite(viewCount) || viewCount < 10) return null;
+
+  const identity = {
+    cafeId: analysis.cafe_id || analysis.cafeId || extractCafeIdentity(analysis.source_url || link?.url || '').cafeId,
+    articleId: analysis.cafe_article_id || analysis.cafeArticleId || extractCafeIdentity(analysis.source_url || link?.url || '').articleId,
+    cafeName: analysis.cafe_name || analysis.cafeName || '',
+  };
+  const url = normalizeSourceUrl(analysis.source_url || link?.url || '');
+  const { rows } = await pool.query(
+    `INSERT INTO collected_cafe_posts (
+       url, cafe_id, cafe_name, article_id, title, category,
+       latest_source_link_id, latest_source_analysis_id, last_view_count, last_checked_at
+     )
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW())
+     ON CONFLICT (url)
+     DO UPDATE SET
+       cafe_id = EXCLUDED.cafe_id,
+       cafe_name = EXCLUDED.cafe_name,
+       article_id = EXCLUDED.article_id,
+       title = EXCLUDED.title,
+       category = EXCLUDED.category,
+       latest_source_link_id = EXCLUDED.latest_source_link_id,
+       latest_source_analysis_id = EXCLUDED.latest_source_analysis_id,
+       last_view_count = EXCLUDED.last_view_count,
+       last_checked_at = NOW(),
+       updated_at = NOW()
+     RETURNING *`,
+    [
+      url,
+      identity.cafeId || null,
+      identity.cafeName || null,
+      identity.articleId || null,
+      analysis.title || null,
+      analysis.category_guess || analysis.category || 'general',
+      link?.id || analysis.source_link_id || null,
+      analysis.id,
+      viewCount,
+    ]
+  );
+
+  const cafePost = rows[0] || null;
+  if (cafePost) await recordCafePostViewSnapshot(cafePost, viewCount, analysis.post_view_source || analysis.postViewSource || 'cafe.naver.com');
+  return cafePost;
+}
+
+async function refreshCollectedCafePostViews(cafePost) {
+  const html = await fetchSourceHtml(cafePost.url);
+  const viewCount = extractCafePostViewCount(html);
+  if (!Number.isFinite(viewCount)) throw new Error('공개 카페 조회수를 찾지 못했습니다');
+  if (viewCount < 10) return { cafePost, skipped: true, viewCount };
+  const snapshot = await recordCafePostViewSnapshot(cafePost, viewCount, 'cafe.naver.com');
+  return { cafePost, snapshot, viewCount };
+}
+
+async function snapshotCollectedCafePosts({ limit = 100, category = null } = {}) {
+  const values = [];
+  const where = [`last_view_count >= 10`];
+  if (category) {
+    values.push(category);
+    where.push(`category = $${values.length}`);
+  }
+  values.push(Math.min(Number(limit) || 100, 300));
+  const { rows } = await pool.query(
+    `SELECT *
+     FROM collected_cafe_posts
+     WHERE ${where.join(' AND ')}
+     ORDER BY updated_at DESC
+     LIMIT $${values.length}`,
+    values
+  );
+
+  const results = [];
+  for (const cafePost of rows) {
+    try {
+      results.push({ ok: true, ...(await refreshCollectedCafePostViews(cafePost)) });
+    } catch (err) {
+      results.push({ ok: false, cafePost, error: err.message });
+    }
+  }
+  return results;
+}
+
 async function saveCollectionAnalysis(link, analysis, fetchStatus = 'server_collected') {
   const inserted = await pool.query(
     `INSERT INTO source_analyses (
@@ -758,10 +955,11 @@ async function saveCollectionAnalysis(link, analysis, fetchStatus = 'server_coll
       plain_text, char_count, kw_count, image_count, subheadings, links, has_video,
       platform_guess, keyword_candidates, main_keyword, category_guess, structure_json,
       tone_summary, blog_name, blog_id, blog_home_url, blog_title, blog_nickname,
-      today_view_count, total_view_count, today_view_source, total_view_source, view_count_checked_at,
+      today_view_count, total_view_count, today_view_source, total_view_source,
+      post_view_count, post_view_source, view_count_checked_at,
       quote_blocks, repeated_terms, quote_repeated_terms, fetch_status, error_message
      )
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37)
      RETURNING *`,
     [
       link.id,
@@ -793,6 +991,8 @@ async function saveCollectionAnalysis(link, analysis, fetchStatus = 'server_coll
       analysis.totalViewCount,
       analysis.todayViewSource || null,
       analysis.totalViewSource || null,
+      analysis.postViewCount,
+      analysis.postViewSource || null,
       analysis.viewCountCheckedAt || null,
       JSON.stringify(analysis.quoteBlocks || []),
       JSON.stringify(analysis.repeatedTerms || []),
@@ -817,16 +1017,23 @@ async function saveCollectionAnalysis(link, analysis, fetchStatus = 'server_coll
   );
   const batch = await refreshCollectionBatchCounts(link.batch_id);
   let collectedBlog = null;
+  let collectedCafePost = null;
   try {
     collectedBlog = await upsertCollectedBlogFromAnalysis(updated.rows[0], saved);
   } catch (err) {
     console.warn('[collections] collected blog upsert failed:', err.message);
+  }
+  try {
+    collectedCafePost = await upsertCollectedCafePostFromAnalysis(updated.rows[0], saved);
+  } catch (err) {
+    console.warn('[collections] collected cafe post upsert failed:', err.message);
   }
 
   return {
     link: updated.rows[0],
     batch,
     collectedBlog,
+    collectedCafePost,
     analysis: {
       id: saved.id,
       sourceUrl: saved.source_url,
@@ -848,6 +1055,7 @@ async function saveCollectionAnalysis(link, analysis, fetchStatus = 'server_coll
       blogNickname: saved.blog_nickname,
       todayViewCount: saved.today_view_count,
       totalViewCount: saved.total_view_count,
+      postViewCount: saved.post_view_count,
       quoteBlocks: saved.quote_blocks || [],
       repeatedTerms: saved.repeated_terms || [],
       quoteRepeatedTerms: saved.quote_repeated_terms || [],
@@ -1210,10 +1418,11 @@ router.post('/content-jobs/source/analyze', async (req, res) => {
         char_count, kw_count, image_count, subheadings, links, has_video,
         platform_guess, keyword_candidates, main_keyword, category_guess, structure_json,
         tone_summary, blog_name, blog_id, blog_home_url, blog_title, blog_nickname,
-        today_view_count, total_view_count, today_view_source, total_view_source, view_count_checked_at,
+        today_view_count, total_view_count, today_view_source, total_view_source,
+        post_view_count, post_view_source, view_count_checked_at,
         quote_blocks, repeated_terms, quote_repeated_terms, fetch_status, error_message
        )
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36)
        RETURNING *`,
       [
         analysis.sourceUrl,
@@ -1244,6 +1453,8 @@ router.post('/content-jobs/source/analyze', async (req, res) => {
         analysis.totalViewCount,
         analysis.todayViewSource,
         analysis.totalViewSource,
+        analysis.postViewCount,
+        analysis.postViewSource,
         analysis.viewCountCheckedAt,
         JSON.stringify(analysis.quoteBlocks),
         JSON.stringify(analysis.repeatedTerms),
@@ -1253,10 +1464,16 @@ router.post('/content-jobs/source/analyze', async (req, res) => {
       ]
     );
     let collectedBlog = null;
+    let collectedCafePost = null;
     try {
       collectedBlog = await upsertCollectedBlogFromAnalysis({ id: null, url: sourceUrl }, rows[0]);
     } catch (err) {
       console.warn('[source analyze] collected blog upsert failed:', err.message);
+    }
+    try {
+      collectedCafePost = await upsertCollectedCafePostFromAnalysis({ id: null, url: sourceUrl }, rows[0]);
+    } catch (err) {
+      console.warn('[source analyze] collected cafe post upsert failed:', err.message);
     }
 
     res.json({
@@ -1287,6 +1504,7 @@ router.post('/content-jobs/source/analyze', async (req, res) => {
         blogNickname: rows[0].blog_nickname,
         todayViewCount: rows[0].today_view_count,
         totalViewCount: rows[0].total_view_count,
+        postViewCount: rows[0].post_view_count,
         quoteBlocks: rows[0].quote_blocks || [],
         repeatedTerms: rows[0].repeated_terms || [],
         quoteRepeatedTerms: rows[0].quote_repeated_terms || [],
@@ -1295,6 +1513,7 @@ router.post('/content-jobs/source/analyze', async (req, res) => {
         createdAt: rows[0].created_at,
       },
       collectedBlog,
+      collectedCafePost,
       recommendations: {
         nextStep: '발행 계정과 채널을 확인한 뒤 글 생성을 진행하세요.',
         qrPosition: '도입 CTA 이후 또는 2번째 섹션 뒤',
@@ -1433,6 +1652,8 @@ router.get('/collections/links', async (req, res) => {
               sa.total_view_count,
               sa.today_view_source,
               sa.total_view_source,
+              sa.post_view_count,
+              sa.post_view_source,
               sa.view_count_checked_at,
               sa.quote_blocks,
               sa.repeated_terms,
@@ -1521,6 +1742,8 @@ router.post('/collections/links/:id/analysis', async (req, res) => {
     const totalViewCount = body.totalViewCount ?? blogVisitorCounts.totalViewCount ?? null;
     const todayViewSource = body.todayViewSource || (todayViewCount === null ? null : blogVisitorCounts.source || 'm.blog.naver.com');
     const totalViewSource = body.totalViewSource || (totalViewCount === null ? null : blogVisitorCounts.source || 'm.blog.naver.com');
+    const postViewCount = body.postViewCount ?? body.viewCount ?? null;
+    const postViewSource = body.postViewSource || (postViewCount === null ? null : 'cafe.naver.com');
 
     const inserted = await pool.query(
       `INSERT INTO source_analyses (
@@ -1528,10 +1751,11 @@ router.post('/collections/links/:id/analysis', async (req, res) => {
         plain_text, char_count, kw_count, image_count, subheadings, links, has_video,
         platform_guess, keyword_candidates, main_keyword, category_guess, structure_json,
         tone_summary, blog_name, blog_id, blog_home_url, blog_title, blog_nickname,
-        today_view_count, total_view_count, today_view_source, total_view_source, view_count_checked_at,
+        today_view_count, total_view_count, today_view_source, total_view_source,
+        post_view_count, post_view_source, view_count_checked_at,
         quote_blocks, repeated_terms, quote_repeated_terms, fetch_status, error_message
        )
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,'extension_collected',NULL)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,'extension_collected',NULL)
        RETURNING *`,
       [
         link.id,
@@ -1563,7 +1787,9 @@ router.post('/collections/links/:id/analysis', async (req, res) => {
         totalViewCount,
         todayViewSource,
         totalViewSource,
-        body.viewCountCheckedAt || (blogHomeHtml ? new Date().toISOString() : null),
+        postViewCount,
+        postViewSource,
+        body.viewCountCheckedAt || (blogHomeHtml || postViewCount !== null ? new Date().toISOString() : null),
         JSON.stringify(quoteBlocks),
         JSON.stringify(repeatedTerms),
         JSON.stringify(quoteRepeatedTerms),
@@ -1585,16 +1811,23 @@ router.post('/collections/links/:id/analysis', async (req, res) => {
     );
     const batch = await refreshCollectionBatchCounts(link.batch_id);
     let collectedBlog = null;
+    let collectedCafePost = null;
     try {
       collectedBlog = await upsertCollectedBlogFromAnalysis(updated.rows[0], analysis);
     } catch (err) {
       console.warn('[extension collection] collected blog upsert failed:', err.message);
+    }
+    try {
+      collectedCafePost = await upsertCollectedCafePostFromAnalysis(updated.rows[0], analysis);
+    } catch (err) {
+      console.warn('[extension collection] collected cafe post upsert failed:', err.message);
     }
 
     res.json({
       link: updated.rows[0],
       batch,
       collectedBlog,
+      collectedCafePost,
       analysis: {
         id: analysis.id,
         sourceUrl: analysis.source_url,
@@ -1616,6 +1849,7 @@ router.post('/collections/links/:id/analysis', async (req, res) => {
         blogNickname: analysis.blog_nickname,
         todayViewCount: analysis.today_view_count,
         totalViewCount: analysis.total_view_count,
+        postViewCount: analysis.post_view_count,
         quoteBlocks: analysis.quote_blocks || [],
         repeatedTerms: analysis.repeated_terms || [],
         quoteRepeatedTerms: analysis.quote_repeated_terms || [],
@@ -1681,6 +1915,102 @@ router.post('/collections/blogs/snapshot-daily', async (req, res) => {
     });
     res.json({
       ok: true,
+      snapshotDate: kstDateString(),
+      processed: results.length,
+      collected: results.filter((item) => item.ok).length,
+      failed: results.filter((item) => !item.ok).length,
+      results,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/views/status', async (req, res) => {
+  try {
+    const platform = req.query.platform === 'cafe' ? 'cafe' : 'blog';
+    const limit = Math.min(parseInt(req.query.limit || '100', 10), 300);
+
+    if (platform === 'cafe') {
+      const { rows } = await pool.query(
+        `SELECT ccp.*,
+                latest.snapshot_date,
+                latest.view_count,
+                latest.previous_view_count,
+                latest.daily_increase,
+                latest.source AS snapshot_source,
+                latest.checked_at AS snapshot_checked_at
+         FROM collected_cafe_posts ccp
+         LEFT JOIN LATERAL (
+           SELECT *
+           FROM cafe_post_view_snapshots cpvs
+           WHERE cpvs.cafe_post_id = ccp.id
+           ORDER BY cpvs.snapshot_date DESC
+           LIMIT 1
+         ) latest ON TRUE
+         WHERE COALESCE(ccp.last_view_count, 0) >= 10
+         ORDER BY COALESCE(latest.daily_increase, ccp.last_daily_increase, 0) DESC,
+                  ccp.updated_at DESC
+         LIMIT $1`,
+        [limit]
+      );
+      return res.json({
+        platform,
+        items: rows,
+        stats: {
+          total: rows.length,
+          overThreshold: rows.filter((item) => Number(item.last_view_count || item.view_count || 0) >= 10).length,
+          totalIncrease: rows.reduce((sum, item) => sum + Number(item.daily_increase || item.last_daily_increase || 0), 0),
+        },
+      });
+    }
+
+    const { rows } = await pool.query(
+      `SELECT cb.*,
+              latest.snapshot_date,
+              latest.today_view_count,
+              latest.total_view_count,
+              latest.previous_total_view_count,
+              latest.daily_view_count,
+              latest.source AS snapshot_source,
+              latest.checked_at AS snapshot_checked_at
+       FROM collected_blogs cb
+       LEFT JOIN LATERAL (
+         SELECT *
+         FROM blog_view_snapshots bvs
+         WHERE bvs.collected_blog_id = cb.id
+         ORDER BY bvs.snapshot_date DESC
+         LIMIT 1
+       ) latest ON TRUE
+       ORDER BY cb.updated_at DESC
+       LIMIT $1`,
+      [limit]
+    );
+    return res.json({
+      platform,
+      items: rows,
+      stats: {
+        total: rows.length,
+        realtimeTotalViews: rows.reduce((sum, item) => sum + Number(item.last_total_view_count || item.total_view_count || 0), 0),
+        dailyViews: rows.reduce((sum, item) => sum + Number(item.daily_view_count || item.last_daily_view_count || 0), 0),
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/views/status/refresh', async (req, res) => {
+  try {
+    const platform = req.body?.platform || req.query.platform || 'blog';
+    const limit = req.body?.limit || req.query.limit || 100;
+    const category = req.body?.category || req.query.category || null;
+    const results = platform === 'cafe'
+      ? await snapshotCollectedCafePosts({ limit, category })
+      : await snapshotCollectedBlogs({ limit, category });
+    res.json({
+      ok: true,
+      platform: platform === 'cafe' ? 'cafe' : 'blog',
       snapshotDate: kstDateString(),
       processed: results.length,
       collected: results.filter((item) => item.ok).length,
@@ -2080,10 +2410,12 @@ export function startCollectionSchedulers() {
     if (kstHour === 0 && kstMinute >= 5 && lastBlogSnapshotDate !== today) {
       lastBlogSnapshotDate = today;
       try {
-        const results = await snapshotCollectedBlogs({ limit: 300 });
-        console.log(`[collections] daily blog snapshots: ${results.filter((item) => item.ok).length}/${results.length}`);
+        const blogResults = await snapshotCollectedBlogs({ limit: 300 });
+        const cafeResults = await snapshotCollectedCafePosts({ limit: 300 });
+        console.log(`[collections] daily blog snapshots: ${blogResults.filter((item) => item.ok).length}/${blogResults.length}`);
+        console.log(`[collections] daily cafe snapshots: ${cafeResults.filter((item) => item.ok).length}/${cafeResults.length}`);
       } catch (err) {
-        console.warn('[collections] daily blog snapshot failed:', err.message);
+        console.warn('[collections] daily view snapshot failed:', err.message);
       }
     }
   };

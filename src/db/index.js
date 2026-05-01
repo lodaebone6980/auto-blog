@@ -128,6 +128,8 @@ export async function initDB() {
         total_view_count INTEGER,
         today_view_source TEXT,
         total_view_source TEXT,
+        post_view_count INTEGER,
+        post_view_source TEXT,
         view_count_checked_at TIMESTAMPTZ,
         quote_blocks JSONB DEFAULT '[]',
         repeated_terms JSONB DEFAULT '[]',
@@ -203,6 +205,38 @@ export async function initDB() {
         UNIQUE(collected_blog_id, snapshot_date)
       );
 
+      -- Collected Naver Cafe posts for view count monitoring.
+      CREATE TABLE IF NOT EXISTS collected_cafe_posts (
+        id SERIAL PRIMARY KEY,
+        url TEXT NOT NULL UNIQUE,
+        cafe_id TEXT,
+        cafe_name TEXT,
+        article_id TEXT,
+        title TEXT,
+        category TEXT DEFAULT 'general',
+        latest_source_link_id INTEGER REFERENCES source_links(id) ON DELETE SET NULL,
+        latest_source_analysis_id INTEGER REFERENCES source_analyses(id) ON DELETE SET NULL,
+        last_view_count INTEGER,
+        last_daily_increase INTEGER,
+        last_checked_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );
+
+      -- Daily Naver Cafe post view snapshots. Only rows with 10+ views are actively tracked.
+      CREATE TABLE IF NOT EXISTS cafe_post_view_snapshots (
+        id SERIAL PRIMARY KEY,
+        cafe_post_id INTEGER REFERENCES collected_cafe_posts(id) ON DELETE CASCADE,
+        snapshot_date DATE NOT NULL,
+        view_count INTEGER,
+        previous_view_count INTEGER,
+        daily_increase INTEGER,
+        source TEXT,
+        checked_at TIMESTAMPTZ DEFAULT NOW(),
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE(cafe_post_id, snapshot_date)
+      );
+
       ALTER TABLE source_analyses ADD COLUMN IF NOT EXISTS source_link_id INTEGER;
       ALTER TABLE source_analyses ADD COLUMN IF NOT EXISTS keyword_candidates JSONB DEFAULT '[]';
       ALTER TABLE source_analyses ADD COLUMN IF NOT EXISTS main_keyword TEXT;
@@ -218,6 +252,8 @@ export async function initDB() {
       ALTER TABLE source_analyses ADD COLUMN IF NOT EXISTS total_view_count INTEGER;
       ALTER TABLE source_analyses ADD COLUMN IF NOT EXISTS today_view_source TEXT;
       ALTER TABLE source_analyses ADD COLUMN IF NOT EXISTS total_view_source TEXT;
+      ALTER TABLE source_analyses ADD COLUMN IF NOT EXISTS post_view_count INTEGER;
+      ALTER TABLE source_analyses ADD COLUMN IF NOT EXISTS post_view_source TEXT;
       ALTER TABLE source_analyses ADD COLUMN IF NOT EXISTS view_count_checked_at TIMESTAMPTZ;
       ALTER TABLE source_analyses ADD COLUMN IF NOT EXISTS quote_blocks JSONB DEFAULT '[]';
       ALTER TABLE source_analyses ADD COLUMN IF NOT EXISTS repeated_terms JSONB DEFAULT '[]';
@@ -376,6 +412,9 @@ export async function initDB() {
       CREATE INDEX IF NOT EXISTS idx_collected_blogs_blog_id ON collected_blogs(blog_id);
       CREATE UNIQUE INDEX IF NOT EXISTS idx_collected_blogs_platform_blog_id_unique ON collected_blogs(platform, blog_id);
       CREATE INDEX IF NOT EXISTS idx_blog_view_snapshots_blog_date ON blog_view_snapshots(collected_blog_id, snapshot_date DESC);
+      CREATE INDEX IF NOT EXISTS idx_collected_cafe_posts_category ON collected_cafe_posts(category);
+      CREATE INDEX IF NOT EXISTS idx_collected_cafe_posts_last_view ON collected_cafe_posts(last_view_count DESC);
+      CREATE INDEX IF NOT EXISTS idx_cafe_post_view_snapshots_post_date ON cafe_post_view_snapshots(cafe_post_id, snapshot_date DESC);
     `);
     console.log('[DB] Tables initialized successfully');
   } finally {
