@@ -290,12 +290,12 @@ function buildSourceAnalysis({ sourceUrl, sourceText, html, keyword, category, p
   const title = html ? extractTitle(html, sourceUrl || '붙여넣기 원문') : '붙여넣기 원문';
   const plainText = sourceText ? decodeHtmlEntities(sourceText) : stripHtml(html || '');
   const compactText = plainText.replace(/\s/g, '');
-  const kwCount = keyword ? (plainText.match(new RegExp(escapeRegExp(keyword), 'gi')) || []).length : 0;
   const imageCount = html ? (html.match(/<img\b/gi) || []).length : 0;
   const subheadings = html ? extractHeadings(html) : [];
   const links = html ? extractLinks(html) : [];
   const keywordCandidates = inferKeywordCandidates({ title, text: plainText, subheadings });
   const mainKeyword = keyword || keywordCandidates[0]?.keyword || '';
+  const kwCount = mainKeyword ? (plainText.match(new RegExp(escapeRegExp(mainKeyword), 'gi')) || []).length : 0;
   const categoryGuess = category && category !== 'general' ? category : guessCategoryFromText(plainText, title);
   const structure = summarizeStructure({
     text: plainText,
