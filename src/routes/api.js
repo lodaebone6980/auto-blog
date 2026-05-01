@@ -1027,14 +1027,23 @@ function makeSectionTitles(keyword, topic, count) {
   return base.slice(0, count);
 }
 
+function escapeSvgText(value = '') {
+  return decodeHtmlEntities(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
 function makeTemplateImage({ keyword, section, subtitle, index, platform }) {
   const bg = platform === 'cafe' ? '#f8fafc' : '#ffffff';
   const primary = platform === 'cafe' ? '#1d4ed8' : '#1f5f4a';
   const accent = platform === 'cafe' ? '#dbeafe' : '#d8ebe4';
   const badge = index === 0 ? '대표' : `SECTION ${String(index).padStart(2, '0')}`;
-  const safeKeyword = decodeHtmlEntities(keyword).slice(0, 24);
-  const safeSection = decodeHtmlEntities(section).slice(0, 24);
-  const safeSubtitle = decodeHtmlEntities(subtitle || '핵심만 빠르게 정리').slice(0, 28);
+  const safeKeyword = escapeSvgText(String(keyword || '').slice(0, 24));
+  const safeSection = escapeSvgText(String(section || '').slice(0, 24));
+  const safeSubtitle = escapeSvgText(String(subtitle || '핵심만 빠르게 정리').slice(0, 28));
   const svg = `
   <svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1080" viewBox="0 0 1080 1080">
     <rect width="1080" height="1080" fill="${bg}"/>
@@ -1050,7 +1059,7 @@ function makeTemplateImage({ keyword, section, subtitle, index, platform }) {
   return `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`;
 }
 
-function buildRewriteDraft({ keyword, topic, platform, ctaUrl, useNaverQr, pattern }) {
+function buildRewriteDraft({ keyword, topic, platform, ctaUrl, useNaverQr, useAiImages = true, pattern }) {
   const title = makeRewriteTitle(keyword, topic, platform);
   const sectionTitles = makeSectionTitles(keyword, topic, pattern.sectionCount);
   const subject = topic || keyword;
@@ -1071,8 +1080,10 @@ function buildRewriteDraft({ keyword, topic, platform, ctaUrl, useNaverQr, patte
     bodyParts.push(`${subject}은 한 가지 조건만 보고 결정하기보다 상황, 목적, 진행 시점까지 같이 비교해야 결과가 자연스럽습니다.`);
     bodyParts.push(`특히 검색자가 궁금해하는 지점은 “그래서 내가 지금 무엇을 하면 되는가”이기 때문에 설명은 짧게 끊고 실제 확인 순서 중심으로 배치하는 편이 좋습니다.`);
     bodyParts.push('');
-    bodyParts.push(`[이미지 ${index + 1}: ${section}]`);
-    bodyParts.push('');
+    if (useAiImages) {
+      bodyParts.push(`[이미지 ${index + 1}: ${section}]`);
+      bodyParts.push('');
+    }
   });
 
   bodyParts.push('> 마무리');
@@ -1085,12 +1096,14 @@ function buildRewriteDraft({ keyword, topic, platform, ctaUrl, useNaverQr, patte
   const plainText = body.replace(/\[이미지[^\]]+\]/g, '').replace(/^>\s*/gm, '').trim();
   const charCount = plainText.replace(/\s/g, '').length;
   const kwCount = (plainText.match(new RegExp(escapeRegExp(keyword), 'gi')) || []).length;
-  const images = [
-    makeTemplateImage({ keyword, section: title, subtitle: '새 글 초안', index: 0, platform }),
-    ...sectionTitles.slice(0, pattern.imageCount - 1).map((section, index) => (
-      makeTemplateImage({ keyword, section, subtitle: `${index + 1}번째 핵심`, index: index + 1, platform })
-    )),
-  ];
+  const images = useAiImages
+    ? [
+        makeTemplateImage({ keyword, section: title, subtitle: '새 글 초안', index: 0, platform }),
+        ...sectionTitles.slice(0, pattern.imageCount - 1).map((section, index) => (
+          makeTemplateImage({ keyword, section, subtitle: `${index + 1}번째 핵심`, index: index + 1, platform })
+        )),
+      ]
+    : [];
 
   return {
     title,
@@ -1149,6 +1162,7 @@ async function processRewriteJob(jobId) {
     platform: job.platform,
     ctaUrl: job.cta_url,
     useNaverQr: job.use_naver_qr,
+    useAiImages: job.use_ai_images,
     pattern,
   });
 

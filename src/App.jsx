@@ -1427,7 +1427,7 @@ function RewritePanel() {
           </button>
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(280px, 1.2fr) minmax(260px, 0.8fr)', gap: 14, marginTop: 16 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 14, marginTop: 16 }}>
           <div>
             <label style={{ display: 'block', fontSize: 11, fontWeight: 800, color: COLORS.textSecondary, marginBottom: 6 }}>재각색 키워드</label>
             <textarea
