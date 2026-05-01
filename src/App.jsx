@@ -30,6 +30,21 @@ const SORT_OPTIONS = [
   { key: 'aeo_score', label: 'AEO순' },
 ];
 
+const DEFAULT_REWRITE_SETTINGS = {
+  targetCharCount: 2200,
+  sectionCharCount: 300,
+  sectionCount: 7,
+  targetKwCount: 15,
+  imageCount: 12,
+  benchmarkUrl: 'https://blog.naver.com/openmind200/224258533599',
+  benchmarkSampleCount: 20,
+  benchmarkMedianCharCount: 1940,
+  benchmarkMedianSectionCount: 7,
+  benchmarkMedianSectionCharCount: 273,
+  benchmarkMedianKwCount: 15,
+  benchmarkMedianImageCount: 12,
+};
+
 /* ────────────────────── Utility ────────────────────── */
 
 function formatDate(d) {
@@ -1255,8 +1270,17 @@ function RewritePanel() {
   const [useNaverQr, setUseNaverQr] = useState(true);
   const [useAiImages, setUseAiImages] = useState(true);
   const [concurrency, setConcurrency] = useState(3);
+  const [rewriteSettings, setRewriteSettings] = useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem('naviwrite.rewrite.settings') || 'null') || {};
+      return { ...DEFAULT_REWRITE_SETTINGS, ...saved };
+    } catch {
+      return DEFAULT_REWRITE_SETTINGS;
+    }
+  });
   const [loading, setLoading] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [benchmarking, setBenchmarking] = useState(false);
   const [message, setMessage] = useState('');
 
   const parseArray = (value) => {
@@ -1288,6 +1312,10 @@ function RewritePanel() {
   useEffect(() => {
     localStorage.setItem('naviwrite.rewrite.selectedSourceLinkIds', JSON.stringify(selectedSourceLinkIds));
   }, [selectedSourceLinkIds]);
+
+  useEffect(() => {
+    localStorage.setItem('naviwrite.rewrite.settings', JSON.stringify(rewriteSettings));
+  }, [rewriteSettings]);
 
   const collectedLinks = useMemo(
     () => links.filter((link) => link.status === '수집완료' && link.source_analysis_id),
@@ -1325,6 +1353,31 @@ function RewritePanel() {
     ));
   };
 
+  const updateRewriteSetting = (key, value) => {
+    setRewriteSettings((prev) => ({
+      ...prev,
+      [key]: key === 'benchmarkUrl' ? value : Number(value) || 0,
+    }));
+  };
+
+  const resetRewriteSettings = () => {
+    setRewriteSettings(DEFAULT_REWRITE_SETTINGS);
+    setMessage('최근 20개 벤치마크 기준값으로 복원했습니다.');
+  };
+
+  const benchmarkRewriteSettings = async () => {
+    setBenchmarking(true);
+    setMessage('최근 글 20개를 읽어서 기준값을 계산 중입니다.');
+    const res = await safeFetch(`${API}/rewrite-settings/benchmark?limit=20&url=${encodeURIComponent(rewriteSettings.benchmarkUrl || DEFAULT_REWRITE_SETTINGS.benchmarkUrl)}`);
+    setBenchmarking(false);
+    if (res?.ok && res.settings) {
+      setRewriteSettings((prev) => ({ ...prev, ...res.settings }));
+      setMessage(`벤치마크 완료 · ${res.summary?.sampleCount || 0}개 분석`);
+    } else {
+      setMessage(res?.error || '벤치마크 기준값 계산에 실패했습니다.');
+    }
+  };
+
   const createRewriteJobs = async () => {
     if (keywordCount === 0) {
       setMessage('재각색할 키워드를 줄바꿈으로 입력해 주세요.');
@@ -1349,6 +1402,7 @@ function RewritePanel() {
         ctaUrl,
         useNaverQr,
         useAiImages,
+        rewriteSettings,
         concurrency: Number(concurrency) || 3,
       }),
     });
@@ -1503,6 +1557,113 @@ function RewritePanel() {
               </label>
             </div>
           </div>
+        </div>
+
+        <div style={{
+          marginTop: 14,
+          padding: 14,
+          border: `1px solid ${COLORS.border}`,
+          borderRadius: 10,
+          background: '#f8fafc',
+        }}>
+          <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', marginBottom: 12 }}>
+            <div>
+              <h3 style={{ fontSize: 14, fontWeight: 900, color: COLORS.primary, marginBottom: 4 }}>재각색 기준값</h3>
+              <p style={{ fontSize: 11, color: COLORS.textSecondary, lineHeight: 1.6 }}>
+                openmind200 최근 20개 기준 중앙값은 1,940자 · 7섹션 · 섹션당 273자 · KW 15회 · 이미지 12장입니다.
+                운영 기본값은 2,200자 기준으로 살짝 상향했습니다.
+              </p>
+            </div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <button
+                type="button"
+                onClick={benchmarkRewriteSettings}
+                disabled={benchmarking}
+                style={{
+                  height: 30,
+                  padding: '0 12px',
+                  borderRadius: 8,
+                  border: 'none',
+                  background: benchmarking ? COLORS.textMuted : COLORS.primary,
+                  color: 'white',
+                  fontSize: 11,
+                  fontWeight: 850,
+                  cursor: benchmarking ? 'wait' : 'pointer',
+                }}
+              >
+                {benchmarking ? '계산 중' : '최근 20개 재계산'}
+              </button>
+              <button
+                type="button"
+                onClick={resetRewriteSettings}
+                style={{
+                  height: 30,
+                  padding: '0 12px',
+                  borderRadius: 8,
+                  border: `1px solid ${COLORS.border}`,
+                  background: 'white',
+                  color: COLORS.primary,
+                  fontSize: 11,
+                  fontWeight: 850,
+                  cursor: 'pointer',
+                }}
+              >
+                기준값 복원
+              </button>
+            </div>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(145px, 1fr))', gap: 10 }}>
+            {[
+              ['targetCharCount', '목표 글자수', '자'],
+              ['sectionCharCount', '섹션당 글자수', '자'],
+              ['sectionCount', '소제목 개수', '개'],
+              ['targetKwCount', '키워드 반복수', '회'],
+              ['imageCount', '이미지 개수', '장'],
+            ].map(([key, label, unit]) => (
+              <label key={key} style={{ display: 'grid', gap: 5 }}>
+                <span style={{ fontSize: 11, color: COLORS.textSecondary, fontWeight: 800 }}>{label}</span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <input
+                    type="number"
+                    min={key === 'targetCharCount' ? 1200 : 1}
+                    max={key === 'targetCharCount' ? 5000 : 30}
+                    value={rewriteSettings[key]}
+                    onChange={(e) => updateRewriteSetting(key, e.target.value)}
+                    style={{
+                      width: '100%',
+                      height: 36,
+                      border: `1px solid ${COLORS.border}`,
+                      borderRadius: 8,
+                      padding: '0 10px',
+                      fontSize: 12,
+                      fontWeight: 800,
+                      color: COLORS.textPrimary,
+                      outline: 'none',
+                      background: 'white',
+                    }}
+                  />
+                  <span style={{ fontSize: 11, color: COLORS.textMuted, fontWeight: 800 }}>{unit}</span>
+                </div>
+              </label>
+            ))}
+          </div>
+          <input
+            value={rewriteSettings.benchmarkUrl}
+            onChange={(e) => updateRewriteSetting('benchmarkUrl', e.target.value)}
+            placeholder="벤치마킹 기준 URL"
+            style={{
+              width: '100%',
+              height: 36,
+              border: `1px solid ${COLORS.border}`,
+              borderRadius: 8,
+              padding: '0 10px',
+              fontSize: 11,
+              color: COLORS.textSecondary,
+              outline: 'none',
+              marginTop: 10,
+              background: 'white',
+            }}
+          />
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginTop: 14 }}>

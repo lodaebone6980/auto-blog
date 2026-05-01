@@ -248,6 +248,7 @@ export async function initDB() {
         use_naver_qr BOOLEAN DEFAULT FALSE,
         use_ai_images BOOLEAN DEFAULT FALSE,
         source_analysis_ids JSONB DEFAULT '[]',
+        settings_json JSONB DEFAULT '{}',
         status TEXT DEFAULT '대기중',
         pattern_json JSONB DEFAULT '{}',
         title TEXT,
@@ -298,6 +299,7 @@ export async function initDB() {
       ALTER TABLE source_analyses ADD COLUMN IF NOT EXISTS quote_blocks JSONB DEFAULT '[]';
       ALTER TABLE source_analyses ADD COLUMN IF NOT EXISTS repeated_terms JSONB DEFAULT '[]';
       ALTER TABLE source_analyses ADD COLUMN IF NOT EXISTS quote_repeated_terms JSONB DEFAULT '[]';
+      ALTER TABLE rewrite_jobs ADD COLUMN IF NOT EXISTS settings_json JSONB DEFAULT '{}';
 
       -- Collapse previously duplicated blog rows before adding the one-blog constraint.
       WITH duplicate_blogs AS (
