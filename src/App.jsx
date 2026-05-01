@@ -1103,24 +1103,127 @@ function SourceCollectionPanel() {
 
 function OperationsSettingsPanel() {
   const emptySettings = {
+    runnerUrl: 'http://127.0.0.1:39271',
     accounts: [],
     qrAccounts: [],
     vpnProfiles: [],
   };
   const [settings, setSettings] = useState(() => {
     try {
-      return JSON.parse(localStorage.getItem('naviwrite.opsSettings') || 'null') || emptySettings;
+      const saved = JSON.parse(localStorage.getItem('naviwrite.opsSettings') || 'null') || {};
+      return { ...emptySettings, ...saved };
     } catch {
       return emptySettings;
     }
   });
-  const [accountForm, setAccountForm] = useState({ platform: 'blog', label: '', memo: '' });
+  const [runnerStatus, setRunnerStatus] = useState({ state: 'idle', message: '' });
+  const [accountForm, setAccountForm] = useState({ platform: 'blog', label: '', memo: '', usernameHint: '' });
   const [qrForm, setQrForm] = useState({ label: '', naverIdHint: '', dailyLimit: 100 });
   const [vpnForm, setVpnForm] = useState({ label: '', provider: 'nordvpn', target: '', mode: '수동 승인' });
 
   const saveSettings = (next) => {
     setSettings(next);
     localStorage.setItem('naviwrite.opsSettings', JSON.stringify(next));
+  };
+
+  const runnerBase = (settings.runnerUrl || 'http://127.0.0.1:39271').replace(/\/$/, '');
+
+  const runnerRequest = async (path, opts = {}) => {
+    const res = await fetch(`${runnerBase}${path}`, {
+      ...opts,
+      headers: {
+        'Content-Type': 'application/json',
+        ...(opts.headers || {}),
+      },
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `Runner error (${res.status})`);
+    return data;
+  };
+
+  const testRunner = async () => {
+    setRunnerStatus({ state: 'testing', message: 'Runner 연결 확인 중...' });
+    try {
+      const health = await runnerRequest('/health');
+      setRunnerStatus({
+        state: 'ok',
+        message: `연결됨 · ${health.service} · 브라우저 ${health.browserFound ? '감지' : '미감지'}`,
+      });
+    } catch (err) {
+      setRunnerStatus({
+        state: 'fail',
+        message: err instanceof Error ? err.message : 'Runner 연결 실패',
+      });
+    }
+  };
+
+  const updateAccount = (id, patch) => {
+    saveSettings({
+      ...settings,
+      accounts: settings.accounts.map((account) =>
+        account.id === id ? { ...account, ...patch } : account
+      ),
+    });
+  };
+
+  const ensureRunnerProfile = async (account) => {
+    const profileId = account.runnerProfileId || account.id;
+    const data = await runnerRequest('/profiles', {
+      method: 'POST',
+      body: JSON.stringify({
+        id: profileId,
+        label: account.label,
+        platform: account.platform,
+        targetUrl: account.memo,
+        usernameHint: account.usernameHint,
+        loginCheckIntervalHours: 6,
+        inactivityRecheckHours: 2,
+      }),
+    });
+    updateAccount(account.id, {
+      runnerProfileId: data.profile.id,
+      loginStatus: data.session?.needsLoginCheck ? '로그인 체크 필요' : data.session?.loginStatus || '로그인 체크 필요',
+      runnerSyncedAt: new Date().toISOString(),
+    });
+    return data.profile.id;
+  };
+
+  const createRunnerProfile = async (account) => {
+    setRunnerStatus({ state: 'testing', message: `${account.label} Runner 프로필 생성 중...` });
+    try {
+      await ensureRunnerProfile(account);
+      setRunnerStatus({ state: 'ok', message: `${account.label} 프로필을 Runner에 만들었습니다` });
+    } catch (err) {
+      setRunnerStatus({ state: 'fail', message: err instanceof Error ? err.message : '프로필 생성 실패' });
+    }
+  };
+
+  const openRunnerLogin = async (account) => {
+    setRunnerStatus({ state: 'testing', message: `${account.label} 로그인 창 여는 중...` });
+    try {
+      const profileId = account.runnerProfileId || await ensureRunnerProfile(account);
+      await runnerRequest(`/profiles/${profileId}/open-login`, { method: 'POST', body: '{}' });
+      updateAccount(account.id, { loginStatus: '로그인 확인 중', runnerProfileId: profileId });
+      setRunnerStatus({ state: 'ok', message: `${account.label} 전용 브라우저 프로필을 열었습니다` });
+    } catch (err) {
+      setRunnerStatus({ state: 'fail', message: err instanceof Error ? err.message : '로그인 창 열기 실패' });
+    }
+  };
+
+  const markRunnerLoginChecked = async (account) => {
+    setRunnerStatus({ state: 'testing', message: `${account.label} 로그인 체크 저장 중...` });
+    try {
+      const profileId = account.runnerProfileId || await ensureRunnerProfile(account);
+      const data = await runnerRequest(`/profiles/${profileId}/mark-login-checked`, { method: 'POST', body: '{}' });
+      updateAccount(account.id, {
+        loginStatus: '로그인됨',
+        runnerProfileId: profileId,
+        lastCheckedAt: data.profile?.lastLoginCheckedAt || new Date().toISOString(),
+      });
+      setRunnerStatus({ state: 'ok', message: `${account.label} 로그인 체크 완료` });
+    } catch (err) {
+      setRunnerStatus({ state: 'fail', message: err instanceof Error ? err.message : '로그인 체크 실패' });
+    }
   };
 
   const addAccount = () => {
@@ -1130,11 +1233,14 @@ function OperationsSettingsPanel() {
       accounts: [...settings.accounts, {
         id: `acc_${Date.now()}`,
         ...accountForm,
+        runnerProfileId: '',
+        credentialPolicy: 'Runner 로컬 DPAPI',
+        sessionPolicy: '6시간 체크 · 2시간 무활동 재확인',
         loginStatus: '로그인 체크 필요',
         lastCheckedAt: null,
       }],
     });
-    setAccountForm({ platform: 'blog', label: '', memo: '' });
+    setAccountForm({ platform: 'blog', label: '', memo: '', usernameHint: '' });
   };
 
   const addQr = () => {
@@ -1174,7 +1280,43 @@ function OperationsSettingsPanel() {
       <section style={{ ...cardStyle, padding: 20 }}>
         <h2 style={{ fontSize: 18, fontWeight: 850, color: COLORS.primary, marginBottom: 5 }}>운영 설정</h2>
         <p style={{ fontSize: 12, color: COLORS.textSecondary }}>
-          계정 슬롯, 네이버 QR 계정 풀, VPN 프로필을 이 브라우저 로컬에 저장합니다. 비밀번호와 세션은 저장하지 않습니다.
+          서버 DB에는 비밀번호를 저장하지 않습니다. 계정 세션과 필요 시 ID/PW는 Local Runner가 PC 안에서만 관리합니다.
+        </p>
+      </section>
+
+      <section style={{ ...cardStyle, padding: 18 }}>
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16, marginBottom: 12 }}>
+          <div>
+            <h3 style={{ fontSize: 15, fontWeight: 850, color: COLORS.primary, marginBottom: 4 }}>Local Runner 연결</h3>
+            <p style={{ fontSize: 12, color: COLORS.textSecondary, lineHeight: 1.6 }}>
+              Runner가 계정별 브라우저 프로필, 로그인 세션, 로컬 암호화 자격증명, VPN 명령 계획을 담당합니다.
+            </p>
+          </div>
+          <StatusBadge value={runnerStatus.state === 'ok' ? '연결됨' : runnerStatus.state === 'fail' ? '오류' : '대기중'} />
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(220px, 1fr) 130px', gap: 8 }}>
+          <input
+            value={settings.runnerUrl}
+            onChange={(e) => saveSettings({ ...settings, runnerUrl: e.target.value })}
+            placeholder="http://127.0.0.1:39271"
+            style={{ ...inputStyle, marginBottom: 0 }}
+          />
+          <button type="button" onClick={testRunner} style={{ ...primaryButtonStyle, marginBottom: 0 }}>
+            연결 테스트
+          </button>
+        </div>
+        {runnerStatus.message && (
+          <p style={{
+            marginTop: 9,
+            fontSize: 11,
+            fontWeight: 700,
+            color: runnerStatus.state === 'fail' ? COLORS.danger : runnerStatus.state === 'ok' ? COLORS.success : COLORS.textSecondary,
+          }}>
+            {runnerStatus.message}
+          </p>
+        )}
+        <p style={{ marginTop: 8, fontSize: 10, color: COLORS.textMuted, lineHeight: 1.6 }}>
+          실행 명령: <code>node runner/server.js</code>. 이후 EXE 패키징으로 바꿀 수 있습니다.
         </p>
       </section>
 
@@ -1188,9 +1330,16 @@ function OperationsSettingsPanel() {
             <option value="brunch">브런치</option>
           </select>
           <input value={accountForm.label} onChange={(e) => setAccountForm({ ...accountForm, label: e.target.value })} placeholder="예: 네이버 블로그 계정 1" style={inputStyle} />
+          <input value={accountForm.usernameHint} onChange={(e) => setAccountForm({ ...accountForm, usernameHint: e.target.value })} placeholder="ID 힌트 또는 담당자명. 비밀번호 입력 금지" style={inputStyle} />
           <input value={accountForm.memo} onChange={(e) => setAccountForm({ ...accountForm, memo: e.target.value })} placeholder="메모 또는 운영 채널 URL" style={inputStyle} />
           <button type="button" onClick={addAccount} style={primaryButtonStyle}>계정 슬롯 추가</button>
-          <SettingList items={settings.accounts} onRemove={(id) => removeItem('accounts', id)} meta={(item) => `${item.platform} · ${item.loginStatus}`} />
+          <AccountSlotList
+            items={settings.accounts}
+            onRemove={(id) => removeItem('accounts', id)}
+            onCreateProfile={createRunnerProfile}
+            onOpenLogin={openRunnerLogin}
+            onMarkChecked={markRunnerLoginChecked}
+          />
         </section>
 
         <section style={{ ...cardStyle, padding: 18 }}>
@@ -1218,10 +1367,56 @@ function OperationsSettingsPanel() {
 
       <section style={{ ...cardStyle, padding: 16, background: '#fff7ed', borderColor: '#fed7aa' }}>
         <p style={{ fontSize: 12, color: '#9a3412', lineHeight: 1.65 }}>
-          VPN 자동 전환은 별도 Local Runner가 있어야 가능합니다. 여기서는 계정별 고정 VPN 프로필을 먼저 설계값으로 저장하고,
-          실제 전환은 수동 승인 기반으로 붙이는 순서가 안전합니다.
+          운영 기준: 서버는 작업과 상태만 저장합니다. 로그인 세션과 암호화된 자격증명은 Runner PC에만 저장하고,
+          발행 전에는 6시간 체크 또는 2시간 무활동 기준으로 로그인 재확인을 요구합니다.
         </p>
       </section>
+    </div>
+  );
+}
+
+function AccountSlotList({ items, onRemove, onCreateProfile, onOpenLogin, onMarkChecked }) {
+  return (
+    <div style={{ display: 'grid', gap: 8, marginTop: 12 }}>
+      {items.length === 0 ? (
+        <div style={{ padding: 16, border: `1px dashed ${COLORS.border}`, borderRadius: 9, color: COLORS.textMuted, fontSize: 12, textAlign: 'center' }}>
+          아직 등록된 계정 슬롯이 없습니다.
+        </div>
+      ) : items.map((item) => (
+        <div key={item.id} style={{ padding: 10, border: `1px solid ${COLORS.border}`, borderRadius: 9, background: 'white' }}>
+          <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start', marginBottom: 8 }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <p style={{ fontSize: 12, fontWeight: 850, color: COLORS.textPrimary }}>{item.label}</p>
+              <p style={{ fontSize: 10, color: COLORS.textMuted, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                {item.platform} · {item.loginStatus} · {item.runnerProfileId ? `Runner ${item.runnerProfileId}` : 'Runner 미연동'}
+              </p>
+              <p style={{ fontSize: 10, color: COLORS.textMuted, marginTop: 2 }}>
+                {item.credentialPolicy || 'Runner 로컬 DPAPI'} · {item.sessionPolicy || '6시간 체크 · 2시간 무활동 재확인'}
+              </p>
+            </div>
+            <button type="button" onClick={() => onRemove(item.id)} style={{
+              height: 28,
+              padding: '0 9px',
+              borderRadius: 7,
+              border: 'none',
+              background: '#fef2f2',
+              color: COLORS.danger,
+              fontSize: 11,
+              fontWeight: 800,
+              cursor: 'pointer',
+            }}>
+              삭제
+            </button>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 6 }}>
+            <button type="button" onClick={() => onCreateProfile(item)} style={smallButtonStyle}>프로필 생성</button>
+            <button type="button" onClick={() => onOpenLogin(item)} style={smallButtonStyle}>로그인 열기</button>
+            <button type="button" onClick={() => onMarkChecked(item)} style={{ ...smallButtonStyle, background: COLORS.success, color: 'white', borderColor: COLORS.success }}>
+              체크 완료
+            </button>
+          </div>
+        </div>
+      ))}
     </div>
   );
 }
@@ -1278,6 +1473,17 @@ const primaryButtonStyle = {
   background: COLORS.primary,
   color: 'white',
   fontSize: 12,
+  fontWeight: 850,
+  cursor: 'pointer',
+};
+
+const smallButtonStyle = {
+  height: 30,
+  borderRadius: 7,
+  border: `1px solid ${COLORS.border}`,
+  background: 'white',
+  color: COLORS.textSecondary,
+  fontSize: 10,
   fontWeight: 850,
   cursor: 'pointer',
 };
