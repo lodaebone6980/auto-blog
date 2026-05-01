@@ -120,8 +120,14 @@ export async function initDB() {
         structure_json JSONB DEFAULT '{}',
         tone_summary TEXT,
         blog_name TEXT,
+        blog_id TEXT,
+        blog_home_url TEXT,
+        blog_title TEXT,
+        blog_nickname TEXT,
         today_view_count INTEGER,
+        total_view_count INTEGER,
         today_view_source TEXT,
+        total_view_source TEXT,
         view_count_checked_at TIMESTAMPTZ,
         quote_blocks JSONB DEFAULT '[]',
         repeated_terms JSONB DEFAULT '[]',
@@ -161,6 +167,42 @@ export async function initDB() {
         UNIQUE(batch_id, url)
       );
 
+      -- Collected blogs grouped by category for daily view tracking
+      CREATE TABLE IF NOT EXISTS collected_blogs (
+        id SERIAL PRIMARY KEY,
+        platform TEXT DEFAULT 'blog',
+        blog_id TEXT,
+        category TEXT DEFAULT 'general',
+        blog_name TEXT,
+        blog_title TEXT,
+        blog_nickname TEXT,
+        home_url TEXT,
+        latest_source_link_id INTEGER REFERENCES source_links(id) ON DELETE SET NULL,
+        latest_source_analysis_id INTEGER REFERENCES source_analyses(id) ON DELETE SET NULL,
+        last_today_view_count INTEGER,
+        last_total_view_count INTEGER,
+        last_daily_view_count INTEGER,
+        last_checked_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE(platform, blog_id, category)
+      );
+
+      -- Daily blog view snapshots. KST date is stored in snapshot_date.
+      CREATE TABLE IF NOT EXISTS blog_view_snapshots (
+        id SERIAL PRIMARY KEY,
+        collected_blog_id INTEGER REFERENCES collected_blogs(id) ON DELETE CASCADE,
+        snapshot_date DATE NOT NULL,
+        today_view_count INTEGER,
+        total_view_count INTEGER,
+        previous_total_view_count INTEGER,
+        daily_view_count INTEGER,
+        source TEXT,
+        checked_at TIMESTAMPTZ DEFAULT NOW(),
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE(collected_blog_id, snapshot_date)
+      );
+
       ALTER TABLE source_analyses ADD COLUMN IF NOT EXISTS source_link_id INTEGER;
       ALTER TABLE source_analyses ADD COLUMN IF NOT EXISTS keyword_candidates JSONB DEFAULT '[]';
       ALTER TABLE source_analyses ADD COLUMN IF NOT EXISTS main_keyword TEXT;
@@ -168,8 +210,14 @@ export async function initDB() {
       ALTER TABLE source_analyses ADD COLUMN IF NOT EXISTS structure_json JSONB DEFAULT '{}';
       ALTER TABLE source_analyses ADD COLUMN IF NOT EXISTS tone_summary TEXT;
       ALTER TABLE source_analyses ADD COLUMN IF NOT EXISTS blog_name TEXT;
+      ALTER TABLE source_analyses ADD COLUMN IF NOT EXISTS blog_id TEXT;
+      ALTER TABLE source_analyses ADD COLUMN IF NOT EXISTS blog_home_url TEXT;
+      ALTER TABLE source_analyses ADD COLUMN IF NOT EXISTS blog_title TEXT;
+      ALTER TABLE source_analyses ADD COLUMN IF NOT EXISTS blog_nickname TEXT;
       ALTER TABLE source_analyses ADD COLUMN IF NOT EXISTS today_view_count INTEGER;
+      ALTER TABLE source_analyses ADD COLUMN IF NOT EXISTS total_view_count INTEGER;
       ALTER TABLE source_analyses ADD COLUMN IF NOT EXISTS today_view_source TEXT;
+      ALTER TABLE source_analyses ADD COLUMN IF NOT EXISTS total_view_source TEXT;
       ALTER TABLE source_analyses ADD COLUMN IF NOT EXISTS view_count_checked_at TIMESTAMPTZ;
       ALTER TABLE source_analyses ADD COLUMN IF NOT EXISTS quote_blocks JSONB DEFAULT '[]';
       ALTER TABLE source_analyses ADD COLUMN IF NOT EXISTS repeated_terms JSONB DEFAULT '[]';
@@ -244,6 +292,9 @@ export async function initDB() {
       CREATE INDEX IF NOT EXISTS idx_collection_batches_created_at ON collection_batches(created_at);
       CREATE INDEX IF NOT EXISTS idx_source_links_batch_id ON source_links(batch_id);
       CREATE INDEX IF NOT EXISTS idx_source_links_status ON source_links(status);
+      CREATE INDEX IF NOT EXISTS idx_collected_blogs_category ON collected_blogs(category);
+      CREATE INDEX IF NOT EXISTS idx_collected_blogs_blog_id ON collected_blogs(blog_id);
+      CREATE INDEX IF NOT EXISTS idx_blog_view_snapshots_blog_date ON blog_view_snapshots(collected_blog_id, snapshot_date DESC);
     `);
     console.log('[DB] Tables initialized successfully');
   } finally {

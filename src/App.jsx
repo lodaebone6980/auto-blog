@@ -865,17 +865,21 @@ function SourceCollectionPanel() {
   const [urlsText, setUrlsText] = useState('');
   const [batches, setBatches] = useState([]);
   const [links, setLinks] = useState([]);
+  const [blogs, setBlogs] = useState([]);
   const [creating, setCreating] = useState(false);
   const [processing, setProcessing] = useState(false);
+  const [snapshotting, setSnapshotting] = useState(false);
   const [message, setMessage] = useState('');
 
   const loadCollections = useCallback(async () => {
-    const [batchRes, linkRes] = await Promise.all([
+    const [batchRes, linkRes, blogRes] = await Promise.all([
       safeFetch(`${API}/collections/batches?limit=20`),
       safeFetch(`${API}/collections/links?limit=100`),
+      safeFetch(`${API}/collections/blogs?limit=100`),
     ]);
     if (Array.isArray(batchRes)) setBatches(batchRes);
     if (Array.isArray(linkRes)) setLinks(linkRes);
+    if (Array.isArray(blogRes)) setBlogs(blogRes);
   }, []);
 
   useEffect(() => {
@@ -934,6 +938,23 @@ function SourceCollectionPanel() {
     }
   };
 
+  const refreshBlogSnapshots = async () => {
+    setSnapshotting(true);
+    setMessage('카테고리별 블로그 오늘/전체 조회수를 갱신 중...');
+    const res = await safeFetch(`${API}/collections/blogs/snapshot-daily`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ limit: 100 }),
+    });
+    setSnapshotting(false);
+    if (res?.ok) {
+      setMessage(`블로그 조회수 갱신 완료 · 성공 ${res.collected}개 · 실패 ${res.failed}개`);
+      await loadCollections();
+    } else {
+      setMessage('블로그 조회수 갱신에 실패했습니다.');
+    }
+  };
+
   const stats = useMemo(() => ({
     total: links.length,
     pending: links.filter((link) => link.status === '대기중').length,
@@ -941,6 +962,13 @@ function SourceCollectionPanel() {
     collected: links.filter((link) => link.status === '수집완료').length,
     failed: links.filter((link) => link.status === '오류').length,
   }), [links]);
+
+  const blogStats = useMemo(() => ({
+    total: blogs.length,
+    categories: new Set(blogs.map((blog) => blog.category).filter(Boolean)).size,
+    totalViews: blogs.reduce((sum, blog) => sum + Number(blog.last_total_view_count || blog.total_view_count || 0), 0),
+    dailyViews: blogs.reduce((sum, blog) => sum + Number(blog.last_daily_view_count || blog.daily_view_count || 0), 0),
+  }), [blogs]);
 
   const formatTerms = (terms) => {
     if (!Array.isArray(terms) || terms.length === 0) return '-';
@@ -957,24 +985,44 @@ function SourceCollectionPanel() {
               URL을 줄바꿈으로 넣으면 웹 서버가 공개 페이지를 바로 가져와 본문, 이미지 수, 키워드 반복수, 글 구조를 분석합니다.
             </p>
           </div>
-          <button
-            type="button"
-            onClick={loadCollections}
-            disabled={processing}
-            style={{
-              height: 34,
-              padding: '0 13px',
-              borderRadius: 8,
-              border: `1px solid ${COLORS.border}`,
-              background: 'white',
-              color: COLORS.textSecondary,
-              fontSize: 12,
-              fontWeight: 800,
-              cursor: processing ? 'not-allowed' : 'pointer',
-            }}
-          >
-            새로고침
-          </button>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+            <button
+              type="button"
+              onClick={refreshBlogSnapshots}
+              disabled={snapshotting || blogs.length === 0}
+              style={{
+                height: 34,
+                padding: '0 13px',
+                borderRadius: 8,
+                border: 'none',
+                background: snapshotting || blogs.length === 0 ? COLORS.textMuted : COLORS.success,
+                color: 'white',
+                fontSize: 12,
+                fontWeight: 800,
+                cursor: snapshotting || blogs.length === 0 ? 'not-allowed' : 'pointer',
+              }}
+            >
+              {snapshotting ? '조회수 갱신 중' : '블로그 조회 갱신'}
+            </button>
+            <button
+              type="button"
+              onClick={loadCollections}
+              disabled={processing || snapshotting}
+              style={{
+                height: 34,
+                padding: '0 13px',
+                borderRadius: 8,
+                border: `1px solid ${COLORS.border}`,
+                background: 'white',
+                color: COLORS.textSecondary,
+                fontSize: 12,
+                fontWeight: 800,
+                cursor: processing || snapshotting ? 'not-allowed' : 'pointer',
+              }}
+            >
+              새로고침
+            </button>
+          </div>
         </div>
 
         <input
@@ -1068,6 +1116,20 @@ function SourceCollectionPanel() {
         ))}
       </div>
 
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12 }}>
+        {[
+          ['저장 블로그', blogStats.total, COLORS.primary],
+          ['카테고리', blogStats.categories, COLORS.accent],
+          ['오늘 조회 합계', blogStats.dailyViews.toLocaleString(), COLORS.success],
+          ['전체 조회 합계', blogStats.totalViews.toLocaleString(), COLORS.textPrimary],
+        ].map(([label, value, color]) => (
+          <div key={label} style={{ ...cardStyle, padding: 16 }}>
+            <p style={{ fontSize: 11, color: COLORS.textSecondary, fontWeight: 700, marginBottom: 6 }}>{label}</p>
+            <p style={{ fontSize: 24, color, fontWeight: 900, lineHeight: 1 }}>{value}</p>
+          </div>
+        ))}
+      </div>
+
       {stats.pending > 0 && (
         <section style={{ ...cardStyle, padding: 16, background: '#fff7ed', borderColor: '#fed7aa' }}>
           <h3 style={{ fontSize: 14, fontWeight: 850, color: '#9a3412', marginBottom: 6 }}>대기중 처리 방법</h3>
@@ -1095,7 +1157,7 @@ function SourceCollectionPanel() {
         <div style={{ padding: '14px 18px', borderBottom: `1px solid ${COLORS.border}` }}>
           <h3 style={{ fontSize: 15, fontWeight: 850, color: COLORS.primary }}>최근 수집 링크와 분석 결과</h3>
           <p style={{ marginTop: 4, fontSize: 11, color: COLORS.textSecondary }}>
-            수집완료가 되면 블로그명, 오늘 조회수, 메인키워드, 글자수/KW 반복수/이미지 수, 인용구와 반복어가 이 표에 표시됩니다.
+            수집완료가 되면 블로그 닉네임/제목, 오늘·전체 조회수, 메인키워드, 글자수/KW 반복수/이미지 수, 인용구와 반복어가 이 표에 표시됩니다.
           </p>
         </div>
         <div style={{ overflowX: 'auto' }}>
@@ -1117,9 +1179,12 @@ function SourceCollectionPanel() {
                   <tr key={link.id} style={{ fontSize: 12, borderBottom: `1px solid ${COLORS.border}` }}>
                     <td style={{ padding: '10px 12px' }}><StatusBadge value={link.status} /></td>
                     <td style={{ padding: '10px 12px', color: COLORS.textSecondary, maxWidth: 160 }}>
-                      <p style={{ fontWeight: 800, color: COLORS.textPrimary, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{link.blog_name || '-'}</p>
+                      <p style={{ fontWeight: 800, color: COLORS.textPrimary, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{link.blog_nickname || link.blog_name || '-'}</p>
+                      <p style={{ marginTop: 2, fontSize: 10, color: COLORS.textMuted, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {link.blog_title || link.blog_id || ''}
+                      </p>
                       <p style={{ marginTop: 2, fontSize: 10, color: COLORS.textMuted }}>
-                        오늘 조회 {link.today_view_count == null ? '-' : Number(link.today_view_count).toLocaleString()}
+                        오늘 {link.today_view_count == null ? '-' : Number(link.today_view_count).toLocaleString()} · 전체 {link.total_view_count == null ? '-' : Number(link.total_view_count).toLocaleString()}
                       </p>
                     </td>
                     <td style={{ padding: '10px 12px', fontWeight: 700, color: COLORS.textSecondary }}>{link.platform_guess || '-'}</td>
@@ -1139,6 +1204,64 @@ function SourceCollectionPanel() {
                     </td>
                     <td style={{ padding: '10px 12px', color: COLORS.danger, maxWidth: 220, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                       {link.error_message || ''}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </section>
+
+      <section style={sectionStyle}>
+        <div style={{ padding: '14px 18px', borderBottom: `1px solid ${COLORS.border}` }}>
+          <h3 style={{ fontSize: 15, fontWeight: 850, color: COLORS.primary }}>카테고리별 저장 블로그</h3>
+          <p style={{ marginTop: 4, fontSize: 11, color: COLORS.textSecondary }}>
+            수집된 네이버 블로그를 카테고리 단위로 저장하고, 매일 0시 이후 전체 조회수 차이로 하루 조회수를 계산합니다.
+          </p>
+        </div>
+        <div style={{ overflowX: 'auto' }}>
+          {blogs.length === 0 ? (
+            <div style={{ padding: 32, textAlign: 'center', color: COLORS.textMuted, fontSize: 13 }}>
+              아직 저장된 블로그가 없습니다. 네이버 블로그 URL을 수집하면 자동으로 생성됩니다.
+            </div>
+          ) : (
+            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 900 }}>
+              <thead>
+                <tr style={{ background: '#f8fafc', color: COLORS.textSecondary, fontSize: 11, textAlign: 'left' }}>
+                  {['카테고리', '블로그', '오늘', '전체', '전일 대비', '기준일', '홈'].map((head) => (
+                    <th key={head} style={{ padding: '10px 12px', borderBottom: `1px solid ${COLORS.border}` }}>{head}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {blogs.map((blog) => (
+                  <tr key={blog.id} style={{ fontSize: 12, borderBottom: `1px solid ${COLORS.border}` }}>
+                    <td style={{ padding: '10px 12px', fontWeight: 850, color: COLORS.primary }}>{blog.category || '-'}</td>
+                    <td style={{ padding: '10px 12px', maxWidth: 220 }}>
+                      <p style={{ fontWeight: 850, color: COLORS.textPrimary, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {blog.blog_nickname || blog.blog_name || '-'}
+                      </p>
+                      <p style={{ marginTop: 2, fontSize: 10, color: COLORS.textMuted, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {blog.blog_title || blog.blog_id || ''}
+                      </p>
+                    </td>
+                    <td style={{ padding: '10px 12px', fontWeight: 800, color: COLORS.success }}>
+                      {blog.last_today_view_count == null ? '-' : Number(blog.last_today_view_count).toLocaleString()}
+                    </td>
+                    <td style={{ padding: '10px 12px', color: COLORS.textSecondary }}>
+                      {blog.last_total_view_count == null ? '-' : Number(blog.last_total_view_count).toLocaleString()}
+                    </td>
+                    <td style={{ padding: '10px 12px', fontWeight: 850, color: Number(blog.last_daily_view_count || 0) > 0 ? COLORS.accent : COLORS.textMuted }}>
+                      {blog.last_daily_view_count == null ? '-' : `+${Number(blog.last_daily_view_count).toLocaleString()}`}
+                    </td>
+                    <td style={{ padding: '10px 12px', color: COLORS.textMuted }}>
+                      {blog.snapshot_date || '-'}
+                    </td>
+                    <td style={{ padding: '10px 12px', maxWidth: 260 }}>
+                      <a href={blog.home_url} target="_blank" rel="noreferrer" style={{ display: 'block', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {blog.home_url}
+                      </a>
                     </td>
                   </tr>
                 ))}

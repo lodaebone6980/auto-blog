@@ -189,6 +189,53 @@ function extractBlogName(html = '', mobileHtml = '') {
     || '';
 }
 
+function cleanNaverBlogTitle(value = '') {
+  return decodeHtmlEntities(value)
+    .replace(/^네이버\s*블로그\s*\|\s*/i, '')
+    .replace(/\s*:\s*네이버\s*블로그\s*$/i, '')
+    .trim();
+}
+
+function extractNaverBlogId(sourceUrl = '') {
+  if (!/blog\.naver\.com/i.test(sourceUrl || '')) return '';
+  try {
+    const url = new URL(sourceUrl);
+    const queryBlogId = url.searchParams.get('blogId');
+    if (queryBlogId) return queryBlogId;
+    const parts = url.pathname.split('/').filter(Boolean);
+    if (parts[0] && !/\.naver$/i.test(parts[0]) && !/Post(List|View)\.naver/i.test(parts[0])) return parts[0];
+  } catch {
+    return '';
+  }
+  return '';
+}
+
+function naverBlogHomeUrl(sourceUrl = '') {
+  const blogId = extractNaverBlogId(sourceUrl);
+  return blogId ? `https://m.blog.naver.com/${blogId}` : null;
+}
+
+function extractBlogIdentity({ sourceUrl = '', html = '', mobileHtml = '', blogHomeHtml = '' } = {}) {
+  const blogId = extractNaverBlogId(sourceUrl);
+  const nickname = pickMetaContent(mobileHtml, 'naverblog:nickname')
+    || pickMetaContent(blogHomeHtml, 'naverblog:nickname')
+    || '';
+  const rawTitle = extractAttribute(mobileHtml, 'blogName')
+    || cleanNaverBlogTitle(pickMetaContent(blogHomeHtml, 'og:title'))
+    || cleanNaverBlogTitle(pickMetaContent(mobileHtml, 'og:site_name'))
+    || extractBlogName(html, mobileHtml);
+  const blogTitle = cleanNaverBlogTitle(rawTitle);
+  const blogName = nickname || blogTitle || blogId || '';
+
+  return {
+    blogId,
+    blogHomeUrl: naverBlogHomeUrl(sourceUrl),
+    blogName,
+    blogTitle,
+    blogNickname: nickname,
+  };
+}
+
 function extractTodayViewCount(mobileHtml = '') {
   const patterns = [
     /(?:todayViewCount|todayReadCount|todayVisitorCount|todayCount)\s*[:=]\s*["']?([0-9,]+)/i,
@@ -204,6 +251,29 @@ function extractTodayViewCount(mobileHtml = '') {
     }
   }
   return null;
+}
+
+function extractBlogVisitorCounts(blogHomeHtml = '') {
+  if (!blogHomeHtml) return { todayViewCount: null, totalViewCount: null, source: null };
+
+  const visible = blogHomeHtml.match(/오늘\s*([0-9,]+)[\s\S]{0,120}?전체\s*([0-9,]+)/);
+  if (visible) {
+    return {
+      todayViewCount: parseInt(visible[1].replace(/,/g, ''), 10),
+      totalViewCount: parseInt(visible[2].replace(/,/g, ''), 10),
+      source: 'm.blog.naver.com',
+    };
+  }
+
+  const todayJson = blogHomeHtml.match(/"todayVisitor"\s*:\s*([0-9]+)/i);
+  const totalJson = blogHomeHtml.match(/"totalVisitor"\s*:\s*([0-9]+)/i);
+  const todayViewCount = todayJson ? parseInt(todayJson[1], 10) : null;
+  const totalViewCount = totalJson ? parseInt(totalJson[1], 10) : null;
+  return {
+    todayViewCount: Number.isFinite(todayViewCount) ? todayViewCount : null,
+    totalViewCount: Number.isFinite(totalViewCount) ? totalViewCount : null,
+    source: todayJson || totalJson ? 'm.blog.naver.com' : null,
+  };
 }
 
 function guessPlatform(sourceUrl, fallback = 'blog') {
@@ -437,7 +507,26 @@ async function fetchNaverMobileHtml(sourceUrl) {
   }
 }
 
-function buildSourceAnalysis({ sourceUrl, sourceText, html, mobileHtml = '', keyword, category, platform, fetchStatus, errorMessage }) {
+async function fetchNaverBlogHomeHtml(sourceUrl) {
+  const homeUrl = naverBlogHomeUrl(sourceUrl);
+  if (!homeUrl) return '';
+  try {
+    const response = await fetch(homeUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148 NaviWrite/1.0',
+        'Accept': 'text/html,application/xhtml+xml',
+        'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.7,en;q=0.6',
+      },
+      redirect: 'follow',
+    });
+    if (!response.ok) return '';
+    return (await response.text()).slice(0, 1_500_000);
+  } catch {
+    return '';
+  }
+}
+
+function buildSourceAnalysis({ sourceUrl, sourceText, html, mobileHtml = '', blogHomeHtml = '', keyword, category, platform, fetchStatus, errorMessage }) {
   const title = html ? extractTitle(html, sourceUrl || '붙여넣기 원문') : '붙여넣기 원문';
   const bodyHtml = html ? (extractNaverBodyHtml(html) || html) : '';
   const plainText = sourceText ? decodeHtmlEntities(sourceText) : stripHtml(bodyHtml || html || '');
@@ -458,7 +547,10 @@ function buildSourceAnalysis({ sourceUrl, sourceText, html, mobileHtml = '', key
     imageCount,
     hasVideo: bodyHtml ? /<video\b|youtube\.com|tv\.naver\.com|<iframe\b|attachVideoInfo/i.test(`${bodyHtml} ${mobileHtml}`) : html ? /<video\b|youtube\.com|tv\.naver\.com|<iframe\b/i.test(html) : false,
   });
-  const todayViewCount = extractTodayViewCount(mobileHtml);
+  const blogIdentity = extractBlogIdentity({ sourceUrl, html, mobileHtml, blogHomeHtml });
+  const blogVisitorCounts = extractBlogVisitorCounts(blogHomeHtml);
+  const todayViewCount = blogVisitorCounts.todayViewCount ?? extractTodayViewCount(mobileHtml);
+  const totalViewCount = blogVisitorCounts.totalViewCount;
 
   return {
     sourceUrl: sourceUrl || null,
@@ -480,10 +572,16 @@ function buildSourceAnalysis({ sourceUrl, sourceText, html, mobileHtml = '', key
     categoryGuess,
     structure,
     toneSummary: summarizeTone(plainText),
-    blogName: extractBlogName(html, mobileHtml),
+    blogId: blogIdentity.blogId,
+    blogHomeUrl: blogIdentity.blogHomeUrl,
+    blogName: blogIdentity.blogName,
+    blogTitle: blogIdentity.blogTitle,
+    blogNickname: blogIdentity.blogNickname,
     todayViewCount,
-    todayViewSource: todayViewCount === null ? null : 'm.blog.naver.com',
-    viewCountCheckedAt: mobileHtml ? new Date().toISOString() : null,
+    totalViewCount,
+    todayViewSource: todayViewCount === null ? null : (blogVisitorCounts.source || 'm.blog.naver.com'),
+    totalViewSource: totalViewCount === null ? null : (blogVisitorCounts.source || 'm.blog.naver.com'),
+    viewCountCheckedAt: mobileHtml || blogHomeHtml ? new Date().toISOString() : null,
     quoteBlocks,
     repeatedTerms: inferRepeatedTerms(plainText, 2),
     quoteRepeatedTerms: quoteText ? inferRepeatedTerms(quoteText, 2) : [],
@@ -492,16 +590,177 @@ function buildSourceAnalysis({ sourceUrl, sourceText, html, mobileHtml = '', key
   };
 }
 
+function kstDateString(date = new Date()) {
+  return new Date(date.getTime() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
+}
+
+async function recordBlogViewSnapshot(collectedBlog, counts = {}) {
+  if (!collectedBlog?.id) return null;
+
+  const todayViewCount = Number.isFinite(counts.todayViewCount) ? counts.todayViewCount : null;
+  const totalViewCount = Number.isFinite(counts.totalViewCount) ? counts.totalViewCount : null;
+  if (todayViewCount === null && totalViewCount === null) return null;
+
+  const snapshotDate = counts.snapshotDate || kstDateString();
+  const previous = await pool.query(
+    `SELECT total_view_count
+     FROM blog_view_snapshots
+     WHERE collected_blog_id = $1
+       AND snapshot_date < $2
+       AND total_view_count IS NOT NULL
+     ORDER BY snapshot_date DESC
+     LIMIT 1`,
+    [collectedBlog.id, snapshotDate]
+  );
+  const previousTotalViewCount = previous.rows[0]?.total_view_count ?? null;
+  const dailyViewCount = totalViewCount !== null && previousTotalViewCount !== null
+    ? Math.max(0, totalViewCount - previousTotalViewCount)
+    : todayViewCount;
+
+  const { rows } = await pool.query(
+    `INSERT INTO blog_view_snapshots (
+       collected_blog_id, snapshot_date, today_view_count, total_view_count,
+       previous_total_view_count, daily_view_count, source, checked_at
+     )
+     VALUES ($1,$2,$3,$4,$5,$6,$7,NOW())
+     ON CONFLICT (collected_blog_id, snapshot_date)
+     DO UPDATE SET
+       today_view_count = EXCLUDED.today_view_count,
+       total_view_count = EXCLUDED.total_view_count,
+       previous_total_view_count = EXCLUDED.previous_total_view_count,
+       daily_view_count = EXCLUDED.daily_view_count,
+       source = EXCLUDED.source,
+       checked_at = NOW()
+     RETURNING *`,
+    [
+      collectedBlog.id,
+      snapshotDate,
+      todayViewCount,
+      totalViewCount,
+      previousTotalViewCount,
+      dailyViewCount,
+      counts.source || 'm.blog.naver.com',
+    ]
+  );
+
+  await pool.query(
+    `UPDATE collected_blogs
+     SET last_today_view_count = $2,
+         last_total_view_count = $3,
+         last_daily_view_count = $4,
+         last_checked_at = NOW(),
+         updated_at = NOW()
+     WHERE id = $1`,
+    [collectedBlog.id, todayViewCount, totalViewCount, dailyViewCount]
+  );
+
+  return rows[0] || null;
+}
+
+async function upsertCollectedBlogFromAnalysis(link, analysis) {
+  const platform = analysis.platform_guess || analysis.platform || guessPlatform(analysis.source_url || link?.url, 'blog');
+  const blogId = analysis.blog_id || extractNaverBlogId(analysis.source_url || link?.url || '');
+  const homeUrl = analysis.blog_home_url || naverBlogHomeUrl(analysis.source_url || link?.url || '');
+  const category = analysis.category_guess || analysis.category || 'general';
+  if (platform !== 'blog' || (!blogId && !homeUrl)) return null;
+
+  const blogName = analysis.blog_name || analysis.blog_nickname || analysis.blog_title || blogId || homeUrl;
+  const { rows } = await pool.query(
+    `INSERT INTO collected_blogs (
+       platform, blog_id, category, blog_name, blog_title, blog_nickname, home_url,
+       latest_source_link_id, latest_source_analysis_id,
+       last_today_view_count, last_total_view_count, last_checked_at
+     )
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NOW())
+     ON CONFLICT (platform, blog_id, category)
+     DO UPDATE SET
+       blog_name = EXCLUDED.blog_name,
+       blog_title = EXCLUDED.blog_title,
+       blog_nickname = EXCLUDED.blog_nickname,
+       home_url = EXCLUDED.home_url,
+       latest_source_link_id = EXCLUDED.latest_source_link_id,
+       latest_source_analysis_id = EXCLUDED.latest_source_analysis_id,
+       last_today_view_count = EXCLUDED.last_today_view_count,
+       last_total_view_count = EXCLUDED.last_total_view_count,
+       last_checked_at = NOW(),
+       updated_at = NOW()
+     RETURNING *`,
+    [
+      platform,
+      blogId || homeUrl,
+      category,
+      blogName,
+      analysis.blog_title || null,
+      analysis.blog_nickname || null,
+      homeUrl,
+      link?.id || analysis.source_link_id || null,
+      analysis.id,
+      analysis.today_view_count ?? null,
+      analysis.total_view_count ?? null,
+    ]
+  );
+
+  const collectedBlog = rows[0] || null;
+  if (collectedBlog) {
+    await recordBlogViewSnapshot(collectedBlog, {
+      todayViewCount: analysis.today_view_count,
+      totalViewCount: analysis.total_view_count,
+      source: analysis.total_view_source || analysis.today_view_source || 'm.blog.naver.com',
+    });
+  }
+  return collectedBlog;
+}
+
+async function refreshCollectedBlogViews(blog) {
+  if (!blog?.home_url) throw new Error('블로그 홈 URL이 없습니다');
+  const html = await fetchNaverBlogHomeHtml(blog.home_url);
+  const counts = extractBlogVisitorCounts(html);
+  if (counts.todayViewCount === null && counts.totalViewCount === null) {
+    throw new Error('공개 방문자 카운터를 찾지 못했습니다');
+  }
+  const snapshot = await recordBlogViewSnapshot(blog, counts);
+  return { blog, snapshot };
+}
+
+async function snapshotCollectedBlogs({ limit = 100, category = null } = {}) {
+  const values = [];
+  const where = [`platform = 'blog'`, `home_url IS NOT NULL`];
+  if (category) {
+    values.push(category);
+    where.push(`category = $${values.length}`);
+  }
+  values.push(Math.min(Number(limit) || 100, 300));
+  const { rows } = await pool.query(
+    `SELECT *
+     FROM collected_blogs
+     WHERE ${where.join(' AND ')}
+     ORDER BY updated_at DESC
+     LIMIT $${values.length}`,
+    values
+  );
+
+  const results = [];
+  for (const blog of rows) {
+    try {
+      results.push({ ok: true, ...(await refreshCollectedBlogViews(blog)) });
+    } catch (err) {
+      results.push({ ok: false, blog, error: err.message });
+    }
+  }
+  return results;
+}
+
 async function saveCollectionAnalysis(link, analysis, fetchStatus = 'server_collected') {
   const inserted = await pool.query(
     `INSERT INTO source_analyses (
       source_link_id, source_url, source_text_preview, keyword, category, platform, title,
       plain_text, char_count, kw_count, image_count, subheadings, links, has_video,
       platform_guess, keyword_candidates, main_keyword, category_guess, structure_json,
-      tone_summary, blog_name, today_view_count, today_view_source, view_count_checked_at,
+      tone_summary, blog_name, blog_id, blog_home_url, blog_title, blog_nickname,
+      today_view_count, total_view_count, today_view_source, total_view_source, view_count_checked_at,
       quote_blocks, repeated_terms, quote_repeated_terms, fetch_status, error_message
      )
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35)
      RETURNING *`,
     [
       link.id,
@@ -525,8 +784,14 @@ async function saveCollectionAnalysis(link, analysis, fetchStatus = 'server_coll
       JSON.stringify(analysis.structure || {}),
       analysis.toneSummary,
       analysis.blogName || null,
+      analysis.blogId || null,
+      analysis.blogHomeUrl || null,
+      analysis.blogTitle || null,
+      analysis.blogNickname || null,
       analysis.todayViewCount,
+      analysis.totalViewCount,
       analysis.todayViewSource || null,
+      analysis.totalViewSource || null,
       analysis.viewCountCheckedAt || null,
       JSON.stringify(analysis.quoteBlocks || []),
       JSON.stringify(analysis.repeatedTerms || []),
@@ -550,10 +815,17 @@ async function saveCollectionAnalysis(link, analysis, fetchStatus = 'server_coll
     [link.id, analysis.platformGuess, saved.id]
   );
   const batch = await refreshCollectionBatchCounts(link.batch_id);
+  let collectedBlog = null;
+  try {
+    collectedBlog = await upsertCollectedBlogFromAnalysis(updated.rows[0], saved);
+  } catch (err) {
+    console.warn('[collections] collected blog upsert failed:', err.message);
+  }
 
   return {
     link: updated.rows[0],
     batch,
+    collectedBlog,
     analysis: {
       id: saved.id,
       sourceUrl: saved.source_url,
@@ -569,7 +841,12 @@ async function saveCollectionAnalysis(link, analysis, fetchStatus = 'server_coll
       structure: saved.structure_json || {},
       toneSummary: saved.tone_summary,
       blogName: saved.blog_name,
+      blogId: saved.blog_id,
+      blogHomeUrl: saved.blog_home_url,
+      blogTitle: saved.blog_title,
+      blogNickname: saved.blog_nickname,
       todayViewCount: saved.today_view_count,
+      totalViewCount: saved.total_view_count,
       quoteBlocks: saved.quote_blocks || [],
       repeatedTerms: saved.repeated_terms || [],
       quoteRepeatedTerms: saved.quote_repeated_terms || [],
@@ -591,10 +868,12 @@ async function collectSourceLinkOnServer(link) {
   try {
     const html = await fetchSourceHtml(link.url);
     const mobileHtml = await fetchNaverMobileHtml(link.url);
+    const blogHomeHtml = await fetchNaverBlogHomeHtml(link.url);
     const analysis = buildSourceAnalysis({
       sourceUrl: link.url,
       html,
       mobileHtml,
+      blogHomeHtml,
       platform: link.platform_guess || guessPlatform(link.url, 'web'),
       fetchStatus: 'server_collected',
       errorMessage: null,
@@ -895,6 +1174,7 @@ router.post('/content-jobs/source/analyze', async (req, res) => {
 
   let html = '';
   let mobileHtml = '';
+  let blogHomeHtml = '';
   let fetchStatus = sourceText ? 'text_provided' : 'fetched';
   let errorMessage = null;
 
@@ -902,6 +1182,7 @@ router.post('/content-jobs/source/analyze', async (req, res) => {
     if (sourceUrl) {
       html = await fetchSourceHtml(sourceUrl);
       mobileHtml = await fetchNaverMobileHtml(sourceUrl);
+      blogHomeHtml = await fetchNaverBlogHomeHtml(sourceUrl);
     }
   } catch (err) {
     fetchStatus = 'fetch_failed';
@@ -913,6 +1194,7 @@ router.post('/content-jobs/source/analyze', async (req, res) => {
     sourceText,
     html,
     mobileHtml,
+    blogHomeHtml,
     keyword,
     category,
     platform,
@@ -926,10 +1208,11 @@ router.post('/content-jobs/source/analyze', async (req, res) => {
         source_url, source_text_preview, keyword, category, platform, title, plain_text,
         char_count, kw_count, image_count, subheadings, links, has_video,
         platform_guess, keyword_candidates, main_keyword, category_guess, structure_json,
-        tone_summary, blog_name, today_view_count, today_view_source, view_count_checked_at,
+        tone_summary, blog_name, blog_id, blog_home_url, blog_title, blog_nickname,
+        today_view_count, total_view_count, today_view_source, total_view_source, view_count_checked_at,
         quote_blocks, repeated_terms, quote_repeated_terms, fetch_status, error_message
        )
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34)
        RETURNING *`,
       [
         analysis.sourceUrl,
@@ -952,8 +1235,14 @@ router.post('/content-jobs/source/analyze', async (req, res) => {
         JSON.stringify(analysis.structure),
         analysis.toneSummary,
         analysis.blogName,
+        analysis.blogId,
+        analysis.blogHomeUrl,
+        analysis.blogTitle,
+        analysis.blogNickname,
         analysis.todayViewCount,
+        analysis.totalViewCount,
         analysis.todayViewSource,
+        analysis.totalViewSource,
         analysis.viewCountCheckedAt,
         JSON.stringify(analysis.quoteBlocks),
         JSON.stringify(analysis.repeatedTerms),
@@ -962,6 +1251,12 @@ router.post('/content-jobs/source/analyze', async (req, res) => {
         analysis.errorMessage,
       ]
     );
+    let collectedBlog = null;
+    try {
+      collectedBlog = await upsertCollectedBlogFromAnalysis({ id: null, url: sourceUrl }, rows[0]);
+    } catch (err) {
+      console.warn('[source analyze] collected blog upsert failed:', err.message);
+    }
 
     res.json({
       analysis: {
@@ -985,7 +1280,12 @@ router.post('/content-jobs/source/analyze', async (req, res) => {
         structure: rows[0].structure_json || {},
         toneSummary: rows[0].tone_summary,
         blogName: rows[0].blog_name,
+        blogId: rows[0].blog_id,
+        blogHomeUrl: rows[0].blog_home_url,
+        blogTitle: rows[0].blog_title,
+        blogNickname: rows[0].blog_nickname,
         todayViewCount: rows[0].today_view_count,
+        totalViewCount: rows[0].total_view_count,
         quoteBlocks: rows[0].quote_blocks || [],
         repeatedTerms: rows[0].repeated_terms || [],
         quoteRepeatedTerms: rows[0].quote_repeated_terms || [],
@@ -993,6 +1293,7 @@ router.post('/content-jobs/source/analyze', async (req, res) => {
         errorMessage: rows[0].error_message,
         createdAt: rows[0].created_at,
       },
+      collectedBlog,
       recommendations: {
         nextStep: '발행 계정과 채널을 확인한 뒤 글 생성을 진행하세요.',
         qrPosition: '도입 CTA 이후 또는 2번째 섹션 뒤',
@@ -1123,8 +1424,14 @@ router.get('/collections/links', async (req, res) => {
               sa.subheadings,
               sa.keyword_candidates,
               sa.blog_name,
+              sa.blog_id,
+              sa.blog_home_url,
+              sa.blog_title,
+              sa.blog_nickname,
               sa.today_view_count,
+              sa.total_view_count,
               sa.today_view_source,
+              sa.total_view_source,
               sa.view_count_checked_at,
               sa.quote_blocks,
               sa.repeated_terms,
@@ -1205,17 +1512,25 @@ router.post('/collections/links/:id/analysis', async (req, res) => {
     const repeatedTerms = Array.isArray(body.repeatedTerms) ? body.repeatedTerms.slice(0, 30) : inferRepeatedTerms(text, 2);
     const quoteRepeatedTerms = Array.isArray(body.quoteRepeatedTerms)
       ? body.quoteRepeatedTerms.slice(0, 30)
-      : quoteBlocks.length ? inferRepeatedTerms(quoteBlocks.join('\n'), 1) : [];
+      : quoteBlocks.length ? inferRepeatedTerms(quoteBlocks.join('\n'), 2) : [];
+    const blogHomeHtml = await fetchNaverBlogHomeHtml(link.url);
+    const blogIdentity = extractBlogIdentity({ sourceUrl: link.url, blogHomeHtml });
+    const blogVisitorCounts = extractBlogVisitorCounts(blogHomeHtml);
+    const todayViewCount = body.todayViewCount ?? blogVisitorCounts.todayViewCount ?? null;
+    const totalViewCount = body.totalViewCount ?? blogVisitorCounts.totalViewCount ?? null;
+    const todayViewSource = body.todayViewSource || (todayViewCount === null ? null : blogVisitorCounts.source || 'm.blog.naver.com');
+    const totalViewSource = body.totalViewSource || (totalViewCount === null ? null : blogVisitorCounts.source || 'm.blog.naver.com');
 
     const inserted = await pool.query(
       `INSERT INTO source_analyses (
         source_link_id, source_url, source_text_preview, keyword, category, platform, title,
         plain_text, char_count, kw_count, image_count, subheadings, links, has_video,
         platform_guess, keyword_candidates, main_keyword, category_guess, structure_json,
-        tone_summary, blog_name, today_view_count, today_view_source, view_count_checked_at,
+        tone_summary, blog_name, blog_id, blog_home_url, blog_title, blog_nickname,
+        today_view_count, total_view_count, today_view_source, total_view_source, view_count_checked_at,
         quote_blocks, repeated_terms, quote_repeated_terms, fetch_status, error_message
        )
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,'extension_collected',NULL)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,'extension_collected',NULL)
        RETURNING *`,
       [
         link.id,
@@ -1238,10 +1553,16 @@ router.post('/collections/links/:id/analysis', async (req, res) => {
         categoryGuess,
         JSON.stringify(structure),
         summarizeTone(text),
-        body.blogName || null,
-        body.todayViewCount ?? null,
-        body.todayViewSource || null,
-        body.viewCountCheckedAt || null,
+        body.blogName || blogIdentity.blogName || null,
+        body.blogId || blogIdentity.blogId || null,
+        body.blogHomeUrl || blogIdentity.blogHomeUrl || null,
+        body.blogTitle || blogIdentity.blogTitle || null,
+        body.blogNickname || blogIdentity.blogNickname || null,
+        todayViewCount,
+        totalViewCount,
+        todayViewSource,
+        totalViewSource,
+        body.viewCountCheckedAt || (blogHomeHtml ? new Date().toISOString() : null),
         JSON.stringify(quoteBlocks),
         JSON.stringify(repeatedTerms),
         JSON.stringify(quoteRepeatedTerms),
@@ -1262,10 +1583,17 @@ router.post('/collections/links/:id/analysis', async (req, res) => {
       [link.id, platformGuess, analysis.id]
     );
     const batch = await refreshCollectionBatchCounts(link.batch_id);
+    let collectedBlog = null;
+    try {
+      collectedBlog = await upsertCollectedBlogFromAnalysis(updated.rows[0], analysis);
+    } catch (err) {
+      console.warn('[extension collection] collected blog upsert failed:', err.message);
+    }
 
     res.json({
       link: updated.rows[0],
       batch,
+      collectedBlog,
       analysis: {
         id: analysis.id,
         sourceUrl: analysis.source_url,
@@ -1281,7 +1609,12 @@ router.post('/collections/links/:id/analysis', async (req, res) => {
         structure: analysis.structure_json || {},
         toneSummary: analysis.tone_summary,
         blogName: analysis.blog_name,
+        blogId: analysis.blog_id,
+        blogHomeUrl: analysis.blog_home_url,
+        blogTitle: analysis.blog_title,
+        blogNickname: analysis.blog_nickname,
         todayViewCount: analysis.today_view_count,
+        totalViewCount: analysis.total_view_count,
         quoteBlocks: analysis.quote_blocks || [],
         repeatedTerms: analysis.repeated_terms || [],
         quoteRepeatedTerms: analysis.quote_repeated_terms || [],
@@ -1296,6 +1629,64 @@ router.post('/collections/links/:id/analysis', async (req, res) => {
       [req.params.id, err.message]
     ).catch(() => ({ rows: [] }));
     if (failed.rows[0]?.batch_id) await refreshCollectionBatchCounts(failed.rows[0].batch_id);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/collections/blogs', async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit || '100', 10), 300);
+    const values = [];
+    const where = [];
+    if (req.query.category) {
+      values.push(req.query.category);
+      where.push(`cb.category = $${values.length}`);
+    }
+    values.push(limit);
+
+    const { rows } = await pool.query(
+      `SELECT cb.*,
+              latest.snapshot_date,
+              latest.today_view_count,
+              latest.total_view_count,
+              latest.previous_total_view_count,
+              latest.daily_view_count,
+              latest.source AS snapshot_source,
+              latest.checked_at AS snapshot_checked_at
+       FROM collected_blogs cb
+       LEFT JOIN LATERAL (
+         SELECT *
+         FROM blog_view_snapshots bvs
+         WHERE bvs.collected_blog_id = cb.id
+         ORDER BY bvs.snapshot_date DESC
+         LIMIT 1
+       ) latest ON TRUE
+       ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+       ORDER BY cb.category ASC, cb.updated_at DESC
+       LIMIT $${values.length}`,
+      values
+    );
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/collections/blogs/snapshot-daily', async (req, res) => {
+  try {
+    const results = await snapshotCollectedBlogs({
+      limit: req.body?.limit || req.query.limit || 100,
+      category: req.body?.category || req.query.category || null,
+    });
+    res.json({
+      ok: true,
+      snapshotDate: kstDateString(),
+      processed: results.length,
+      collected: results.filter((item) => item.ok).length,
+      failed: results.filter((item) => !item.ok).length,
+      results,
+    });
+  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
@@ -1672,5 +2063,34 @@ router.get('/stats', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+let collectionSchedulerStarted = false;
+let lastBlogSnapshotDate = null;
+
+export function startCollectionSchedulers() {
+  if (collectionSchedulerStarted) return;
+  collectionSchedulerStarted = true;
+
+  const tick = async () => {
+    const kstNow = new Date(Date.now() + 9 * 60 * 60 * 1000);
+    const kstHour = kstNow.getUTCHours();
+    const kstMinute = kstNow.getUTCMinutes();
+    const today = kstNow.toISOString().slice(0, 10);
+    if (kstHour === 0 && kstMinute >= 5 && lastBlogSnapshotDate !== today) {
+      lastBlogSnapshotDate = today;
+      try {
+        const results = await snapshotCollectedBlogs({ limit: 300 });
+        console.log(`[collections] daily blog snapshots: ${results.filter((item) => item.ok).length}/${results.length}`);
+      } catch (err) {
+        console.warn('[collections] daily blog snapshot failed:', err.message);
+      }
+    }
+  };
+
+  const interval = setInterval(tick, 10 * 60 * 1000);
+  interval.unref?.();
+  const initial = setTimeout(tick, 15 * 1000);
+  initial.unref?.();
+}
 
 export default router;

@@ -4,7 +4,7 @@ import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { initDB, pool } from './src/db/index.js';
-import apiRouter from './src/routes/api.js';
+import apiRouter, { startCollectionSchedulers } from './src/routes/api.js';
 import aiRouter from './src/routes/ai.js';
 import trackRouter from './src/routes/track.js';
 import patternRouter from './src/routes/pattern.js';
@@ -71,6 +71,7 @@ async function start() {
   try {
     await initDB();
     console.log('[auto-blog] DB initialized');
+    startCollectionSchedulers();
   } catch (err) {
     console.error('[auto-blog] DB init failed (server continues):', err.message);
   }
