@@ -151,7 +151,17 @@ function extractQuoteBlocks(html = '') {
 }
 
 function inferRepeatedTerms(text = '', minCount = 2) {
-  const tokens = tokenizeKoreanText(text);
+  const banned = new Set([
+    '있습니다', '합니다', '됩니다', '입니다', '주세요', '같습니다', '했습니다',
+    '있는', '없는', '그리고', '하지만', '그래서', '이번', '오늘', '바로',
+  ]);
+  const tokens = tokenizeKoreanText(text)
+    .map((token) => token.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, ''))
+    .filter((token) => {
+      if (!token || banned.has(token)) return false;
+      if (/(습니다|합니다|됩니다|입니다|주세요|했어요|해요|네요|군요)$/.test(token) && token.length <= 7) return false;
+      return true;
+    });
   const counts = new Map();
 
   for (let size = 1; size <= 3; size += 1) {
