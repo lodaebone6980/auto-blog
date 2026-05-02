@@ -1587,6 +1587,7 @@ function RewritePanel() {
     });
     if (res?.ok) {
       setMessage(`작업 #${job.id}을 발행 큐에 저장했습니다. 발행 큐 메뉴에서 계정과 시간을 확정하세요.`);
+      await loadRewriteData();
     } else {
       setMessage(res?.error || '발행 큐 저장에 실패했습니다.');
     }
@@ -1606,6 +1607,26 @@ function RewritePanel() {
     if (items.length === 0) return '-';
     return items.slice(0, 3).map((item) => `${item.term || item.keyword || '-'} ${item.count || ''}`.trim()).join(', ');
   };
+
+  const formatKeywordCandidates = (link) => {
+    const candidates = parseArray(link.keyword_candidates)
+      .map((item) => item.keyword || item.term || '')
+      .filter(Boolean)
+      .slice(0, 3);
+    return candidates.length ? candidates.join(', ') : '';
+  };
+
+  const jobFromSourceLink = (link) => ({
+    id: link.rewrite_job_id,
+    title: link.rewrite_title,
+    target_keyword: link.rewrite_target_keyword,
+    char_count: link.rewrite_char_count,
+    kw_count: link.rewrite_kw_count,
+    image_count: link.rewrite_image_count,
+    total_score: link.rewrite_total_score,
+    similarity_risk: link.rewrite_similarity_risk,
+    status: link.rewrite_status,
+  });
 
   const platformLabel = {
     blog: '네이버 블로그',
@@ -1996,10 +2017,10 @@ function RewritePanel() {
               아직 재각색에 쓸 수집완료 링크가 없습니다.
             </div>
           ) : (
-            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1280 }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1660 }}>
               <thead>
                 <tr style={{ background: '#f8fafc', color: COLORS.textSecondary, fontSize: 11, textAlign: 'left' }}>
-                  {['선택', '블로그/출처', '플랫폼', '메인키워드', '수정 KW', '카테고리', '글자/KW/이미지', '인용구/반복어', 'URL'].map((head) => (
+                  {['선택', '블로그/출처', '플랫폼', '메인키워드', '수정 KW', '카테고리', '글자/KW/이미지', '인용구/반복어', '재각색 상태', '발행 상태', 'URL', '작업'].map((head) => (
                     <th key={head} style={{ padding: '10px 12px', borderBottom: `1px solid ${COLORS.border}` }}>{head}</th>
                   ))}
                 </tr>
@@ -2020,7 +2041,14 @@ function RewritePanel() {
                       <p style={{ marginTop: 2, fontSize: 10, color: COLORS.textMuted, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{link.blog_title || link.blog_id || link.batch_name || ''}</p>
                     </td>
                     <td style={{ padding: '10px 12px', fontWeight: 800, color: COLORS.textSecondary }}>{platformLabel[link.platform_guess] || link.platform_guess || '-'}</td>
-                    <td style={{ padding: '10px 12px', fontWeight: 850, color: COLORS.primary }}>{link.main_keyword || '-'}</td>
+                    <td style={{ padding: '10px 12px', minWidth: 150 }}>
+                      <p style={{ fontWeight: 850, color: COLORS.primary }}>{link.main_keyword || '-'}</p>
+                      {formatKeywordCandidates(link) && (
+                        <p style={{ marginTop: 3, fontSize: 10, color: COLORS.textMuted, lineHeight: 1.4 }}>
+                          후보 {formatKeywordCandidates(link)}
+                        </p>
+                      )}
+                    </td>
                     <td style={{ padding: '10px 12px', minWidth: 140 }}>
                       <input
                         value={keywordDrafts[link.id] ?? link.corrected_main_keyword ?? ''}
@@ -2055,10 +2083,55 @@ function RewritePanel() {
                       <p style={{ fontSize: 10, color: COLORS.textMuted }}>인용구 {parseArray(link.quote_blocks).length}개</p>
                       <p style={{ marginTop: 2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{formatTerms(link.quote_repeated_terms?.length ? link.quote_repeated_terms : link.repeated_terms)}</p>
                     </td>
+                    <td style={{ padding: '10px 12px', minWidth: 160 }}>
+                      {link.rewrite_job_id ? (
+                        <>
+                          <StatusBadge value={link.rewrite_status || '대기중'} />
+                          <p style={{ marginTop: 5, maxWidth: 150, fontSize: 10, color: COLORS.textMuted, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                            #{link.rewrite_job_id} {link.rewrite_title || link.rewrite_target_keyword || ''}
+                          </p>
+                          <p style={{ marginTop: 2, fontSize: 10, color: COLORS.textSecondary }}>
+                            {Number(link.rewrite_char_count || 0).toLocaleString()}자 / KW {link.rewrite_kw_count || 0} / 이미지 {link.rewrite_image_count || 0}
+                          </p>
+                        </>
+                      ) : (
+                        <StatusBadge value="미생성" />
+                      )}
+                    </td>
+                    <td style={{ padding: '10px 12px', minWidth: 125 }}>
+                      <StatusBadge value={link.publish_status || (link.content_job_id ? '발행 큐' : '-')} />
+                      {link.published_url && (
+                        <a href={link.published_url} target="_blank" rel="noreferrer" style={{ display: 'block', marginTop: 5, maxWidth: 120, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', fontSize: 10 }}>
+                          발행 URL
+                        </a>
+                      )}
+                    </td>
                     <td style={{ padding: '10px 12px', maxWidth: 300 }}>
                       <a href={link.url} target="_blank" rel="noreferrer" style={{ display: 'block', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                         {link.url}
                       </a>
+                    </td>
+                    <td style={{ padding: '10px 12px', minWidth: 160 }}>
+                      {link.rewrite_job_id ? (
+                        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                          <button
+                            type="button"
+                            onClick={() => reprocessJob(link.rewrite_job_id)}
+                            style={{ height: 28, padding: '0 9px', borderRadius: 7, border: `1px solid ${COLORS.border}`, background: 'white', color: COLORS.primary, fontSize: 10, fontWeight: 850, cursor: 'pointer' }}
+                          >
+                            다시 생성
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => sendToPublishQueue(jobFromSourceLink(link))}
+                            style={{ height: 28, padding: '0 9px', borderRadius: 7, border: 'none', background: COLORS.success, color: 'white', fontSize: 10, fontWeight: 850, cursor: 'pointer' }}
+                          >
+                            발행 큐
+                          </button>
+                        </div>
+                      ) : (
+                        <span style={{ fontSize: 10, color: COLORS.textMuted, fontWeight: 800 }}>체크 후 생성</span>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -2220,11 +2293,47 @@ function ViewStatusPanel() {
   const items = Array.isArray(data.items) ? data.items : [];
   const stats = data.stats || {};
   const history = Array.isArray(data.history) ? data.history : [];
-  const blogHistoryChartData = useMemo(() => ({
-    labels: history.map((row) => String(row.snapshot_date || '').slice(5, 10)),
-    values: history.map((row) => Number(row.daily_view_count || 0)),
-    color: COLORS.success,
-  }), [history]);
+  const perBlogHistory = Array.isArray(data.perBlogHistory) ? data.perBlogHistory : [];
+  const blogLineChartData = useMemo(() => {
+    const palette = [COLORS.primary, COLORS.success, COLORS.accent, COLORS.warning, '#6366f1', '#14b8a6', '#f97316', '#8b5cf6'];
+    if (perBlogHistory.length === 0 && history.length > 0) {
+      return {
+        labels: history.map((row) => String(row.snapshot_date || '').slice(5, 10)),
+        series: [{
+          name: '전체',
+          values: history.map((row) => Number(row.daily_view_count || 0)),
+          color: COLORS.success,
+        }],
+      };
+    }
+
+    const dates = [...new Set(perBlogHistory.map((row) => String(row.snapshot_date || '').slice(0, 10)).filter(Boolean))].sort();
+    const groups = new Map();
+    perBlogHistory.forEach((row) => {
+      const id = row.collected_blog_id || row.blog_id || row.blog_name;
+      if (!id) return;
+      const label = row.blog_nickname || row.blog_name || row.blog_title || row.blog_id || `블로그 ${id}`;
+      if (!groups.has(id)) groups.set(id, { name: label, values: new Map(), total: 0 });
+      const group = groups.get(id);
+      const value = Number(row.daily_view_count || 0);
+      group.values.set(String(row.snapshot_date || '').slice(0, 10), value);
+      group.total += value;
+    });
+
+    const series = [...groups.values()]
+      .sort((a, b) => b.total - a.total)
+      .slice(0, 8)
+      .map((group, index) => ({
+        name: group.name,
+        values: dates.map((date) => group.values.get(date) ?? null),
+        color: palette[index % palette.length],
+      }));
+
+    return {
+      labels: dates.map((date) => date.slice(5, 10)),
+      series,
+    };
+  }, [history, perBlogHistory]);
 
   return (
     <div style={{ display: 'grid', gap: 18 }}>
@@ -2305,10 +2414,10 @@ function ViewStatusPanel() {
         ))}
       </div>
 
-      {platform === 'blog' && history.length > 0 && (
-        <BarChart
-          title="최근 30일 블로그 일일 조회수"
-          data={blogHistoryChartData}
+      {platform === 'blog' && (
+        <LineChart
+          title="블로그별 30일 일일 조회수"
+          data={blogLineChartData}
         />
       )}
 

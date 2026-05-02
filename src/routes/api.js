@@ -389,23 +389,55 @@ function inferKeywordCandidates({ title = '', text = '', subheadings = [] }) {
   const tokens = tokenizeKoreanText(source);
   const scores = new Map();
   const counts = new Map();
+  const compactTitle = title.replace(/\s/g, '');
+  const context = guessCategoryFromText(text, title);
+  const contextTerms = {
+    'IT/테크': ['테스트', '검사', '링크', '유형', '사이트', '앱', 'ai'],
+    '맛집': ['맛집', '메뉴', '가격', '후기', '예약'],
+    '여행': ['여행', '숙소', '일정', '코스', '호텔'],
+    '건강/의료': ['병원', '증상', '건강', '치료', '검진'],
+    '재테크/금융': ['금리', '대출', '주식', '투자', '보험'],
+    '육아/육품': ['육아', '아이', '아기', '유아'],
+    '부동산': ['아파트', '분양', '전세', '청약', '부동산'],
+    '정부정책': ['지원금', '신청', '지급', '대상', '정책'],
+  }[context] || [];
 
   for (let size = 1; size <= 3; size += 1) {
     for (let i = 0; i <= tokens.length - size; i += 1) {
       const phrase = tokens.slice(i, i + size).join(' ');
       if (phrase.replace(/\s/g, '').length < 2 || phrase.length > 30) continue;
-      const base = size === 1 ? 1 : size === 2 ? 2.4 : 3;
+      const compactPhrase = phrase.replace(/\s/g, '');
+      const base = size === 1 ? 0.75 : size === 2 ? 3.2 : 3.9;
       const titleBoost = title.includes(phrase) ? 7 : 0;
+      const compactTitleBoost = compactTitle.includes(compactPhrase) ? 3 : 0;
       const headingBoost = subheadings.some((heading) => heading.includes(phrase)) ? 4 : 0;
+      const contextBoost = contextTerms.some((term) => phrase.includes(term) || term.includes(phrase)) ? 2.2 : 0;
+      const oneWordPenalty = size === 1 && !contextTerms.some((term) => term === phrase) ? 1.1 : 0;
       counts.set(phrase, (counts.get(phrase) || 0) + 1);
-      scores.set(phrase, (scores.get(phrase) || 0) + base + titleBoost + headingBoost);
+      scores.set(phrase, (scores.get(phrase) || 0) + base + titleBoost + compactTitleBoost + headingBoost + contextBoost - oneWordPenalty);
     }
   }
 
   return [...scores.entries()]
-    .map(([keyword, score]) => ({ keyword, score: Number(score.toFixed(2)), count: counts.get(keyword) || 0 }))
-    .filter((item) => item.count >= 2 || title.includes(item.keyword))
-    .sort((a, b) => b.score - a.score || b.count - a.count)
+    .map(([keyword, score]) => {
+      const wordCount = keyword.split(/\s+/).length;
+      const compactKeyword = keyword.replace(/\s/g, '');
+      return {
+        keyword,
+        score: Number(score.toFixed(2)),
+        count: counts.get(keyword) || 0,
+        wordCount,
+        context,
+        contextMatched: contextTerms.some((term) => keyword.includes(term) || term.includes(keyword)),
+        titleMatched: compactTitle.includes(compactKeyword),
+      };
+    })
+    .filter((item) => (
+      item.count >= 2
+      || item.titleMatched
+      || (item.wordCount >= 2 && item.contextMatched)
+    ))
+    .sort((a, b) => b.score - a.score || b.wordCount - a.wordCount || b.count - a.count)
     .slice(0, 10);
 }
 
@@ -2689,10 +2721,40 @@ router.get('/collections/links', async (req, res) => {
               sa.view_count_checked_at,
               sa.quote_blocks,
               sa.repeated_terms,
-              sa.quote_repeated_terms
+              sa.quote_repeated_terms,
+              rj.id AS rewrite_job_id,
+              rj.status AS rewrite_status,
+              rj.title AS rewrite_title,
+              rj.target_keyword AS rewrite_target_keyword,
+              rj.char_count AS rewrite_char_count,
+              rj.kw_count AS rewrite_kw_count,
+              rj.image_count AS rewrite_image_count,
+              rj.total_score AS rewrite_total_score,
+              rj.similarity_risk AS rewrite_similarity_risk,
+              rj.created_at AS rewrite_created_at,
+              cj.id AS content_job_id,
+              cj.publish_status,
+              cj.published_url,
+              cj.generation_status AS content_generation_status,
+              cj.qr_status AS content_qr_status
        FROM source_links sl
        LEFT JOIN collection_batches cb ON cb.id = sl.batch_id
        LEFT JOIN source_analyses sa ON sa.id = sl.source_analysis_id
+       LEFT JOIN LATERAL (
+         SELECT *
+         FROM rewrite_jobs rj
+         WHERE sa.id IS NOT NULL
+           AND rj.source_analysis_ids @> jsonb_build_array(sa.id)
+         ORDER BY rj.created_at DESC
+         LIMIT 1
+       ) rj ON TRUE
+       LEFT JOIN LATERAL (
+         SELECT *
+         FROM content_jobs cj
+         WHERE cj.rewrite_job_id = rj.id
+         ORDER BY cj.created_at DESC
+         LIMIT 1
+       ) cj ON TRUE
        ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
        ORDER BY sl.created_at DESC
        LIMIT $${values.length}`,
@@ -3079,11 +3141,31 @@ router.get('/views/status', async (req, res) => {
        ORDER BY snapshot_date ASC`,
       [startDate]
     );
+    const blogIds = rows.map((item) => item.id).filter(Boolean);
+    const perBlogHistory = blogIds.length
+      ? await pool.query(
+        `SELECT bvs.collected_blog_id,
+                cb.blog_name,
+                cb.blog_title,
+                cb.blog_nickname,
+                cb.blog_id,
+                bvs.snapshot_date,
+                COALESCE(bvs.daily_view_count, 0)::int AS daily_view_count
+         FROM blog_view_snapshots bvs
+         JOIN collected_blogs cb ON cb.id = bvs.collected_blog_id
+         WHERE bvs.is_day_closed = TRUE
+           AND bvs.snapshot_date >= $1
+           AND bvs.collected_blog_id = ANY($2::int[])
+         ORDER BY bvs.snapshot_date ASC, cb.updated_at DESC`,
+        [startDate, blogIds]
+      )
+      : { rows: [] };
     const closedDailyViews = rows.reduce((sum, item) => sum + Number(item.closed_daily_view_count || 0), 0);
     return res.json({
       platform,
       items: rows,
       history: history.rows,
+      perBlogHistory: perBlogHistory.rows,
       stats: {
         total: rows.length,
         realtimeTotalViews: rows.reduce((sum, item) => sum + Number(item.last_total_view_count || item.total_view_count || 0), 0),
