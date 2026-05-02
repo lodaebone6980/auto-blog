@@ -1410,6 +1410,7 @@ function RewritePanel() {
     () => effectiveKeywordsText.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean).length,
     [effectiveKeywordsText]
   );
+  const rewriteJobCount = keywordsText.trim() ? keywordCount : selectedSources.length;
 
   const patternSummary = useMemo(() => {
     const avg = (field, fallback = 0) => {
@@ -1523,7 +1524,7 @@ function RewritePanel() {
   };
 
   const createRewriteJobs = async () => {
-    if (keywordCount === 0) {
+    if (rewriteJobCount === 0) {
       setMessage('재각색할 키워드를 입력하거나 메인키워드가 잡힌 수집완료 링크를 선택해 주세요.');
       return;
     }
@@ -1533,12 +1534,13 @@ function RewritePanel() {
     }
 
     setCreating(true);
-    setMessage(`재각색 작업 ${keywordCount}개를 병렬 처리 중입니다.`);
+    setMessage(`재각색 작업 ${rewriteJobCount}개를 병렬 처리 중입니다.`);
     const res = await safeFetch(`${API}/rewrite-jobs`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        keywordsText: effectiveKeywordsText,
+        keywordsText: keywordsText.trim() ? keywordsText : '',
+        sourceRowMode: !keywordsText.trim(),
         sourceLinkIds: selectedSourceLinkIds,
         targetTopic,
         platform,
@@ -1926,20 +1928,20 @@ function RewritePanel() {
           <button
             type="button"
             onClick={createRewriteJobs}
-            disabled={creating || keywordCount === 0 || selectedSourceLinkIds.length === 0}
+            disabled={creating || rewriteJobCount === 0 || selectedSourceLinkIds.length === 0}
             style={{
               height: 40,
               padding: '0 18px',
               borderRadius: 9,
               border: 'none',
-              background: creating || keywordCount === 0 || selectedSourceLinkIds.length === 0 ? COLORS.textMuted : COLORS.primary,
+              background: creating || rewriteJobCount === 0 || selectedSourceLinkIds.length === 0 ? COLORS.textMuted : COLORS.primary,
               color: 'white',
               fontSize: 13,
               fontWeight: 850,
-              cursor: creating || keywordCount === 0 || selectedSourceLinkIds.length === 0 ? 'not-allowed' : 'pointer',
+              cursor: creating || rewriteJobCount === 0 || selectedSourceLinkIds.length === 0 ? 'not-allowed' : 'pointer',
             }}
           >
-            {creating ? '재각색 생성 중...' : `재각색 작업 만들기 (${keywordCount})`}
+            {creating ? '재각색 생성 중...' : `재각색 작업 만들기 (${rewriteJobCount})`}
           </button>
           {message && <span style={{ fontSize: 12, color: message.includes('완료') || message.includes('복사') ? COLORS.success : COLORS.warning, fontWeight: 800 }}>{message}</span>}
         </div>

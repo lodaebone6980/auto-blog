@@ -1196,6 +1196,11 @@ function buildRewritePattern(analyses = [], settingsInput = {}) {
   const sourceTitles = analyses.map((row) => row.title).filter(Boolean).slice(0, 20);
   const sourceKeywords = [...new Set(analyses.map(effectiveMainKeyword).filter(Boolean))].slice(0, 20);
   const sourceActionTerms = inferTitleActionTerms(sourceTitles.join(' '));
+  const sourceTextSamples = analyses
+    .map((row) => String(row.plain_text || row.source_text_preview || '').replace(/\s+/g, ' ').trim())
+    .filter((text) => text.length >= 120)
+    .map((text) => text.slice(0, 5000))
+    .slice(0, 10);
   const targetKwCount = clampNumber((settings.targetKwCount || DEFAULT_REWRITE_SETTINGS.targetKwCount) + 1, 5, 31);
 
   return {
@@ -1219,6 +1224,7 @@ function buildRewritePattern(analyses = [], settingsInput = {}) {
     sourceTitles,
     sourceKeywords,
     sourceActionTerms,
+    sourceTextSamples,
     settings,
     structure: {
       introParagraphs: 3,
@@ -1383,6 +1389,24 @@ function overlapRatio(a = '', b = '') {
   return hits / Math.max(aWords.size, 1);
 }
 
+function textShingles(value = '', size = 5) {
+  const tokens = tokenizeKoreanText(value)
+    .map((token) => token.toLowerCase())
+    .filter((token) => token.length >= 2);
+  const shingles = new Set();
+  for (let i = 0; i <= tokens.length - size; i += 1) {
+    shingles.add(tokens.slice(i, i + size).join(' '));
+  }
+  return shingles;
+}
+
+function jaccardSetRatio(aSet, bSet) {
+  if (!aSet?.size || !bSet?.size) return 0;
+  let intersection = 0;
+  for (const item of aSet) if (bSet.has(item)) intersection += 1;
+  return intersection / Math.max(aSet.size + bSet.size - intersection, 1);
+}
+
 function scoreTitleCandidate({ title, keyword, topic = '', actionTerms = [], sourceTitles = [], serpTitles = [], total = null }) {
   const compact = title.replace(/\s/g, '');
   const length = compact.length;
@@ -1454,23 +1478,49 @@ function escapeSvgText(value = '') {
 }
 
 function makeTemplateImage({ keyword, section, subtitle, index, platform }) {
-  const bg = platform === 'cafe' ? '#f8fafc' : '#ffffff';
-  const primary = platform === 'cafe' ? '#1d4ed8' : '#1f5f4a';
-  const accent = platform === 'cafe' ? '#dbeafe' : '#d8ebe4';
+  const palettes = [
+    { bg: '#ffffff', primary: '#1f5f4a', accent: '#d8ebe4', text: '#111827' },
+    { bg: '#fbfdff', primary: '#1d4ed8', accent: '#dbeafe', text: '#172554' },
+    { bg: '#fffdf7', primary: '#b45309', accent: '#fef3c7', text: '#1f2937' },
+    { bg: '#fdfbff', primary: '#7c3aed', accent: '#ede9fe', text: '#1f133d' },
+    { bg: '#fffafa', primary: '#be123c', accent: '#ffe4e6', text: '#1f2937' },
+    { bg: '#f8fffb', primary: '#047857', accent: '#d1fae5', text: '#102a1f' },
+  ];
+  const seed = String(keyword || '').split('').reduce((sum, char) => sum + char.charCodeAt(0), 0) + index * 7;
+  const palette = platform === 'cafe' ? palettes[(seed + 1) % palettes.length] : palettes[seed % palettes.length];
+  const { bg, primary, accent, text } = palette;
+  const layout = index % 3;
   const badge = index === 0 ? '대표' : `SEC ${String(index).padStart(2, '0')}`;
   const safeKeyword = escapeSvgText(String(keyword || '').slice(0, 16));
   const safeSection = escapeSvgText(String(section || '').slice(0, 18));
   const safeSubtitle = escapeSvgText(String(subtitle || '핵심만 정리').slice(0, 20));
+  const layoutSvg = layout === 1
+    ? `
+    <rect x="50" y="104" width="400" height="8" rx="4" fill="${primary}" opacity="0.18"/>
+    <text x="250" y="182" text-anchor="middle" dominant-baseline="middle" font-family="Arial, sans-serif" font-size="40" font-weight="900" fill="${text}">${safeKeyword}</text>
+    <rect x="76" y="230" width="348" height="62" rx="12" fill="${primary}"/>
+    <text x="250" y="261" text-anchor="middle" dominant-baseline="middle" font-family="Arial, sans-serif" font-size="24" font-weight="900" fill="#fff">${safeSection}</text>
+    <rect x="102" y="328" width="296" height="42" rx="21" fill="${accent}"/>
+    <text x="250" y="349" text-anchor="middle" dominant-baseline="middle" font-family="Arial, sans-serif" font-size="17" font-weight="800" fill="${primary}">${safeSubtitle}</text>`
+    : layout === 2
+      ? `
+    <circle cx="250" cy="194" r="82" fill="${accent}"/>
+    <text x="250" y="188" text-anchor="middle" dominant-baseline="middle" font-family="Arial, sans-serif" font-size="40" font-weight="900" fill="${text}">${safeKeyword}</text>
+    <text x="250" y="242" text-anchor="middle" dominant-baseline="middle" font-family="Arial, sans-serif" font-size="23" font-weight="900" fill="${primary}">${safeSection}</text>
+    <rect x="70" y="323" width="360" height="50" rx="8" fill="${primary}"/>
+    <text x="250" y="348" text-anchor="middle" dominant-baseline="middle" font-family="Arial, sans-serif" font-size="18" font-weight="800" fill="#fff">${safeSubtitle}</text>`
+      : `
+    <text x="250" y="190" text-anchor="middle" dominant-baseline="middle" font-family="Arial, sans-serif" font-size="42" font-weight="900" fill="${text}">${safeKeyword}</text>
+    <rect x="60" y="228" width="380" height="52" rx="5" fill="${primary}"/>
+    <text x="250" y="254" text-anchor="middle" dominant-baseline="middle" font-family="Arial, sans-serif" font-size="23" font-weight="900" fill="#fff">${safeSection}</text>
+    <rect x="82" y="318" width="336" height="44" rx="5" fill="${accent}"/>
+    <text x="250" y="340" text-anchor="middle" dominant-baseline="middle" font-family="Arial, sans-serif" font-size="18" font-weight="800" fill="${primary}">${safeSubtitle}</text>`;
   const svg = `
   <svg xmlns="http://www.w3.org/2000/svg" width="500" height="500" viewBox="0 0 500 500">
     <rect width="500" height="500" fill="${bg}"/>
     <rect x="34" y="34" width="104" height="34" rx="8" fill="${primary}"/>
     <text x="86" y="57" text-anchor="middle" dominant-baseline="middle" font-family="Arial, sans-serif" font-size="15" font-weight="800" fill="#fff">${badge}</text>
-    <text x="250" y="190" text-anchor="middle" dominant-baseline="middle" font-family="Arial, sans-serif" font-size="42" font-weight="900" fill="#111827">${safeKeyword}</text>
-    <rect x="60" y="228" width="380" height="52" rx="5" fill="${primary}"/>
-    <text x="250" y="254" text-anchor="middle" dominant-baseline="middle" font-family="Arial, sans-serif" font-size="23" font-weight="900" fill="#fff">${safeSection}</text>
-    <rect x="82" y="318" width="336" height="44" rx="5" fill="${accent}"/>
-    <text x="250" y="340" text-anchor="middle" dominant-baseline="middle" font-family="Arial, sans-serif" font-size="18" font-weight="800" fill="${primary}">${safeSubtitle}</text>
+    ${layoutSvg}
     <rect x="78" y="406" width="344" height="5" fill="${primary}" opacity="0.22"/>
   </svg>`;
   return `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`;
@@ -1595,6 +1645,7 @@ function scoreRewriteOutput(output, pattern) {
 function estimateRewriteSimilarityRisk(output, pattern = {}) {
   const text = `${output.title || ''}\n${output.plainText || ''}`;
   const sourceTitles = Array.isArray(pattern.sourceTitles) ? pattern.sourceTitles : [];
+  const sourceTextSamples = Array.isArray(pattern.sourceTextSamples) ? pattern.sourceTextSamples : [];
   const exactTitleHits = sourceTitles.filter((title) => {
     const normalized = String(title || '').replace(/\s+/g, ' ').trim();
     return normalized.length >= 16 && text.includes(normalized);
@@ -1603,7 +1654,22 @@ function estimateRewriteSimilarityRisk(output, pattern = {}) {
     const compact = String(title || '').replace(/\s+/g, '');
     return compact.length >= 14 && text.replace(/\s+/g, '').includes(compact);
   }).length;
-  return clampNumber(3 + exactTitleHits * 12 + copiedHeadingHits * 8, 2, 60);
+  const outputShingles = textShingles(text, 5);
+  const maxTextOverlap = Math.max(
+    0,
+    ...sourceTextSamples.map((sample) => jaccardSetRatio(outputShingles, textShingles(sample, 5)))
+  );
+  const paragraphHits = String(output.plainText || '')
+    .split(/\n{2,}/)
+    .map((part) => part.replace(/\s+/g, ' ').trim())
+    .filter((part) => part.length >= 45)
+    .filter((part) => sourceTextSamples.some((sample) => sample.includes(part.slice(0, 45))))
+    .length;
+  return clampNumber(
+    Math.round(3 + exactTitleHits * 12 + copiedHeadingHits * 8 + maxTextOverlap * 85 + paragraphHits * 10),
+    2,
+    92
+  );
 }
 
 async function addRewriteEvent(rewriteJobId, eventType, message, payload = {}) {
@@ -3216,7 +3282,9 @@ router.get('/rewrite-jobs/:id', async (req, res) => {
 
 router.post('/rewrite-jobs', async (req, res) => {
   try {
-    let keywords = parseTargetKeywords(req.body?.targetKeywords || req.body?.keywordsText || req.body?.keyword);
+    const rawKeywordInput = req.body?.targetKeywords || req.body?.keywordsText || req.body?.keyword || '';
+    let keywords = parseTargetKeywords(rawKeywordInput);
+    const hasExplicitKeywords = keywords.length > 0;
 
     const sourceAnalysisIds = normalizeIdList(req.body?.sourceAnalysisIds);
     const sourceLinkIds = normalizeIdList(req.body?.sourceLinkIds);
@@ -3236,14 +3304,18 @@ router.post('/rewrite-jobs', async (req, res) => {
         ]),
       ];
     }
-    if (keywords.length === 0 && resolvedSourceAnalysisIds.length > 0) {
-      const { rows } = await pool.query(
-        `SELECT keyword, main_keyword, corrected_main_keyword
-         FROM source_analyses
-         WHERE id = ANY($1::int[])`,
-        [resolvedSourceAnalysisIds]
-      );
-      keywords = parseTargetKeywords(rows.map(effectiveMainKeyword));
+    const sourceRows = resolvedSourceAnalysisIds.length
+      ? (await pool.query(
+          `SELECT *
+           FROM source_analyses
+           WHERE id = ANY($1::int[])
+           ORDER BY array_position($1::int[], id)`,
+          [resolvedSourceAnalysisIds]
+        )).rows
+      : [];
+    const sourceRowMode = Boolean(req.body?.sourceRowMode || req.body?.source_row_mode) || (!hasExplicitKeywords && sourceRows.length > 0);
+    if (!hasExplicitKeywords && sourceRows.length > 0) {
+      keywords = sourceRows.map(effectiveMainKeyword).filter(Boolean);
     }
     if (keywords.length === 0) return res.status(400).json({ error: '재각색할 키워드를 입력하거나 수집완료 링크를 선택해 주세요' });
 
@@ -3256,8 +3328,26 @@ router.post('/rewrite-jobs', async (req, res) => {
     const rewriteSettings = parseRewriteSettings(req.body?.rewriteSettings || req.body?.settings || {});
     const customTitle = normalizeTitleValue(req.body?.customTitle || req.body?.custom_title || req.body?.recommendedTitle || '');
 
+    const rewriteSpecs = sourceRowMode
+      ? sourceRows
+          .map((row) => ({
+            keyword: effectiveMainKeyword(row),
+            sourceAnalysisIds: [row.id],
+            platform: normalizePlatform(row.platform_guess || row.platform || platform),
+            category: row.category_guess || row.category || category,
+            targetTopic: targetTopic || '',
+          }))
+          .filter((spec) => spec.keyword)
+      : keywords.map((keyword) => ({
+          keyword,
+          sourceAnalysisIds: resolvedSourceAnalysisIds,
+          platform,
+          category,
+          targetTopic,
+        }));
+
     const insertedJobs = [];
-    for (const keyword of keywords) {
+    for (const spec of rewriteSpecs) {
       const { rows } = await pool.query(
         `INSERT INTO rewrite_jobs (
           target_keyword, target_topic, platform, category, cta_url,
@@ -3266,21 +3356,22 @@ router.post('/rewrite-jobs', async (req, res) => {
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'대기중')
         RETURNING *`,
         [
-          keyword,
-          targetTopic,
-          platform,
-          category,
+          spec.keyword,
+          spec.targetTopic,
+          spec.platform,
+          spec.category,
           ctaUrl,
           useNaverQr,
           useAiImages,
-          JSON.stringify(resolvedSourceAnalysisIds),
+          JSON.stringify(spec.sourceAnalysisIds),
           JSON.stringify(rewriteSettings),
-          keywords.length === 1 ? customTitle : '',
+          rewriteSpecs.length === 1 ? customTitle : '',
         ]
       );
       await addRewriteEvent(rows[0].id, 'created', '재각색 작업이 등록되었습니다', {
-        sourceAnalysisIds: resolvedSourceAnalysisIds,
+        sourceAnalysisIds: spec.sourceAnalysisIds,
         rewriteSettings,
+        sourceRowMode,
       });
       insertedJobs.push(rows[0]);
     }
