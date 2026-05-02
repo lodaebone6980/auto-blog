@@ -992,6 +992,14 @@ function normalizeKeywordValue(value = '') {
   return String(value || '').replace(/\s+/g, ' ').trim().slice(0, 60);
 }
 
+function normalizeTitleValue(value = '') {
+  return String(value || '')
+    .replace(/\s+/g, ' ')
+    .replace(/[<>]/g, '')
+    .trim()
+    .slice(0, 90);
+}
+
 function effectiveMainKeyword(row = {}) {
   return normalizeKeywordValue(row.corrected_main_keyword || row.main_keyword || row.keyword || '');
 }
@@ -1260,6 +1268,165 @@ function makeRewriteTitle(keyword, topic = '', platform = 'blog', pattern = {}) 
   return title.slice(0, 70);
 }
 
+function naverSearchCredentials(body = {}) {
+  const clientId = String(body.naverClientId || body.naver_client_id || process.env.NAVER_CLIENT_ID || '').trim();
+  const clientSecret = String(body.naverClientSecret || body.naver_client_secret || process.env.NAVER_CLIENT_SECRET || '').trim();
+  return clientId && clientSecret ? { clientId, clientSecret } : null;
+}
+
+function naverSearchEndpoint(platform = 'blog') {
+  if (platform === 'cafe') return 'https://openapi.naver.com/v1/search/cafearticle.json';
+  if (platform === 'web' || platform === 'premium' || platform === 'brunch') return 'https://openapi.naver.com/v1/search/webkr.json';
+  return 'https://openapi.naver.com/v1/search/blog.json';
+}
+
+async function fetchNaverSearchResults({ query, platform = 'blog', credentials, display = 5 }) {
+  if (!credentials || !query) return { enabled: false, total: null, items: [] };
+  const url = new URL(naverSearchEndpoint(platform));
+  url.searchParams.set('query', query);
+  url.searchParams.set('display', String(clampNumber(display, 1, 20)));
+  url.searchParams.set('start', '1');
+  url.searchParams.set('sort', 'sim');
+
+  const response = await fetch(url, {
+    headers: {
+      'X-Naver-Client-Id': credentials.clientId,
+      'X-Naver-Client-Secret': credentials.clientSecret,
+      'Accept': 'application/json',
+    },
+  });
+  if (!response.ok) {
+    const text = await response.text().catch(() => '');
+    throw new Error(`Naver Search API ${response.status}: ${text.slice(0, 160)}`);
+  }
+  const data = await response.json();
+  return {
+    enabled: true,
+    total: data.total ?? null,
+    items: Array.isArray(data.items)
+      ? data.items.map((item) => ({
+          title: stripHtml(item.title || ''),
+          link: item.link || '',
+          description: stripHtml(item.description || ''),
+        }))
+      : [],
+  };
+}
+
+const TITLE_RECOMMENDATION_ACTIONS = [
+  '링크', '결과', '유형', '확인', '방법', '정리', '신청', '대상', '기준', '지급일',
+  '일정', '예매', '가격', '후기', '추천', '비교', '주의사항', '바로가기',
+];
+
+function titleRecommendationActions(text = '') {
+  const picked = TITLE_RECOMMENDATION_ACTIONS
+    .map((term) => ({
+      term,
+      count: (String(text || '').match(new RegExp(escapeRegExp(term), 'g')) || []).length,
+    }))
+    .filter((item) => item.count > 0)
+    .sort((a, b) => b.count - a.count || TITLE_RECOMMENDATION_ACTIONS.indexOf(a.term) - TITLE_RECOMMENDATION_ACTIONS.indexOf(b.term))
+    .map((item) => item.term);
+  return [...new Set([...picked, ...inferTitleActionTerms(text)])].slice(0, 6);
+}
+
+function compactTitleCandidate(value = '') {
+  return normalizeTitleValue(value)
+    .replace(/\s+(정리|확인|방법|알아보기)\s+\1/g, ' $1')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function generateTitleCandidates({ keyword, topic = '', platform = 'blog', category = '', analyses = [] }) {
+  const cleanKeyword = normalizeKeywordValue(keyword);
+  const cleanTopic = normalizeTitleValue(topic);
+  const sourceTitles = analyses.map((row) => row.title).filter(Boolean);
+  const sourceText = [
+    ...sourceTitles,
+    ...analyses.flatMap((row) => Array.isArray(row.subheadings) ? row.subheadings : []),
+    category,
+    cleanTopic,
+  ].join(' ');
+  const actions = titleRecommendationActions(sourceText);
+  const tail = titleIntentTail(cleanKeyword, cleanTopic, actions);
+  const subject = cleanTopic && !cleanTopic.includes(cleanKeyword) ? `${cleanKeyword} ${cleanTopic}` : cleanKeyword;
+  const candidates = [
+    `${subject} ${tail}`,
+    `${cleanKeyword} ${actions.slice(0, 3).join(' ')} 정리`,
+    `${cleanKeyword} ${cleanTopic || '핵심'} 확인 방법`,
+    `${cleanKeyword} 바로가기 링크 결과 정리`,
+    `${cleanKeyword} 대상 기준 신청 방법`,
+    `${cleanKeyword} 일정 예매 가격 확인`,
+    `${cleanKeyword} 후기 주의사항 총정리`,
+    `${cleanKeyword} ${category || '정보'} 최신 기준 정리`,
+    makeRewriteTitle(cleanKeyword, cleanTopic, platform, { sourceActionTerms: actions }),
+    ...sourceTitles.slice(0, 4).map((title) => `${cleanKeyword} ${titleRecommendationActions(title).slice(0, 3).join(' ')} 정리`),
+  ];
+
+  return [...new Set(candidates.map(compactTitleCandidate).filter((title) => {
+    if (!title || !title.includes(cleanKeyword)) return false;
+    return title.replace(/\s/g, '').length >= cleanKeyword.replace(/\s/g, '').length + 4;
+  }))].slice(0, 12);
+}
+
+function wordSet(value = '') {
+  return new Set(tokenizeKoreanText(value).map((token) => token.toLowerCase()));
+}
+
+function overlapRatio(a = '', b = '') {
+  const aWords = wordSet(a);
+  const bWords = wordSet(b);
+  if (aWords.size === 0 || bWords.size === 0) return 0;
+  let hits = 0;
+  for (const word of aWords) if (bWords.has(word)) hits += 1;
+  return hits / Math.max(aWords.size, 1);
+}
+
+function scoreTitleCandidate({ title, keyword, topic = '', actionTerms = [], sourceTitles = [], serpTitles = [], total = null }) {
+  const compact = title.replace(/\s/g, '');
+  const length = compact.length;
+  const keywordAtFront = title.startsWith(keyword);
+  const actionHitCount = actionTerms.filter((term) => title.includes(term)).length;
+  const titleTerms = titleRecommendationActions(title);
+  const sourceOverlap = Math.max(0, ...sourceTitles.map((sourceTitle) => overlapRatio(title, sourceTitle)));
+  const serpOverlap = Math.max(0, ...serpTitles.map((serpTitle) => overlapRatio(title, serpTitle)));
+  const exactSerpDuplicate = serpTitles.some((serpTitle) => serpTitle.replace(/\s/g, '') === compact);
+  const hasTopic = topic ? title.includes(topic.split(/\s+/)[0]) : true;
+
+  let seoScore = 54;
+  if (keywordAtFront) seoScore += 14;
+  if (title.includes(keyword)) seoScore += 10;
+  if (actionHitCount >= 2) seoScore += 8;
+  if (length >= 16 && length <= 34) seoScore += 8;
+  if (length > 44) seoScore -= 8;
+  if (exactSerpDuplicate) seoScore -= 30;
+  seoScore -= Math.round(Math.max(sourceOverlap - 0.55, 0) * 35);
+  seoScore -= Math.round(Math.max(serpOverlap - 0.72, 0) * 25);
+
+  let aeoScore = 58 + Math.min(18, titleTerms.length * 4);
+  if (/방법|확인|정리|기준|대상|결과|링크/.test(title)) aeoScore += 12;
+  if (!hasTopic) aeoScore -= 4;
+
+  let geoScore = 57 + Math.min(15, actionHitCount * 5);
+  if (total !== null && Number(total) > 0) geoScore += 5;
+  if (sourceOverlap > 0.7) geoScore -= 10;
+
+  const duplicateRisk = clampNumber(Math.round((sourceOverlap * 45) + (serpOverlap * 35) + (exactSerpDuplicate ? 30 : 0)), 0, 100);
+  seoScore = clampNumber(Math.round(seoScore), 0, 100);
+  aeoScore = clampNumber(Math.round(aeoScore), 0, 100);
+  geoScore = clampNumber(Math.round(geoScore), 0, 100);
+  const score = clampNumber(Math.round((seoScore * 0.45) + (aeoScore * 0.3) + (geoScore * 0.25) - duplicateRisk * 0.12), 0, 100);
+
+  const reasons = [];
+  if (keywordAtFront) reasons.push('메인 키워드 전면 배치');
+  if (actionHitCount > 0) reasons.push(`행동유도어 ${actionHitCount}개 반영`);
+  if (length >= 16 && length <= 34) reasons.push('네이버형 제목 길이 적정');
+  if (duplicateRisk >= 45) reasons.push('유사 제목 위험 확인 필요');
+  if (exactSerpDuplicate) reasons.push('검색 결과 동일 제목 감지');
+
+  return { score, seoScore, aeoScore, geoScore, duplicateRisk, reasons };
+}
+
 function makeSectionTitles(keyword, topic, count) {
   const subject = topic || keyword;
   const base = [
@@ -1308,8 +1475,8 @@ function makeTemplateImage({ keyword, section, subtitle, index, platform }) {
   return `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`;
 }
 
-function buildRewriteDraft({ keyword, topic, platform, ctaUrl, useNaverQr, useAiImages = true, pattern }) {
-  const title = makeRewriteTitle(keyword, topic, platform, pattern);
+function buildRewriteDraft({ keyword, topic, platform, ctaUrl, useNaverQr, useAiImages = true, pattern, customTitle = '' }) {
+  const title = normalizeTitleValue(customTitle) || makeRewriteTitle(keyword, topic, platform, pattern);
   const bodySectionCount = Math.max(1, (pattern.sectionCount || DEFAULT_REWRITE_SETTINGS.sectionCount) - 1);
   const sectionTitles = makeSectionTitles(keyword, topic, bodySectionCount);
   const subject = topic || '이 내용';
@@ -1475,6 +1642,7 @@ async function processRewriteJob(jobId) {
     useNaverQr: job.use_naver_qr,
     useAiImages: job.use_ai_images,
     pattern,
+    customTitle: job.custom_title,
   });
 
   await pool.query("UPDATE rewrite_jobs SET status = '이미지 생성중', updated_at = NOW() WHERE id = $1", [jobId]);
@@ -2691,6 +2859,118 @@ router.get('/rewrite-settings/benchmark', async (req, res) => {
   }
 });
 
+router.post('/title-recommendations', async (req, res) => {
+  try {
+    const sourceAnalysisIds = normalizeIdList(req.body?.sourceAnalysisIds);
+    const sourceLinkIds = normalizeIdList(req.body?.sourceLinkIds);
+    let resolvedSourceAnalysisIds = [...sourceAnalysisIds];
+
+    if (sourceLinkIds.length > 0) {
+      const { rows } = await pool.query(
+        `SELECT source_analysis_id
+         FROM source_links
+         WHERE id = ANY($1::int[])
+           AND source_analysis_id IS NOT NULL`,
+        [sourceLinkIds]
+      );
+      resolvedSourceAnalysisIds = [
+        ...new Set([
+          ...resolvedSourceAnalysisIds,
+          ...rows.map((row) => row.source_analysis_id).filter(Boolean),
+        ]),
+      ];
+    }
+
+    const analyses = resolvedSourceAnalysisIds.length
+      ? (await pool.query('SELECT * FROM source_analyses WHERE id = ANY($1::int[])', [resolvedSourceAnalysisIds])).rows
+      : [];
+    const platform = normalizePlatform(req.body?.platform || analyses[0]?.platform_guess || analyses[0]?.platform || 'blog');
+    const category = req.body?.category || analyses[0]?.category_guess || analyses[0]?.category || 'general';
+    const topic = normalizeTitleValue(req.body?.topic || req.body?.targetTopic || '');
+    const keyword = normalizeKeywordValue(
+      req.body?.keyword
+      || req.body?.targetKeyword
+      || analyses.map(effectiveMainKeyword).find(Boolean)
+      || ''
+    );
+
+    if (!keyword) {
+      return res.status(400).json({ error: '추천할 메인 키워드가 없습니다. 수집 링크를 선택하거나 키워드를 입력하세요.' });
+    }
+
+    const sourceTitles = analyses.map((row) => row.title).filter(Boolean).slice(0, 20);
+    const sourceActionTerms = titleRecommendationActions(`${sourceTitles.join(' ')} ${topic} ${category}`);
+    const credentials = naverSearchCredentials(req.body);
+    let hasNaverSearch = Boolean(credentials);
+    let naverWarning = '';
+    let baseSearch = { total: null, items: [] };
+
+    if (credentials) {
+      try {
+        baseSearch = await fetchNaverSearchResults({ query: keyword, platform, credentials, display: 10 });
+      } catch (err) {
+        hasNaverSearch = false;
+        naverWarning = err.message;
+      }
+    }
+
+    const baseSerpTitles = baseSearch.items.map((item) => item.title).filter(Boolean);
+    const candidates = generateTitleCandidates({ keyword, topic, platform, category, analyses })
+      .slice(0, clampNumber(parseInt(req.body?.limit || '8', 10) || 8, 4, 12));
+
+    const scored = [];
+    for (const title of candidates) {
+      let candidateSearch = { total: null, items: [] };
+      let candidateWarning = '';
+      if (credentials && hasNaverSearch) {
+        try {
+          candidateSearch = await fetchNaverSearchResults({ query: title, platform, credentials, display: 5 });
+        } catch (err) {
+          candidateWarning = err.message;
+        }
+      }
+      const serpTitles = candidateSearch.items.length
+        ? candidateSearch.items.map((item) => item.title).filter(Boolean)
+        : baseSerpTitles;
+      const score = scoreTitleCandidate({
+        title,
+        keyword,
+        topic,
+        actionTerms: sourceActionTerms,
+        sourceTitles,
+        serpTitles,
+        total: candidateSearch.total ?? baseSearch.total,
+      });
+      scored.push({
+        title,
+        ...score,
+        serp: {
+          total: candidateSearch.total ?? baseSearch.total,
+          topTitles: serpTitles.slice(0, 5),
+        },
+        warning: candidateWarning,
+      });
+    }
+
+    scored.sort((a, b) => b.score - a.score || a.duplicateRisk - b.duplicateRisk);
+
+    res.json({
+      ok: true,
+      keyword,
+      topic,
+      platform,
+      category,
+      hasNaverSearch,
+      naverWarning,
+      sourceActionTerms,
+      serpTopTerms: titleRecommendationActions(baseSerpTitles.join(' ')),
+      candidates: scored,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.get('/rewrite-jobs', async (req, res) => {
   try {
     const limit = Math.min(parseInt(req.query.limit || '100', 10), 300);
@@ -2769,15 +3049,16 @@ router.post('/rewrite-jobs', async (req, res) => {
     const useNaverQr = Boolean(req.body?.useNaverQr || req.body?.use_naver_qr);
     const useAiImages = Boolean(req.body?.useAiImages || req.body?.use_ai_images);
     const rewriteSettings = parseRewriteSettings(req.body?.rewriteSettings || req.body?.settings || {});
+    const customTitle = normalizeTitleValue(req.body?.customTitle || req.body?.custom_title || req.body?.recommendedTitle || '');
 
     const insertedJobs = [];
     for (const keyword of keywords) {
       const { rows } = await pool.query(
         `INSERT INTO rewrite_jobs (
           target_keyword, target_topic, platform, category, cta_url,
-          use_naver_qr, use_ai_images, source_analysis_ids, settings_json, status
+          use_naver_qr, use_ai_images, source_analysis_ids, settings_json, custom_title, status
         )
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'대기중')
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'대기중')
         RETURNING *`,
         [
           keyword,
@@ -2789,6 +3070,7 @@ router.post('/rewrite-jobs', async (req, res) => {
           useAiImages,
           JSON.stringify(resolvedSourceAnalysisIds),
           JSON.stringify(rewriteSettings),
+          keywords.length === 1 ? customTitle : '',
         ]
       );
       await addRewriteEvent(rows[0].id, 'created', '재각색 작업이 등록되었습니다', {

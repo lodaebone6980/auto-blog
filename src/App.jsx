@@ -1322,6 +1322,9 @@ function RewritePanel() {
   const [savingKeywordIds, setSavingKeywordIds] = useState([]);
   const [keywordsText, setKeywordsText] = useState('');
   const [targetTopic, setTargetTopic] = useState('');
+  const [customTitle, setCustomTitle] = useState('');
+  const [titleRecommendations, setTitleRecommendations] = useState(null);
+  const [recommendingTitle, setRecommendingTitle] = useState(false);
   const [platform, setPlatform] = useState('blog');
   const [category, setCategory] = useState('IT/테크');
   const [ctaUrl, setCtaUrl] = useState('');
@@ -1472,6 +1475,53 @@ function RewritePanel() {
     }
   };
 
+  const loadOpsSettings = () => {
+    try {
+      return JSON.parse(localStorage.getItem('naviwrite.opsSettings') || localStorage.getItem('naviwrite.ops.settings') || '{}') || {};
+    } catch {
+      return {};
+    }
+  };
+
+  const recommendTitles = async () => {
+    const keyword = effectiveKeywordsText.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean)[0] || '';
+    if (!keyword) {
+      setMessage('제목 추천을 위해 메인 키워드나 수집 링크를 먼저 선택하세요.');
+      return;
+    }
+    const opsSettings = loadOpsSettings();
+    setRecommendingTitle(true);
+    setMessage('네이버 검색 흐름과 수집 패턴으로 제목 조합을 계산 중입니다.');
+    const res = await safeFetch(`${API}/title-recommendations`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        keyword,
+        topic: targetTopic,
+        platform,
+        category,
+        sourceLinkIds: selectedSourceLinkIds,
+        naverClientId: opsSettings.naverClientId,
+        naverClientSecret: opsSettings.naverClientSecret,
+        limit: 8,
+      }),
+    });
+    setRecommendingTitle(false);
+    if (res?.ok) {
+      setTitleRecommendations(res);
+      const suffix = res.hasNaverSearch ? '네이버 검색 API 검증 포함' : 'API 키 없음, 내부 패턴 기준';
+      setMessage(`제목 추천 완료 · ${suffix}`);
+    } else {
+      setTitleRecommendations(null);
+      setMessage(res?.error || '제목 추천에 실패했습니다.');
+    }
+  };
+
+  const chooseRecommendedTitle = (title) => {
+    setCustomTitle(title);
+    setMessage('추천 제목을 이번 재각색 작업 제목으로 선택했습니다.');
+  };
+
   const createRewriteJobs = async () => {
     if (keywordCount === 0) {
       setMessage('재각색할 키워드를 입력하거나 메인키워드가 잡힌 수집완료 링크를 선택해 주세요.');
@@ -1496,6 +1546,7 @@ function RewritePanel() {
         ctaUrl,
         useNaverQr,
         useAiImages,
+        customTitle,
         rewriteSettings,
         concurrency: Number(concurrency) || 3,
       }),
@@ -1633,6 +1684,31 @@ function RewritePanel() {
               placeholder="주제 보정값 예: 링크 결과 유형 정리"
               style={{ width: '100%', height: 38, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: '0 12px', fontSize: 12, outline: 'none' }}
             />
+            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 118px', gap: 8 }}>
+              <input
+                value={customTitle}
+                onChange={(e) => setCustomTitle(e.target.value)}
+                placeholder="추천/고정 제목 · 비워두면 자동 생성"
+                style={{ width: '100%', height: 38, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: '0 12px', fontSize: 12, outline: 'none' }}
+              />
+              <button
+                type="button"
+                onClick={recommendTitles}
+                disabled={recommendingTitle}
+                style={{
+                  height: 38,
+                  borderRadius: 8,
+                  border: 'none',
+                  background: recommendingTitle ? COLORS.textMuted : COLORS.accent,
+                  color: 'white',
+                  fontSize: 11,
+                  fontWeight: 850,
+                  cursor: recommendingTitle ? 'wait' : 'pointer',
+                }}
+              >
+                {recommendingTitle ? '추천중' : 'AI 제목 추천'}
+              </button>
+            </div>
             <input
               value={category}
               onChange={(e) => setCategory(e.target.value)}
@@ -1657,6 +1733,70 @@ function RewritePanel() {
             </div>
           </div>
         </div>
+
+        {titleRecommendations?.candidates?.length > 0 && (
+          <div style={{
+            marginTop: 14,
+            padding: 14,
+            border: `1px solid ${COLORS.border}`,
+            borderRadius: 10,
+            background: '#fff',
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, marginBottom: 10, flexWrap: 'wrap' }}>
+              <div>
+                <h3 style={{ fontSize: 14, fontWeight: 900, color: COLORS.primary, marginBottom: 4 }}>AI 제목 추천</h3>
+                <p style={{ fontSize: 11, color: COLORS.textSecondary, lineHeight: 1.55 }}>
+                  {titleRecommendations.keyword} · {titleRecommendations.hasNaverSearch ? '네이버 검색 API 검증' : '내부 수집 패턴 기준'}
+                  {titleRecommendations.naverWarning ? ` · ${titleRecommendations.naverWarning}` : ''}
+                </p>
+              </div>
+              <p style={{ fontSize: 11, color: COLORS.textMuted, fontWeight: 800 }}>
+                행동유도어: {(titleRecommendations.sourceActionTerms || []).join(', ') || '-'}
+              </p>
+            </div>
+            <div style={{ display: 'grid', gap: 8 }}>
+              {titleRecommendations.candidates.slice(0, 5).map((item, index) => (
+                <div key={item.title} style={{
+                  display: 'grid',
+                  gridTemplateColumns: '36px minmax(0, 1fr) 86px',
+                  gap: 10,
+                  alignItems: 'center',
+                  padding: 10,
+                  border: `1px solid ${customTitle === item.title ? COLORS.accent : COLORS.border}`,
+                  borderRadius: 9,
+                  background: customTitle === item.title ? '#eff6ff' : '#f8fafc',
+                }}>
+                  <div style={{ width: 30, height: 30, borderRadius: 8, background: COLORS.primary, color: 'white', display: 'grid', placeItems: 'center', fontSize: 12, fontWeight: 900 }}>
+                    {index + 1}
+                  </div>
+                  <div style={{ minWidth: 0 }}>
+                    <p style={{ fontSize: 13, fontWeight: 900, color: COLORS.textPrimary, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.title}</p>
+                    <p style={{ marginTop: 3, fontSize: 10, color: COLORS.textSecondary }}>
+                      총점 {item.score} · SEO {item.seoScore} · AEO {item.aeoScore} · GEO {item.geoScore} · 유사위험 {item.duplicateRisk}
+                      {item.reasons?.length ? ` · ${item.reasons.slice(0, 2).join(', ')}` : ''}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => chooseRecommendedTitle(item.title)}
+                    style={{
+                      height: 30,
+                      borderRadius: 8,
+                      border: 'none',
+                      background: customTitle === item.title ? COLORS.success : COLORS.accent,
+                      color: 'white',
+                      fontSize: 11,
+                      fontWeight: 850,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {customTitle === item.title ? '선택됨' : '선택'}
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         <div style={{
           marginTop: 14,
@@ -2231,6 +2371,8 @@ function ViewStatusPanel() {
 function OperationsSettingsPanelLegacy() {
   const emptySettings = {
     runnerUrl: 'http://127.0.0.1:39271',
+    naverClientId: '',
+    naverClientSecret: '',
     accounts: [],
     qrAccounts: [],
     vpnProfiles: [],
@@ -2449,6 +2591,25 @@ function OperationsSettingsPanelLegacy() {
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 14 }}>
         <section style={{ ...cardStyle, padding: 18 }}>
+          <h3 style={{ fontSize: 15, fontWeight: 850, color: COLORS.primary, marginBottom: 12 }}>Naver Search API</h3>
+          <input
+            value={settings.naverClientId || ''}
+            onChange={(e) => saveSettings({ ...settings, naverClientId: e.target.value })}
+            placeholder="NAVER_CLIENT_ID"
+            style={inputStyle}
+          />
+          <input
+            type="password"
+            value={settings.naverClientSecret || ''}
+            onChange={(e) => saveSettings({ ...settings, naverClientSecret: e.target.value })}
+            placeholder="NAVER_CLIENT_SECRET"
+            style={inputStyle}
+          />
+          <p style={{ marginTop: 2, fontSize: 10, color: COLORS.textMuted, lineHeight: 1.5 }}>
+            제목 추천에서 네이버 블로그/카페/웹 검색 결과를 검증할 때 사용합니다. 비워두면 Railway 환경변수 값을 사용합니다.
+          </p>
+        </section>
+        <section style={{ ...cardStyle, padding: 18 }}>
           <h3 style={{ fontSize: 15, fontWeight: 850, color: COLORS.primary, marginBottom: 12 }}>발행 계정 슬롯</h3>
           <select value={accountForm.platform} onChange={(e) => setAccountForm({ ...accountForm, platform: e.target.value })} style={inputStyle}>
             <option value="blog">네이버 블로그</option>
@@ -2551,6 +2712,8 @@ function AccountSlotList({ items, onRemove, onCreateProfile, onOpenLogin, onMark
 function OperationsSettingsPanel() {
   const emptySettings = {
     runnerUrl: 'http://127.0.0.1:39271',
+    naverClientId: '',
+    naverClientSecret: '',
     accounts: [],
     qrAccounts: [],
     vpnProfiles: [],
@@ -2960,6 +3123,26 @@ function OperationsSettingsPanel() {
         </section>
 
         <div style={{ display: 'grid', gap: 14 }}>
+          <section style={{ ...cardStyle, padding: 18 }}>
+            <h3 style={{ fontSize: 15, fontWeight: 850, color: COLORS.primary, marginBottom: 12 }}>Naver Search API</h3>
+            <input
+              value={settings.naverClientId || ''}
+              onChange={(e) => saveSettings({ ...settings, naverClientId: e.target.value })}
+              placeholder="NAVER_CLIENT_ID"
+              style={inputStyle}
+            />
+            <input
+              type="password"
+              value={settings.naverClientSecret || ''}
+              onChange={(e) => saveSettings({ ...settings, naverClientSecret: e.target.value })}
+              placeholder="NAVER_CLIENT_SECRET"
+              style={inputStyle}
+            />
+            <p style={{ marginTop: 2, fontSize: 10, color: COLORS.textMuted, lineHeight: 1.5 }}>
+              제목 추천에서 네이버 검색 결과 중복도와 행동유도어를 검증할 때 사용합니다. 비워두면 Railway 환경변수 값을 사용합니다.
+            </p>
+          </section>
+
           <section style={{ ...cardStyle, padding: 18 }}>
             <h3 style={{ fontSize: 15, fontWeight: 850, color: COLORS.primary, marginBottom: 12 }}>네이버 QR 계정 풀</h3>
             <input value={qrForm.label} onChange={(e) => setQrForm({ ...qrForm, label: e.target.value })} placeholder="예: QR 계정 1" style={inputStyle} />

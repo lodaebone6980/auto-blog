@@ -254,6 +254,7 @@ export async function initDB() {
         settings_json JSONB DEFAULT '{}',
         status TEXT DEFAULT '대기중',
         pattern_json JSONB DEFAULT '{}',
+        custom_title TEXT,
         title TEXT,
         body TEXT,
         plain_text TEXT,
@@ -306,6 +307,7 @@ export async function initDB() {
       ALTER TABLE blog_view_snapshots ADD COLUMN IF NOT EXISTS is_day_closed BOOLEAN DEFAULT FALSE;
       ALTER TABLE blog_view_snapshots ADD COLUMN IF NOT EXISTS daily_view_source TEXT;
       ALTER TABLE rewrite_jobs ADD COLUMN IF NOT EXISTS settings_json JSONB DEFAULT '{}';
+      ALTER TABLE rewrite_jobs ADD COLUMN IF NOT EXISTS custom_title TEXT;
 
       -- Collapse previously duplicated blog rows before adding the one-blog constraint.
       WITH duplicate_blogs AS (
