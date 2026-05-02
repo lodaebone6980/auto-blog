@@ -1802,7 +1802,6 @@ function RewritePanel() {
           </div>
         ))}
       </div>
-
       <section style={sectionStyle}>
         <div style={{ padding: '14px 18px', borderBottom: `1px solid ${COLORS.border}`, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
           <div style={{ marginRight: 'auto' }}>
@@ -2025,7 +2024,7 @@ function ViewStatusPanel() {
 
   const loadStatus = useCallback(async () => {
     setLoading(true);
-    const res = await safeFetch(`${API}/views/status?platform=${platform}&limit=100`);
+    const res = await safeFetch(`${API}/views/status?platform=${platform}&limit=100&days=30`);
     setLoading(false);
     if (res?.items) setData(res);
   }, [platform]);
@@ -2053,6 +2052,12 @@ function ViewStatusPanel() {
 
   const items = Array.isArray(data.items) ? data.items : [];
   const stats = data.stats || {};
+  const history = Array.isArray(data.history) ? data.history : [];
+  const blogHistoryChartData = useMemo(() => ({
+    labels: history.map((row) => String(row.snapshot_date || '').slice(5, 10)),
+    values: history.map((row) => Number(row.daily_view_count || 0)),
+    color: COLORS.success,
+  }), [history]);
 
   return (
     <div style={{ display: 'grid', gap: 18 }}>
@@ -2061,7 +2066,7 @@ function ViewStatusPanel() {
           <div>
             <h2 style={{ fontSize: 18, fontWeight: 850, color: COLORS.primary, marginBottom: 4 }}>조회수 근황</h2>
             <p style={{ fontSize: 12, color: COLORS.textSecondary, lineHeight: 1.6 }}>
-              블로그는 매일 0시 이후 전날 하루 조회수와 현재 전체 조회수를 기록합니다. 카페는 조회수 10 이상 글만 전날 대비 증가분을 추적합니다.
+              블로그는 오늘 현재 조회수와 별도로 매일 23:55 이후 오늘 조회수를 하루 마감값으로 확정 저장합니다. 카페는 조회수 10 이상 글만 전날 대비 증가분을 추적합니다.
             </p>
           </div>
           <button
@@ -2116,7 +2121,8 @@ function ViewStatusPanel() {
         {(platform === 'blog'
           ? [
               ['저장 블로그', stats.total || 0, COLORS.primary],
-              ['최근 하루 조회', Number(stats.dailyViews || 0).toLocaleString(), COLORS.success],
+              ['최근 마감 1일 조회', Number(stats.closedDailyViews || stats.dailyViews || 0).toLocaleString(), COLORS.success],
+              ['오늘 현재 조회', Number(stats.todayCurrentViews || 0).toLocaleString(), COLORS.accent],
               ['현재 전체 조회', Number(stats.realtimeTotalViews || 0).toLocaleString(), COLORS.textPrimary],
             ]
           : [
@@ -2131,6 +2137,13 @@ function ViewStatusPanel() {
           </div>
         ))}
       </div>
+
+      {platform === 'blog' && history.length > 0 && (
+        <BarChart
+          title="최근 30일 블로그 일일 조회수"
+          data={blogHistoryChartData}
+        />
+      )}
 
       <section style={sectionStyle}>
         <div style={{ padding: '14px 18px', borderBottom: `1px solid ${COLORS.border}` }}>
@@ -2151,10 +2164,10 @@ function ViewStatusPanel() {
               {platform === 'blog' ? '아직 조회수 추적 블로그가 없습니다.' : '조회수 10 이상으로 추적 중인 카페 글이 없습니다.'}
             </div>
           ) : platform === 'blog' ? (
-            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 920 }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1020 }}>
               <thead>
                 <tr style={{ background: '#f8fafc', color: COLORS.textSecondary, fontSize: 11, textAlign: 'left' }}>
-                  {['블로그', '최근 하루', '오늘', '전체', '기준일', '최근 확인', '홈'].map((head) => (
+                  {['블로그', '최근 마감 1일', '오늘 현재', '전체', '마감일', '최근 확인', '홈'].map((head) => (
                     <th key={head} style={{ padding: '10px 12px', borderBottom: `1px solid ${COLORS.border}` }}>{head}</th>
                   ))}
                 </tr>
@@ -2167,11 +2180,11 @@ function ViewStatusPanel() {
                       <p style={{ marginTop: 2, fontSize: 10, color: COLORS.textMuted, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.blog_title || item.blog_id || ''}</p>
                     </td>
                     <td style={{ padding: '10px 12px', fontWeight: 850, color: COLORS.accent }}>
-                      {item.daily_view_count == null && item.last_daily_view_count == null ? '-' : `+${Number(item.daily_view_count ?? item.last_daily_view_count).toLocaleString()}`}
+                      {item.closed_daily_view_count == null ? '-' : `+${Number(item.closed_daily_view_count).toLocaleString()}`}
                     </td>
                     <td style={{ padding: '10px 12px', color: COLORS.success, fontWeight: 800 }}>{item.last_today_view_count == null ? '-' : Number(item.last_today_view_count).toLocaleString()}</td>
                     <td style={{ padding: '10px 12px', color: COLORS.textSecondary }}>{item.last_total_view_count == null ? '-' : Number(item.last_total_view_count).toLocaleString()}</td>
-                    <td style={{ padding: '10px 12px', color: COLORS.textMuted }}>{item.snapshot_date ? String(item.snapshot_date).slice(0, 10) : '-'}</td>
+                    <td style={{ padding: '10px 12px', color: COLORS.textMuted }}>{item.closed_snapshot_date ? String(item.closed_snapshot_date).slice(0, 10) : '-'}</td>
                     <td style={{ padding: '10px 12px', color: COLORS.textMuted }}>{item.last_checked_at ? formatDate(item.last_checked_at) : '-'}</td>
                     <td style={{ padding: '10px 12px', maxWidth: 240 }}>
                       <a href={item.home_url} target="_blank" rel="noreferrer" style={{ display: 'block', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.home_url}</a>

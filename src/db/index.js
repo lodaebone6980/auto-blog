@@ -200,6 +200,8 @@ export async function initDB() {
         total_view_count INTEGER,
         previous_total_view_count INTEGER,
         daily_view_count INTEGER,
+        is_day_closed BOOLEAN DEFAULT FALSE,
+        daily_view_source TEXT,
         source TEXT,
         checked_at TIMESTAMPTZ DEFAULT NOW(),
         created_at TIMESTAMPTZ DEFAULT NOW(),
@@ -301,6 +303,8 @@ export async function initDB() {
       ALTER TABLE source_analyses ADD COLUMN IF NOT EXISTS quote_blocks JSONB DEFAULT '[]';
       ALTER TABLE source_analyses ADD COLUMN IF NOT EXISTS repeated_terms JSONB DEFAULT '[]';
       ALTER TABLE source_analyses ADD COLUMN IF NOT EXISTS quote_repeated_terms JSONB DEFAULT '[]';
+      ALTER TABLE blog_view_snapshots ADD COLUMN IF NOT EXISTS is_day_closed BOOLEAN DEFAULT FALSE;
+      ALTER TABLE blog_view_snapshots ADD COLUMN IF NOT EXISTS daily_view_source TEXT;
       ALTER TABLE rewrite_jobs ADD COLUMN IF NOT EXISTS settings_json JSONB DEFAULT '{}';
 
       -- Collapse previously duplicated blog rows before adding the one-blog constraint.

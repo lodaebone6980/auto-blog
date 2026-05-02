@@ -667,6 +667,7 @@ async function recordBlogViewSnapshot(collectedBlog, counts = {}) {
   if (todayViewCount === null && totalViewCount === null) return null;
 
   const snapshotDate = counts.snapshotDate || kstDateString();
+  const isDayClosed = Boolean(counts.isDayClosed);
   const previous = await pool.query(
     `SELECT total_view_count
      FROM blog_view_snapshots
@@ -678,22 +679,36 @@ async function recordBlogViewSnapshot(collectedBlog, counts = {}) {
     [collectedBlog.id, snapshotDate]
   );
   const previousTotalViewCount = previous.rows[0]?.total_view_count ?? null;
-  const dailyViewCount = totalViewCount !== null && previousTotalViewCount !== null
-    ? Math.max(0, totalViewCount - previousTotalViewCount)
-    : todayViewCount;
+  const explicitDailyViewCount = Number.isFinite(counts.dailyViewCount) ? counts.dailyViewCount : null;
+  const dailyViewCount = explicitDailyViewCount !== null
+    ? explicitDailyViewCount
+    : totalViewCount !== null && previousTotalViewCount !== null
+      ? Math.max(0, totalViewCount - previousTotalViewCount)
+      : todayViewCount;
+  const dailyViewSource = counts.dailyViewSource || (isDayClosed ? 'naver_today_counter_day_close' : 'realtime_total_delta_or_today');
 
   const { rows } = await pool.query(
     `INSERT INTO blog_view_snapshots (
        collected_blog_id, snapshot_date, today_view_count, total_view_count,
-       previous_total_view_count, daily_view_count, source, checked_at
+       previous_total_view_count, daily_view_count, is_day_closed, daily_view_source, source, checked_at
      )
-     VALUES ($1,$2,$3,$4,$5,$6,$7,NOW())
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW())
      ON CONFLICT (collected_blog_id, snapshot_date)
      DO UPDATE SET
        today_view_count = EXCLUDED.today_view_count,
        total_view_count = EXCLUDED.total_view_count,
        previous_total_view_count = EXCLUDED.previous_total_view_count,
-       daily_view_count = EXCLUDED.daily_view_count,
+       daily_view_count = CASE
+         WHEN blog_view_snapshots.is_day_closed = TRUE AND EXCLUDED.is_day_closed = FALSE
+           THEN blog_view_snapshots.daily_view_count
+         ELSE EXCLUDED.daily_view_count
+       END,
+       is_day_closed = blog_view_snapshots.is_day_closed OR EXCLUDED.is_day_closed,
+       daily_view_source = CASE
+         WHEN blog_view_snapshots.is_day_closed = TRUE AND EXCLUDED.is_day_closed = FALSE
+           THEN blog_view_snapshots.daily_view_source
+         ELSE EXCLUDED.daily_view_source
+       END,
        source = EXCLUDED.source,
        checked_at = NOW()
      RETURNING *`,
@@ -704,6 +719,8 @@ async function recordBlogViewSnapshot(collectedBlog, counts = {}) {
       totalViewCount,
       previousTotalViewCount,
       dailyViewCount,
+      isDayClosed,
+      dailyViewSource,
       counts.source || 'm.blog.naver.com',
     ]
   );
@@ -716,7 +733,7 @@ async function recordBlogViewSnapshot(collectedBlog, counts = {}) {
          last_checked_at = NOW(),
          updated_at = NOW()
      WHERE id = $1`,
-    [collectedBlog.id, todayViewCount, totalViewCount, dailyViewCount]
+    [collectedBlog.id, todayViewCount, totalViewCount, rows[0]?.daily_view_count ?? dailyViewCount]
   );
 
   return rows[0] || null;
@@ -777,18 +794,25 @@ async function upsertCollectedBlogFromAnalysis(link, analysis) {
   return collectedBlog;
 }
 
-async function refreshCollectedBlogViews(blog) {
+async function refreshCollectedBlogViews(blog, options = {}) {
   if (!blog?.home_url) throw new Error('블로그 홈 URL이 없습니다');
   const html = await fetchNaverBlogHomeHtml(blog.home_url);
   const counts = extractBlogVisitorCounts(html);
   if (counts.todayViewCount === null && counts.totalViewCount === null) {
     throw new Error('공개 방문자 카운터를 찾지 못했습니다');
   }
-  const snapshot = await recordBlogViewSnapshot(blog, counts);
+  const isDayClosed = options.mode === 'day-close';
+  const snapshot = await recordBlogViewSnapshot(blog, {
+    ...counts,
+    snapshotDate: options.snapshotDate || kstDateString(),
+    dailyViewCount: isDayClosed && Number.isFinite(counts.todayViewCount) ? counts.todayViewCount : undefined,
+    isDayClosed,
+    dailyViewSource: isDayClosed ? 'naver_today_counter_day_close' : undefined,
+  });
   return { blog, snapshot };
 }
 
-async function snapshotCollectedBlogs({ limit = 100, category = null } = {}) {
+async function snapshotCollectedBlogs({ limit = 100, category = null, mode = 'realtime', snapshotDate = null } = {}) {
   const values = [];
   const where = [`platform = 'blog'`, `home_url IS NOT NULL`];
   if (category) {
@@ -808,7 +832,7 @@ async function snapshotCollectedBlogs({ limit = 100, category = null } = {}) {
   const results = [];
   for (const blog of rows) {
     try {
-      results.push({ ok: true, ...(await refreshCollectedBlogViews(blog)) });
+      results.push({ ok: true, ...(await refreshCollectedBlogViews(blog, { mode, snapshotDate })) });
     } catch (err) {
       results.push({ ok: false, blog, error: err.message });
     }
@@ -2493,6 +2517,7 @@ router.post('/collections/blogs/snapshot-daily', async (req, res) => {
     const results = await snapshotCollectedBlogs({
       limit: req.body?.limit || req.query.limit || 100,
       category: req.body?.category || req.query.category || null,
+      mode: req.body?.mode || req.query.mode || 'realtime',
     });
     res.json({
       ok: true,
@@ -2511,6 +2536,7 @@ router.get('/views/status', async (req, res) => {
   try {
     const platform = req.query.platform === 'cafe' ? 'cafe' : 'blog';
     const limit = Math.min(parseInt(req.query.limit || '100', 10), 300);
+    const days = Math.min(Math.max(parseInt(req.query.days || '30', 10) || 30, 1), 90);
 
     if (platform === 'cafe') {
       const { rows } = await pool.query(
@@ -2553,8 +2579,14 @@ router.get('/views/status', async (req, res) => {
               latest.total_view_count,
               latest.previous_total_view_count,
               latest.daily_view_count,
+              latest.is_day_closed,
+              latest.daily_view_source,
               latest.source AS snapshot_source,
-              latest.checked_at AS snapshot_checked_at
+              latest.checked_at AS snapshot_checked_at,
+              closed.snapshot_date AS closed_snapshot_date,
+              closed.daily_view_count AS closed_daily_view_count,
+              closed.daily_view_source AS closed_daily_view_source,
+              closed.checked_at AS closed_checked_at
        FROM collected_blogs cb
        LEFT JOIN LATERAL (
          SELECT *
@@ -2563,17 +2595,41 @@ router.get('/views/status', async (req, res) => {
          ORDER BY bvs.snapshot_date DESC
          LIMIT 1
        ) latest ON TRUE
+       LEFT JOIN LATERAL (
+         SELECT *
+         FROM blog_view_snapshots bvs
+         WHERE bvs.collected_blog_id = cb.id
+           AND bvs.is_day_closed = TRUE
+         ORDER BY bvs.snapshot_date DESC
+         LIMIT 1
+       ) closed ON TRUE
        ORDER BY cb.updated_at DESC
        LIMIT $1`,
       [limit]
     );
+    const startDate = kstDateString(new Date(Date.now() - (days - 1) * 24 * 60 * 60 * 1000));
+    const history = await pool.query(
+      `SELECT snapshot_date,
+              SUM(COALESCE(daily_view_count, 0))::int AS daily_view_count,
+              COUNT(*)::int AS blog_count
+       FROM blog_view_snapshots
+       WHERE is_day_closed = TRUE
+         AND snapshot_date >= $1
+       GROUP BY snapshot_date
+       ORDER BY snapshot_date ASC`,
+      [startDate]
+    );
+    const closedDailyViews = rows.reduce((sum, item) => sum + Number(item.closed_daily_view_count || 0), 0);
     return res.json({
       platform,
       items: rows,
+      history: history.rows,
       stats: {
         total: rows.length,
         realtimeTotalViews: rows.reduce((sum, item) => sum + Number(item.last_total_view_count || item.total_view_count || 0), 0),
-        dailyViews: rows.reduce((sum, item) => sum + Number(item.daily_view_count || item.last_daily_view_count || 0), 0),
+        todayCurrentViews: rows.reduce((sum, item) => sum + Number(item.last_today_view_count || item.today_view_count || 0), 0),
+        closedDailyViews,
+        dailyViews: closedDailyViews,
       },
     });
   } catch (err) {
@@ -3136,6 +3192,7 @@ router.get('/stats', async (req, res) => {
 
 let collectionSchedulerStarted = false;
 let lastBlogSnapshotDate = null;
+let lastBlogCloseDate = null;
 
 export function startCollectionSchedulers() {
   if (collectionSchedulerStarted) return;
@@ -3146,6 +3203,15 @@ export function startCollectionSchedulers() {
     const kstHour = kstNow.getUTCHours();
     const kstMinute = kstNow.getUTCMinutes();
     const today = kstNow.toISOString().slice(0, 10);
+    if (kstHour === 23 && kstMinute >= 55 && lastBlogCloseDate !== today) {
+      lastBlogCloseDate = today;
+      try {
+        const blogResults = await snapshotCollectedBlogs({ limit: 300, mode: 'day-close', snapshotDate: today });
+        console.log(`[collections] day-close blog snapshots: ${blogResults.filter((item) => item.ok).length}/${blogResults.length}`);
+      } catch (err) {
+        console.warn('[collections] day-close view snapshot failed:', err.message);
+      }
+    }
     if (kstHour === 0 && kstMinute >= 5 && lastBlogSnapshotDate !== today) {
       lastBlogSnapshotDate = today;
       try {
@@ -3159,7 +3225,7 @@ export function startCollectionSchedulers() {
     }
   };
 
-  const interval = setInterval(tick, 10 * 60 * 1000);
+  const interval = setInterval(tick, 60 * 1000);
   interval.unref?.();
   const initial = setTimeout(tick, 15 * 1000);
   initial.unref?.();
