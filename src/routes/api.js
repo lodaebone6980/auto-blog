@@ -384,11 +384,87 @@ function tokenizeKoreanText(text = '') {
     }) || [];
 }
 
-function inferKeywordCandidates({ title = '', text = '', subheadings = [] }) {
+function decodeJsString(value = '') {
+  const safe = String(value || '').replace(/"/g, '\\"').replace(/\r?\n/g, ' ');
+  try {
+    return JSON.parse(`"${safe}"`);
+  } catch {
+    return decodeHtmlEntities(value);
+  }
+}
+
+function restoreKeywordSpacing(rawKeyword = '', referenceText = '') {
+  const cleaned = decodeHtmlEntities(decodeJsString(rawKeyword))
+    .replace(/[#,|/·ㆍ_]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!cleaned) return '';
+  if (/\s/.test(cleaned)) return cleaned;
+
+  const compact = cleaned.toLowerCase();
+  const referenceTokens = tokenizeKoreanText(referenceText)
+    .filter((token) => token.length >= 2 || /\d/.test(token));
+  const knownTerms = [
+    '소상공인', '추경지원금', '지원금', '500만원', '신청', '대상', '기준', '방법', '지급일',
+    '테스트', '검사', '링크', '결과', '유형', '비교', '예약', '점집', '사주', '후기',
+  ];
+  const dictionary = [...new Set([...referenceTokens, ...knownTerms])]
+    .map((term) => term.trim())
+    .filter(Boolean)
+    .sort((a, b) => b.replace(/\s/g, '').length - a.replace(/\s/g, '').length);
+
+  const parts = [];
+  let index = 0;
+  while (index < compact.length) {
+    const match = dictionary.find((term) => compact.startsWith(term.replace(/\s/g, '').toLowerCase(), index));
+    if (!match) {
+      parts.length = 0;
+      break;
+    }
+    parts.push(match);
+    index += match.replace(/\s/g, '').length;
+  }
+
+  return parts.length && parts.join('').replace(/\s/g, '').toLowerCase() === compact
+    ? parts.join(' ')
+    : cleaned;
+}
+
+function extractNaverKeywordSignals(...htmlParts) {
+  const html = htmlParts.filter(Boolean).join('\n');
+  if (!html) return [];
+  const signals = [];
+  const title = cleanNaverBlogTitle(pickMetaContent(html, 'og:title') || extractTitle(html, ''));
+  const reference = `${title} ${stripHtml(extractNaverBodyHtml(html) || html).slice(0, 3000)}`;
+  const addSignal = (keyword, source, weight) => {
+    const restored = restoreKeywordSpacing(keyword, reference);
+    if (!restored || restored.replace(/\s/g, '').length < 2) return;
+    signals.push({ keyword: restored, source, weight });
+  };
+
+  const tagMatch = html.match(/gsTagName\s*=\s*["']([^"']+)["']/i);
+  if (tagMatch) {
+    decodeJsString(tagMatch[1]).split(',').forEach((tag, index) => {
+      addSignal(tag, 'naver_tag', Math.max(24, 34 - index * 2));
+    });
+  }
+
+  const searchKeywordMatches = [...html.matchAll(/"searchKeyword"\s*:\s*"([^"]+)"/gi)];
+  searchKeywordMatches.forEach((match, index) => {
+    addSignal(match[1], 'naver_recommendation', Math.max(26, 42 - index * 3));
+  });
+
+  return signals
+    .filter((item, index, list) => list.findIndex((other) => other.keyword === item.keyword) === index)
+    .slice(0, 12);
+}
+
+function inferKeywordCandidates({ title = '', text = '', subheadings = [], keywordSignals = [] }) {
   const source = [title, subheadings.join(' '), text].join(' ');
   const tokens = tokenizeKoreanText(source);
   const scores = new Map();
   const counts = new Map();
+  const sources = new Map();
   const compactTitle = title.replace(/\s/g, '');
   const context = guessCategoryFromText(text, title);
   const contextTerms = {
@@ -402,19 +478,36 @@ function inferKeywordCandidates({ title = '', text = '', subheadings = [] }) {
     '정부정책': ['지원금', '신청', '지급', '대상', '정책'],
   }[context] || [];
 
-  for (let size = 1; size <= 3; size += 1) {
+  const addScore = (keyword, amount, sourceName = '') => {
+    const normalized = normalizeKeywordValue(keyword);
+    if (!normalized || normalized.replace(/\s/g, '').length < 2 || normalized.length > 60) return;
+    scores.set(normalized, (scores.get(normalized) || 0) + amount);
+    if (sourceName) {
+      const set = sources.get(normalized) || new Set();
+      set.add(sourceName);
+      sources.set(normalized, set);
+    }
+  };
+
+  keywordSignals.forEach((signal) => {
+    addScore(signal.keyword, Number(signal.weight || 28), signal.source || 'signal');
+    counts.set(signal.keyword, Math.max(counts.get(signal.keyword) || 0, 1));
+  });
+
+  for (let size = 1; size <= 4; size += 1) {
     for (let i = 0; i <= tokens.length - size; i += 1) {
       const phrase = tokens.slice(i, i + size).join(' ');
       if (phrase.replace(/\s/g, '').length < 2 || phrase.length > 30) continue;
       const compactPhrase = phrase.replace(/\s/g, '');
-      const base = size === 1 ? 0.75 : size === 2 ? 3.2 : 3.9;
+      const base = size === 1 ? 0.65 : size === 2 ? 3.2 : size === 3 ? 4.1 : 3.4;
       const titleBoost = title.includes(phrase) ? 7 : 0;
       const compactTitleBoost = compactTitle.includes(compactPhrase) ? 3 : 0;
       const headingBoost = subheadings.some((heading) => heading.includes(phrase)) ? 4 : 0;
       const contextBoost = contextTerms.some((term) => phrase.includes(term) || term.includes(phrase)) ? 2.2 : 0;
       const oneWordPenalty = size === 1 && !contextTerms.some((term) => term === phrase) ? 1.1 : 0;
+      const longPhrasePenalty = size >= 4 && !keywordSignals.some((signal) => signal.keyword.replace(/\s/g, '') === compactPhrase) ? 1.8 : 0;
       counts.set(phrase, (counts.get(phrase) || 0) + 1);
-      scores.set(phrase, (scores.get(phrase) || 0) + base + titleBoost + compactTitleBoost + headingBoost + contextBoost - oneWordPenalty);
+      addScore(phrase, base + titleBoost + compactTitleBoost + headingBoost + contextBoost - oneWordPenalty - longPhrasePenalty, 'text');
     }
   }
 
@@ -430,14 +523,16 @@ function inferKeywordCandidates({ title = '', text = '', subheadings = [] }) {
         context,
         contextMatched: contextTerms.some((term) => keyword.includes(term) || term.includes(keyword)),
         titleMatched: compactTitle.includes(compactKeyword),
+        sources: [...(sources.get(keyword) || [])],
       };
     })
     .filter((item) => (
       item.count >= 2
       || item.titleMatched
+      || item.sources.length > 0
       || (item.wordCount >= 2 && item.contextMatched)
     ))
-    .sort((a, b) => b.score - a.score || b.wordCount - a.wordCount || b.count - a.count)
+    .sort((a, b) => b.score - a.score || b.sources.length - a.sources.length || b.wordCount - a.wordCount || b.count - a.count)
     .slice(0, 10);
 }
 
@@ -627,7 +722,8 @@ function buildSourceAnalysis({ sourceUrl, sourceText, html, mobileHtml = '', blo
   const links = bodyHtml ? extractLinks(bodyHtml) : html ? extractLinks(html) : [];
   const quoteBlocks = bodyHtml ? extractQuoteBlocks(bodyHtml) : [];
   const quoteText = quoteBlocks.join('\n');
-  const keywordCandidates = inferKeywordCandidates({ title, text: plainText, subheadings });
+  const keywordSignals = extractNaverKeywordSignals(html, mobileHtml);
+  const keywordCandidates = inferKeywordCandidates({ title, text: plainText, subheadings, keywordSignals });
   const mainKeyword = keyword || keywordCandidates[0]?.keyword || '';
   const kwCount = mainKeyword ? (plainText.match(new RegExp(escapeRegExp(mainKeyword), 'gi')) || []).length : 0;
   const categoryGuess = category && category !== 'general' ? category : guessCategoryFromText(plainText, title);
@@ -3207,6 +3303,165 @@ router.get('/rewrite-settings/benchmark', async (req, res) => {
     const limit = clampNumber(parseInt(req.query.limit || '20', 10) || 20, 1, 30);
     const result = await benchmarkRewriteSettingsFromUrl(url, limit);
     res.json({ ok: true, ...result });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/keyword-recommendations', async (req, res) => {
+  try {
+    const sourceAnalysisIds = normalizeIdList(req.body?.sourceAnalysisIds);
+    const sourceLinkIds = normalizeIdList(req.body?.sourceLinkIds);
+    let resolvedSourceAnalysisIds = [...sourceAnalysisIds];
+
+    if (sourceLinkIds.length > 0) {
+      const { rows } = await pool.query(
+        `SELECT source_analysis_id
+         FROM source_links
+         WHERE id = ANY($1::int[])
+           AND source_analysis_id IS NOT NULL`,
+        [sourceLinkIds]
+      );
+      resolvedSourceAnalysisIds = [
+        ...new Set([
+          ...resolvedSourceAnalysisIds,
+          ...rows.map((row) => row.source_analysis_id).filter(Boolean),
+        ]),
+      ];
+    }
+
+    const analyses = resolvedSourceAnalysisIds.length
+      ? (await pool.query('SELECT * FROM source_analyses WHERE id = ANY($1::int[])', [resolvedSourceAnalysisIds])).rows
+      : [];
+
+    const sourceUrl = String(req.body?.sourceUrl || req.body?.source_url || '').trim();
+    const sourceText = String(req.body?.sourceText || req.body?.source_text || '').trim();
+    const topic = normalizeTitleValue(req.body?.topic || req.body?.targetTopic || '');
+    const platform = normalizePlatform(req.body?.platform || analyses[0]?.platform_guess || analyses[0]?.platform || 'blog', sourceUrl);
+    const category = req.body?.category || analyses[0]?.category_guess || analyses[0]?.category || 'general';
+    const title = normalizeTitleValue(req.body?.title || topic || analyses[0]?.title || '');
+
+    const candidateMap = new Map();
+    const addCandidate = (keyword, score = 0, source = '', extra = {}) => {
+      const normalized = normalizeKeywordValue(keyword);
+      if (!normalized || normalized.replace(/\s/g, '').length < 2) return;
+      const key = normalized.replace(/\s/g, '').toLowerCase();
+      const current = candidateMap.get(key) || {
+        keyword: normalized,
+        score: 0,
+        count: 0,
+        sources: new Set(),
+        category,
+      };
+      current.score += Number(score || 0);
+      current.count += Number(extra.count || 0);
+      if (source) current.sources.add(source);
+      candidateMap.set(key, current);
+    };
+
+    analyses.forEach((row) => {
+      addCandidate(row.corrected_main_keyword || row.main_keyword || row.keyword, 22, 'saved_main_keyword', { count: row.kw_count || 0 });
+      parseJsonArray(row.keyword_candidates).forEach((item) => {
+        addCandidate(item.keyword || item.term, Number(item.score || 0) * 0.45 + 8, 'saved_candidate', { count: item.count || 0 });
+      });
+    });
+
+    if (sourceUrl) {
+      let html = '';
+      let mobileHtml = '';
+      let blogHomeHtml = '';
+      try {
+        html = await fetchSourceHtml(sourceUrl);
+        mobileHtml = await fetchNaverMobileHtml(sourceUrl);
+        blogHomeHtml = await fetchNaverBlogHomeHtml(sourceUrl);
+      } catch {
+        // Keyword recommendation can still continue with topic/text input.
+      }
+      if (html || mobileHtml) {
+        const analysis = buildSourceAnalysis({
+          sourceUrl,
+          sourceText: '',
+          html: mobileHtml || html,
+          mobileHtml,
+          blogHomeHtml,
+          category,
+          platform,
+          fetchStatus: 'keyword_recommendation',
+          errorMessage: null,
+        });
+        addCandidate(analysis.mainKeyword, 28, 'url_main_keyword', { count: analysis.kwCount || 0 });
+        analysis.keywordCandidates.forEach((item) => {
+          addCandidate(item.keyword, Number(item.score || 0) * 0.5 + 10, item.sources?.[0] || 'url_candidate', { count: item.count || 0 });
+        });
+      }
+    }
+
+    const combinedText = [
+      topic,
+      sourceText,
+      analyses.map((row) => `${row.title || ''}\n${row.plain_text || ''}`).join('\n'),
+    ].join('\n');
+    if (combinedText.trim() || title) {
+      inferKeywordCandidates({
+        title,
+        text: combinedText,
+        subheadings: [],
+        keywordSignals: [],
+      }).forEach((item) => {
+        addCandidate(item.keyword, Number(item.score || 0) * 0.55 + 6, 'text_or_topic', { count: item.count || 0 });
+      });
+    }
+
+    const credentials = naverSearchCredentials(req.body);
+    let hasNaverSearch = Boolean(credentials);
+    let naverWarning = '';
+    const candidates = [...candidateMap.values()]
+      .map((item) => ({
+        ...item,
+        sources: [...item.sources],
+        score: Number(item.score.toFixed(2)),
+      }))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, clampNumber(parseInt(req.body?.limit || '10', 10) || 10, 3, 20));
+
+    for (const candidate of candidates.slice(0, 8)) {
+      if (!credentials || !hasNaverSearch) break;
+      try {
+        const search = await fetchNaverSearchResults({ query: candidate.keyword, platform, credentials, display: 5 });
+        const compact = candidate.keyword.replace(/\s/g, '').toLowerCase();
+        const topTitleHits = search.items.filter((item) => stripHtml(item.title || '').replace(/\s/g, '').toLowerCase().includes(compact)).length;
+        const searchScore = search.total === null ? 0 : Math.min(24, Math.log10(Number(search.total || 0) + 1) * 4);
+        candidate.searchTotal = search.total;
+        candidate.serpTopTitles = search.items.map((item) => item.title).filter(Boolean).slice(0, 5);
+        candidate.verificationScore = Number((searchScore + topTitleHits * 4).toFixed(2));
+        candidate.score = Number((candidate.score + candidate.verificationScore).toFixed(2));
+        candidate.sources.push('naver_search_verified');
+      } catch (err) {
+        hasNaverSearch = false;
+        naverWarning = err.message;
+      }
+    }
+
+    candidates.sort((a, b) => b.score - a.score || (b.searchTotal || 0) - (a.searchTotal || 0));
+
+    res.json({
+      ok: true,
+      topic,
+      platform,
+      category,
+      hasNaverSearch,
+      naverWarning,
+      candidates: candidates.map((candidate) => ({
+        ...candidate,
+        suggestedTitles: generateTitleCandidates({
+          keyword: candidate.keyword,
+          topic,
+          platform,
+          category,
+          analyses,
+        }).slice(0, 3),
+      })),
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

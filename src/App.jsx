@@ -1323,6 +1323,8 @@ function RewritePanel() {
   const [keywordsText, setKeywordsText] = useState('');
   const [targetTopic, setTargetTopic] = useState('');
   const [customTitle, setCustomTitle] = useState('');
+  const [keywordRecommendations, setKeywordRecommendations] = useState(null);
+  const [recommendingKeywords, setRecommendingKeywords] = useState(false);
   const [titleRecommendations, setTitleRecommendations] = useState(null);
   const [recommendingTitle, setRecommendingTitle] = useState(false);
   const [platform, setPlatform] = useState('blog');
@@ -1523,6 +1525,47 @@ function RewritePanel() {
     setMessage('추천 제목을 이번 재각색 작업 제목으로 선택했습니다.');
   };
 
+  const recommendKeywords = async () => {
+    const hasSource = selectedSourceLinkIds.length > 0;
+    const topic = targetTopic || keywordsText;
+    if (!hasSource && !topic.trim()) {
+      setMessage('키워드 추천을 위해 수집 링크를 선택하거나 주제를 입력하세요.');
+      return;
+    }
+    const opsSettings = loadOpsSettings();
+    setRecommendingKeywords(true);
+    setMessage('원문/주제에서 검색 키워드 후보를 검증 중입니다.');
+    const res = await safeFetch(`${API}/keyword-recommendations`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sourceLinkIds: selectedSourceLinkIds,
+        sourceText: keywordsText,
+        topic,
+        platform,
+        category,
+        naverClientId: opsSettings.naverClientId,
+        naverClientSecret: opsSettings.naverClientSecret,
+        limit: 10,
+      }),
+    });
+    setRecommendingKeywords(false);
+    if (res?.ok) {
+      setKeywordRecommendations(res);
+      const suffix = res.hasNaverSearch ? '네이버 검색 API 검증 포함' : '내부 신호 기준';
+      setMessage(`키워드 추천 완료 · ${suffix}`);
+    } else {
+      setKeywordRecommendations(null);
+      setMessage(res?.error || '키워드 추천에 실패했습니다.');
+    }
+  };
+
+  const chooseRecommendedKeyword = (keyword) => {
+    setKeywordsText(keyword);
+    setKeywordRecommendations(null);
+    setMessage(`재각색 키워드를 '${keyword}'로 적용했습니다.`);
+  };
+
   const createRewriteJobs = async () => {
     if (rewriteJobCount === 0) {
       setMessage('재각색할 키워드를 입력하거나 메인키워드가 잡힌 수집완료 링크를 선택해 주세요.');
@@ -1685,6 +1728,29 @@ function RewritePanel() {
                 outline: 'none',
               }}
             />
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 8 }}>
+              <button
+                type="button"
+                onClick={recommendKeywords}
+                disabled={recommendingKeywords}
+                style={{
+                  height: 32,
+                  padding: '0 12px',
+                  borderRadius: 8,
+                  border: 'none',
+                  background: recommendingKeywords ? COLORS.textMuted : COLORS.primary,
+                  color: 'white',
+                  fontSize: 11,
+                  fontWeight: 850,
+                  cursor: recommendingKeywords ? 'wait' : 'pointer',
+                }}
+              >
+                {recommendingKeywords ? '키워드 검증중' : 'AI 키워드 추천'}
+              </button>
+              <span style={{ fontSize: 11, color: COLORS.textMuted, fontWeight: 700 }}>
+                URL 수집글, 원문, 주제에서 2~4어절 검색어를 찾습니다.
+              </span>
+            </div>
             {!keywordsText.trim() && derivedSourceKeywords.length > 0 && (
               <p style={{ marginTop: 6, fontSize: 11, color: COLORS.success, fontWeight: 800 }}>
                 자동 사용 KW: {derivedSourceKeywords.slice(0, 5).join(', ')}{derivedSourceKeywords.length > 5 ? ` 외 ${derivedSourceKeywords.length - 5}개` : ''}
@@ -1773,6 +1839,61 @@ function RewritePanel() {
             </div>
           </div>
         </div>
+
+        {keywordRecommendations?.candidates?.length > 0 && (
+          <div style={{
+            marginTop: 14,
+            padding: 14,
+            border: `1px solid ${COLORS.border}`,
+            borderRadius: 10,
+            background: '#fff',
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, marginBottom: 10, flexWrap: 'wrap' }}>
+              <div>
+                <h3 style={{ fontSize: 14, fontWeight: 900, color: COLORS.primary, marginBottom: 4 }}>AI 키워드 추천</h3>
+                <p style={{ fontSize: 11, color: COLORS.textSecondary, lineHeight: 1.55 }}>
+                  {keywordRecommendations.topic || '선택 소스'} · {keywordRecommendations.hasNaverSearch ? '네이버 검색 API 검증' : '내부 제목/태그/본문 신호 기준'}
+                  {keywordRecommendations.naverWarning ? ` · ${keywordRecommendations.naverWarning}` : ''}
+                </p>
+              </div>
+            </div>
+            <div style={{ display: 'grid', gap: 8 }}>
+              {keywordRecommendations.candidates.slice(0, 6).map((item, index) => (
+                <div key={item.keyword} style={{
+                  display: 'grid',
+                  gridTemplateColumns: '34px minmax(0, 1fr) 86px',
+                  gap: 10,
+                  alignItems: 'center',
+                  padding: 10,
+                  border: `1px solid ${COLORS.border}`,
+                  borderRadius: 9,
+                  background: '#f8fafc',
+                }}>
+                  <div style={{ width: 28, height: 28, borderRadius: 8, background: COLORS.primary, color: 'white', display: 'grid', placeItems: 'center', fontSize: 12, fontWeight: 900 }}>
+                    {index + 1}
+                  </div>
+                  <div style={{ minWidth: 0 }}>
+                    <p style={{ fontSize: 13, fontWeight: 900, color: COLORS.textPrimary, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      {item.keyword}
+                    </p>
+                    <p style={{ marginTop: 3, fontSize: 10, color: COLORS.textMuted, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      점수 {Number(item.score || 0).toFixed(0)}
+                      {item.searchTotal != null ? ` · 검색결과 ${Number(item.searchTotal || 0).toLocaleString()}` : ''}
+                      {item.sources?.length ? ` · ${item.sources.slice(0, 3).join(', ')}` : ''}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => chooseRecommendedKeyword(item.keyword)}
+                    style={{ height: 30, borderRadius: 8, border: 'none', background: COLORS.accent, color: 'white', fontSize: 11, fontWeight: 850, cursor: 'pointer' }}
+                  >
+                    적용
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {titleRecommendations?.candidates?.length > 0 && (
           <div style={{
