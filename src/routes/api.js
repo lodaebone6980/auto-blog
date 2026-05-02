@@ -2745,7 +2745,7 @@ router.get('/collections/links', async (req, res) => {
          FROM rewrite_jobs rj
          WHERE sa.id IS NOT NULL
            AND rj.source_analysis_ids @> jsonb_build_array(sa.id)
-         ORDER BY rj.created_at DESC
+         ORDER BY jsonb_array_length(rj.source_analysis_ids) ASC, rj.created_at DESC
          LIMIT 1
        ) rj ON TRUE
        LEFT JOIN LATERAL (
