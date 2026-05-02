@@ -511,7 +511,11 @@ function inferKeywordCandidates({ title = '', text = '', subheadings = [], keywo
     }
   }
 
-  return [...scores.entries()]
+  const broadSingleTerms = new Set([
+    '신청', '지원', '대상', '방법', '기준', '결과', '링크', '유형', '후기', '예약',
+    '정리', '확인', '비교', '500만원', '지원금', '테스트',
+  ]);
+  const candidates = [...scores.entries()]
     .map(([keyword, score]) => {
       const wordCount = keyword.split(/\s+/).length;
       const compactKeyword = keyword.replace(/\s/g, '');
@@ -524,6 +528,22 @@ function inferKeywordCandidates({ title = '', text = '', subheadings = [], keywo
         contextMatched: contextTerms.some((term) => keyword.includes(term) || term.includes(keyword)),
         titleMatched: compactTitle.includes(compactKeyword),
         sources: [...(sources.get(keyword) || [])],
+      };
+    });
+  const compoundCompacts = candidates
+    .filter((item) => item.wordCount >= 2)
+    .map((item) => item.keyword.replace(/\s/g, '').toLowerCase());
+
+  return candidates
+    .map((item) => {
+      const compactKeyword = item.keyword.replace(/\s/g, '').toLowerCase();
+      const includedInCompound = item.wordCount === 1 && compoundCompacts.some((compound) => compound.includes(compactKeyword));
+      const broadPenalty = broadSingleTerms.has(item.keyword) ? 42 : 0;
+      const compoundPenalty = includedInCompound ? 38 : 0;
+      return {
+        ...item,
+        score: Number((item.score - broadPenalty - compoundPenalty).toFixed(2)),
+        broadSingle: broadSingleTerms.has(item.keyword),
       };
     })
     .filter((item) => (
@@ -3420,9 +3440,21 @@ router.post('/keyword-recommendations', async (req, res) => {
         ...item,
         sources: [...item.sources],
         score: Number(item.score.toFixed(2)),
+        wordCount: item.keyword.split(/\s+/).length,
       }))
       .sort((a, b) => b.score - a.score)
       .slice(0, clampNumber(parseInt(req.body?.limit || '10', 10) || 10, 3, 20));
+    const compoundCompacts = candidates
+      .filter((item) => item.wordCount >= 2)
+      .map((item) => item.keyword.replace(/\s/g, '').toLowerCase());
+    const broadSingleTerms = new Set(['신청', '지원', '대상', '방법', '기준', '결과', '링크', '유형', '후기', '예약', '정리', '확인', '비교', '500만원', '지원금', '테스트', '소상공인']);
+    candidates.forEach((candidate) => {
+      const compact = candidate.keyword.replace(/\s/g, '').toLowerCase();
+      const includedInCompound = candidate.wordCount === 1 && compoundCompacts.some((compound) => compound.includes(compact));
+      if (includedInCompound) candidate.score = Number((candidate.score - 70).toFixed(2));
+      if (broadSingleTerms.has(candidate.keyword)) candidate.score = Number((candidate.score - 45).toFixed(2));
+    });
+    candidates.sort((a, b) => b.score - a.score);
 
     for (const candidate of candidates.slice(0, 8)) {
       if (!credentials || !hasNaverSearch) break;
@@ -3430,7 +3462,8 @@ router.post('/keyword-recommendations', async (req, res) => {
         const search = await fetchNaverSearchResults({ query: candidate.keyword, platform, credentials, display: 5 });
         const compact = candidate.keyword.replace(/\s/g, '').toLowerCase();
         const topTitleHits = search.items.filter((item) => stripHtml(item.title || '').replace(/\s/g, '').toLowerCase().includes(compact)).length;
-        const searchScore = search.total === null ? 0 : Math.min(24, Math.log10(Number(search.total || 0) + 1) * 4);
+        const rawSearchScore = search.total === null ? 0 : Math.min(24, Math.log10(Number(search.total || 0) + 1) * 4);
+        const searchScore = candidate.wordCount <= 1 ? rawSearchScore * 0.25 : rawSearchScore;
         candidate.searchTotal = search.total;
         candidate.serpTopTitles = search.items.map((item) => item.title).filter(Boolean).slice(0, 5);
         candidate.verificationScore = Number((searchScore + topTitleHits * 4).toFixed(2));
