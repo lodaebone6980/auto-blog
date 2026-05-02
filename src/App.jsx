@@ -1333,6 +1333,8 @@ function RewritePanel() {
   const [useNaverQr, setUseNaverQr] = useState(true);
   const [useAiImages, setUseAiImages] = useState(true);
   const [concurrency, setConcurrency] = useState(3);
+  const [publishSpacingMinutes, setPublishSpacingMinutes] = useState(() => Number(localStorage.getItem('naviwrite.rewrite.publishSpacingMinutes') || 120));
+  const [publishActionDelayMinutes, setPublishActionDelayMinutes] = useState(() => Number(localStorage.getItem('naviwrite.rewrite.publishActionDelayMinutes') || 1));
   const [rewriteSettings, setRewriteSettings] = useState(() => {
     try {
       const saved = JSON.parse(localStorage.getItem('naviwrite.rewrite.settings') || 'null') || {};
@@ -1343,6 +1345,8 @@ function RewritePanel() {
   });
   const [loading, setLoading] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [queueing, setQueueing] = useState(false);
+  const [reanalyzingKeywords, setReanalyzingKeywords] = useState(false);
   const [benchmarking, setBenchmarking] = useState(false);
   const [message, setMessage] = useState('');
 
@@ -1390,6 +1394,14 @@ function RewritePanel() {
     localStorage.setItem('naviwrite.rewrite.settings', JSON.stringify(rewriteSettings));
   }, [rewriteSettings]);
 
+  useEffect(() => {
+    localStorage.setItem('naviwrite.rewrite.publishSpacingMinutes', String(publishSpacingMinutes || 120));
+  }, [publishSpacingMinutes]);
+
+  useEffect(() => {
+    localStorage.setItem('naviwrite.rewrite.publishActionDelayMinutes', String(publishActionDelayMinutes || 1));
+  }, [publishActionDelayMinutes]);
+
   const collectedLinks = useMemo(
     () => links.filter((link) => link.status === '수집완료' && link.source_analysis_id),
     [links]
@@ -1398,6 +1410,11 @@ function RewritePanel() {
   const selectedSources = useMemo(
     () => collectedLinks.filter((link) => selectedSourceLinkIds.includes(link.id)),
     [collectedLinks, selectedSourceLinkIds]
+  );
+
+  const selectedRewriteLinks = useMemo(
+    () => selectedSources.filter((link) => link.rewrite_job_id),
+    [selectedSources]
   );
 
   const derivedSourceKeywords = useMemo(
@@ -1618,22 +1635,98 @@ function RewritePanel() {
     }
   };
 
-  const sendToPublishQueue = async (job) => {
-    setMessage(`작업 #${job.id}을 발행 큐로 보내는 중입니다.`);
-    const res = await safeFetch(`${API}/rewrite-jobs/${job.id}/to-content-job`, {
+  const reprocessSelectedJobs = async () => {
+    if (selectedRewriteLinks.length === 0) {
+      setMessage('다시 생성할 재각색 완료 행을 체크해 주세요.');
+      return;
+    }
+    setCreating(true);
+    setMessage(`선택한 ${selectedRewriteLinks.length}개 작업을 다시 생성 중입니다.`);
+    for (const link of selectedRewriteLinks) {
+      await safeFetch(`${API}/rewrite-jobs/${link.rewrite_job_id}/process`, { method: 'POST' });
+    }
+    setCreating(false);
+    setMessage(`선택한 ${selectedRewriteLinks.length}개 작업을 다시 생성했습니다.`);
+    await loadRewriteData();
+  };
+
+  const reanalyzeSelectedMainKeywords = async () => {
+    if (selectedSourceLinkIds.length === 0) {
+      setMessage('메인 키워드를 다시 잡을 수집 링크를 체크해 주세요.');
+      return;
+    }
+    setReanalyzingKeywords(true);
+    setMessage(`선택한 ${selectedSourceLinkIds.length}개 링크의 메인 키워드를 재분석 중입니다.`);
+    let updated = 0;
+    for (const linkId of selectedSourceLinkIds) {
+      const res = await safeFetch(`${API}/collections/links/${linkId}/recommend-main-keyword`, { method: 'POST' });
+      if (res?.ok) updated += 1;
+    }
+    setReanalyzingKeywords(false);
+    setMessage(`메인 키워드 재분석 완료 · ${updated}/${selectedSourceLinkIds.length}개 반영`);
+    await loadRewriteData();
+  };
+
+  const sendRewriteIdsToPublishQueue = async (rewriteJobIds, { autoReady = false } = {}) => {
+    if (!rewriteJobIds.length) {
+      setMessage('발행 큐로 보낼 재각색 완료 행을 체크해 주세요.');
+      return null;
+    }
+    setQueueing(true);
+    setMessage(`${rewriteJobIds.length}개 작업을 ${autoReady ? '자동발행 대기' : '예약 발행 큐'}로 보내는 중입니다.`);
+    const res = await safeFetch(`${API}/rewrite-jobs/to-content-jobs/bulk`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        publishMode: 'draft',
-        rssUrl: '',
+        rewriteJobIds,
+        publishMode: 'scheduled',
+        spacingMinutes: Number(publishSpacingMinutes) || 120,
+        actionDelayMinutes: Number(publishActionDelayMinutes) || 1,
+        autoReady,
       }),
     });
+    setQueueing(false);
     if (res?.ok) {
-      setMessage(`작업 #${job.id}을 발행 큐에 저장했습니다. 발행 큐 메뉴에서 계정과 시간을 확정하세요.`);
+      const firstTime = res.firstScheduledAt ? new Date(res.firstScheduledAt).toLocaleString('ko-KR') : '즉시';
+      setMessage(`${res.created || rewriteJobIds.length}개 작업을 ${autoReady ? '자동발행 대기' : '예약 발행 큐'}로 보냈습니다. 첫 시간: ${firstTime}`);
       await loadRewriteData();
+      return res;
     } else {
       setMessage(res?.error || '발행 큐 저장에 실패했습니다.');
+      return null;
     }
+  };
+
+  const sendToPublishQueue = async (job) => {
+    await sendRewriteIdsToPublishQueue([job.id]);
+  };
+
+  const sendSelectedToPublishQueue = async () => {
+    await sendRewriteIdsToPublishQueue(selectedRewriteLinks.map((link) => link.rewrite_job_id));
+  };
+
+  const queueSelectedForAutoPublish = async () => {
+    const opsSettings = loadOpsSettings();
+    const blogAccounts = Array.isArray(opsSettings.accounts)
+      ? opsSettings.accounts.filter((account) => account.platform === 'blog')
+      : [];
+    if (blogAccounts.length === 0) {
+      setMessage('운영 설정에서 네이버 블로그 계정 슬롯을 먼저 만들고 인증 창에서 로그인 체크를 해주세요.');
+      return;
+    }
+    const res = await sendRewriteIdsToPublishQueue(
+      selectedRewriteLinks.map((link) => link.rewrite_job_id),
+      { autoReady: true }
+    );
+    if (!res?.ok) return;
+    const jobIds = (res.jobs || []).map((job) => job.id);
+    localStorage.setItem('naviwrite.autoPublish.pendingJobIds', JSON.stringify(jobIds));
+    window.postMessage({
+      type: 'NAVIWRITE_AUTO_PUBLISH_WAIT',
+      jobIds,
+      runnerUrl: opsSettings.runnerUrl || 'http://127.0.0.1:39271',
+    }, '*');
+    setMessage(`자동발행 대기 ${jobIds.length}개를 확장프로그램/Runner로 넘겼습니다. 블로그 계정 세션을 먼저 체크해 주세요.`);
   };
 
   const copyBody = async (job) => {
@@ -1711,12 +1804,12 @@ function RewritePanel() {
 
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 14, marginTop: 16 }}>
           <div>
-            <label style={{ display: 'block', fontSize: 11, fontWeight: 800, color: COLORS.textSecondary, marginBottom: 6 }}>재각색 키워드 · 비우면 선택 소스의 수정/자동 KW 사용</label>
+            <label style={{ display: 'block', fontSize: 11, fontWeight: 800, color: COLORS.textSecondary, marginBottom: 6 }}>공통 키워드 override · 보통은 비워두세요</label>
             <textarea
               value={keywordsText}
               onChange={(e) => setKeywordsText(e.target.value)}
-              placeholder={`예: sbti 테스트\n예: 고유가 피해지원금\n비워두면 선택한 수집글의 수정 KW를 우선 사용`}
-              rows={7}
+              placeholder={`행마다 다른 키워드를 쓰려면 비워두세요.\n비워두면 패턴 소스 표의 수정 KW, 없으면 자동 메인키워드로 각 행이 따로 생성됩니다.`}
+              rows={4}
               style={{
                 width: '100%',
                 border: `1px solid ${COLORS.border}`,
@@ -1748,7 +1841,7 @@ function RewritePanel() {
                 {recommendingKeywords ? '키워드 검증중' : 'AI 키워드 추천'}
               </button>
               <span style={{ fontSize: 11, color: COLORS.textMuted, fontWeight: 700 }}>
-                URL 수집글, 원문, 주제에서 2~4어절 검색어를 찾습니다.
+                추천 버튼은 주제형 새 글을 만들 때만 쓰고, 수집 링크 재각색은 표의 행별 수정 KW가 우선입니다.
               </span>
             </div>
             {!keywordsText.trim() && derivedSourceKeywords.length > 0 && (
@@ -2127,6 +2220,60 @@ function RewritePanel() {
           >
             선택 해제
           </button>
+          <button
+            type="button"
+            onClick={reanalyzeSelectedMainKeywords}
+            disabled={selectedSourceLinkIds.length === 0 || reanalyzingKeywords}
+            style={{ height: 30, padding: '0 12px', borderRadius: 8, border: `1px solid ${COLORS.border}`, background: 'white', color: COLORS.primary, fontSize: 11, fontWeight: 850, cursor: selectedSourceLinkIds.length === 0 || reanalyzingKeywords ? 'not-allowed' : 'pointer' }}
+          >
+            {reanalyzingKeywords ? 'KW 재분석중' : '메인 KW 재분석'}
+          </button>
+          <button
+            type="button"
+            onClick={reprocessSelectedJobs}
+            disabled={selectedRewriteLinks.length === 0 || creating}
+            style={{ height: 30, padding: '0 12px', borderRadius: 8, border: `1px solid ${COLORS.border}`, background: 'white', color: COLORS.accent, fontSize: 11, fontWeight: 850, cursor: selectedRewriteLinks.length === 0 || creating ? 'not-allowed' : 'pointer' }}
+          >
+            전체 다시생성
+          </button>
+          <button
+            type="button"
+            onClick={sendSelectedToPublishQueue}
+            disabled={selectedRewriteLinks.length === 0 || queueing}
+            style={{ height: 30, padding: '0 12px', borderRadius: 8, border: 'none', background: selectedRewriteLinks.length === 0 || queueing ? COLORS.textMuted : COLORS.success, color: 'white', fontSize: 11, fontWeight: 850, cursor: selectedRewriteLinks.length === 0 || queueing ? 'not-allowed' : 'pointer' }}
+          >
+            발행큐로 보내기
+          </button>
+          <button
+            type="button"
+            onClick={queueSelectedForAutoPublish}
+            disabled={selectedRewriteLinks.length === 0 || queueing}
+            style={{ height: 30, padding: '0 12px', borderRadius: 8, border: 'none', background: selectedRewriteLinks.length === 0 || queueing ? COLORS.textMuted : COLORS.primary, color: 'white', fontSize: 11, fontWeight: 850, cursor: selectedRewriteLinks.length === 0 || queueing ? 'not-allowed' : 'pointer' }}
+          >
+            자동발행 대기
+          </button>
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 10, color: COLORS.textSecondary, fontWeight: 800 }}>
+            간격(분)
+            <input
+              type="number"
+              min="1"
+              max="1440"
+              value={publishSpacingMinutes}
+              onChange={(e) => setPublishSpacingMinutes(Number(e.target.value) || 120)}
+              style={{ width: 64, height: 30, border: `1px solid ${COLORS.border}`, borderRadius: 7, padding: '0 7px', fontSize: 11, fontWeight: 800 }}
+            />
+          </label>
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 10, color: COLORS.textSecondary, fontWeight: 800 }}>
+            딜레이(분)
+            <input
+              type="number"
+              min="1"
+              max="60"
+              value={publishActionDelayMinutes}
+              onChange={(e) => setPublishActionDelayMinutes(Number(e.target.value) || 1)}
+              style={{ width: 58, height: 30, border: `1px solid ${COLORS.border}`, borderRadius: 7, padding: '0 7px', fontSize: 11, fontWeight: 800 }}
+            />
+          </label>
         </div>
         <div style={{ overflowX: 'auto', maxHeight: 430 }}>
           {loading ? (
@@ -2138,10 +2285,10 @@ function RewritePanel() {
               아직 재각색에 쓸 수집완료 링크가 없습니다.
             </div>
           ) : (
-            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1660 }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1720 }}>
               <thead>
                 <tr style={{ background: '#f8fafc', color: COLORS.textSecondary, fontSize: 11, textAlign: 'left' }}>
-                  {['선택', '블로그/출처', '플랫폼', '메인키워드', '수정 KW', '카테고리', '글자/KW/이미지', '인용구/반복어', '재각색 상태', '발행 상태', 'URL', '작업'].map((head) => (
+                  {['선택', '발행 상태', '재각색 상태', '작업', '블로그/출처', '플랫폼', '메인키워드', '수정 KW', '카테고리', '글자/KW/이미지', '인용구/반복어', 'URL'].map((head) => (
                     <th key={head} style={{ padding: '10px 12px', borderBottom: `1px solid ${COLORS.border}` }}>{head}</th>
                   ))}
                 </tr>
@@ -2156,6 +2303,51 @@ function RewritePanel() {
                         onChange={() => toggleSource(link.id)}
                         aria-label="패턴 소스 선택"
                       />
+                    </td>
+                    <td style={{ padding: '10px 12px', minWidth: 125 }}>
+                      <StatusBadge value={link.publish_status || (link.content_job_id ? '발행 큐' : '-')} />
+                      {link.published_url && (
+                        <a href={link.published_url} target="_blank" rel="noreferrer" style={{ display: 'block', marginTop: 5, maxWidth: 120, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', fontSize: 10 }}>
+                          발행 URL
+                        </a>
+                      )}
+                    </td>
+                    <td style={{ padding: '10px 12px', minWidth: 160 }}>
+                      {link.rewrite_job_id ? (
+                        <>
+                          <StatusBadge value={link.rewrite_status || '대기중'} />
+                          <p style={{ marginTop: 5, maxWidth: 150, fontSize: 10, color: COLORS.textMuted, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                            #{link.rewrite_job_id} {link.rewrite_title || link.rewrite_target_keyword || ''}
+                          </p>
+                          <p style={{ marginTop: 2, fontSize: 10, color: COLORS.textSecondary }}>
+                            {Number(link.rewrite_char_count || 0).toLocaleString()}자 / KW {link.rewrite_kw_count || 0} / 이미지 {link.rewrite_image_count || 0}
+                          </p>
+                        </>
+                      ) : (
+                        <StatusBadge value="미생성" />
+                      )}
+                    </td>
+                    <td style={{ padding: '10px 12px', minWidth: 160 }}>
+                      {link.rewrite_job_id ? (
+                        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                          <button
+                            type="button"
+                            onClick={() => reprocessJob(link.rewrite_job_id)}
+                            style={{ height: 28, padding: '0 9px', borderRadius: 7, border: `1px solid ${COLORS.border}`, background: 'white', color: COLORS.primary, fontSize: 10, fontWeight: 850, cursor: 'pointer' }}
+                          >
+                            다시 생성
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => sendToPublishQueue(jobFromSourceLink(link))}
+                            style={{ height: 28, padding: '0 9px', borderRadius: 7, border: 'none', background: COLORS.success, color: 'white', fontSize: 10, fontWeight: 850, cursor: 'pointer' }}
+                          >
+                            발행 큐
+                          </button>
+                        </div>
+                      ) : (
+                        <span style={{ fontSize: 10, color: COLORS.textMuted, fontWeight: 800 }}>체크 후 생성</span>
+                      )}
                     </td>
                     <td style={{ padding: '10px 12px', maxWidth: 180 }}>
                       <p style={{ fontWeight: 850, color: COLORS.textPrimary, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{link.blog_nickname || link.blog_name || '-'}</p>
@@ -2204,55 +2396,10 @@ function RewritePanel() {
                       <p style={{ fontSize: 10, color: COLORS.textMuted }}>인용구 {parseArray(link.quote_blocks).length}개</p>
                       <p style={{ marginTop: 2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{formatTerms(link.quote_repeated_terms?.length ? link.quote_repeated_terms : link.repeated_terms)}</p>
                     </td>
-                    <td style={{ padding: '10px 12px', minWidth: 160 }}>
-                      {link.rewrite_job_id ? (
-                        <>
-                          <StatusBadge value={link.rewrite_status || '대기중'} />
-                          <p style={{ marginTop: 5, maxWidth: 150, fontSize: 10, color: COLORS.textMuted, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                            #{link.rewrite_job_id} {link.rewrite_title || link.rewrite_target_keyword || ''}
-                          </p>
-                          <p style={{ marginTop: 2, fontSize: 10, color: COLORS.textSecondary }}>
-                            {Number(link.rewrite_char_count || 0).toLocaleString()}자 / KW {link.rewrite_kw_count || 0} / 이미지 {link.rewrite_image_count || 0}
-                          </p>
-                        </>
-                      ) : (
-                        <StatusBadge value="미생성" />
-                      )}
-                    </td>
-                    <td style={{ padding: '10px 12px', minWidth: 125 }}>
-                      <StatusBadge value={link.publish_status || (link.content_job_id ? '발행 큐' : '-')} />
-                      {link.published_url && (
-                        <a href={link.published_url} target="_blank" rel="noreferrer" style={{ display: 'block', marginTop: 5, maxWidth: 120, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', fontSize: 10 }}>
-                          발행 URL
-                        </a>
-                      )}
-                    </td>
                     <td style={{ padding: '10px 12px', maxWidth: 300 }}>
                       <a href={link.url} target="_blank" rel="noreferrer" style={{ display: 'block', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                         {link.url}
                       </a>
-                    </td>
-                    <td style={{ padding: '10px 12px', minWidth: 160 }}>
-                      {link.rewrite_job_id ? (
-                        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                          <button
-                            type="button"
-                            onClick={() => reprocessJob(link.rewrite_job_id)}
-                            style={{ height: 28, padding: '0 9px', borderRadius: 7, border: `1px solid ${COLORS.border}`, background: 'white', color: COLORS.primary, fontSize: 10, fontWeight: 850, cursor: 'pointer' }}
-                          >
-                            다시 생성
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => sendToPublishQueue(jobFromSourceLink(link))}
-                            style={{ height: 28, padding: '0 9px', borderRadius: 7, border: 'none', background: COLORS.success, color: 'white', fontSize: 10, fontWeight: 850, cursor: 'pointer' }}
-                          >
-                            발행 큐
-                          </button>
-                        </div>
-                      ) : (
-                        <span style={{ fontSize: 10, color: COLORS.textMuted, fontWeight: 800 }}>체크 후 생성</span>
-                      )}
                     </td>
                   </tr>
                 ))}

@@ -2109,7 +2109,7 @@ function normalizePublishMode(value = '') {
 
 function normalizePublishStatus(value = '') {
   const status = String(value || '').trim();
-  const allowed = new Set(['초안대기', '발행대기', '예약대기', '발행중', '발행완료', 'RSS확인완료', '성과추적중', '오류']);
+  const allowed = new Set(['초안대기', '자동발행대기', '발행대기', '예약대기', '발행중', '발행완료', 'RSS확인완료', '성과추적중', '오류']);
   return allowed.has(status) ? status : '초안대기';
 }
 
@@ -2181,9 +2181,9 @@ function normalizeJobInput(body = {}) {
     publish_mode: publishMode,
     scheduled_at: normalizeOptionalDate(body.scheduled_at || body.scheduledAt),
     publish_status: normalizePublishStatus(publishStatus),
-    action_delay_min_seconds: normalizeDelaySeconds(body.action_delay_min_seconds ?? body.actionDelayMinSeconds, 1, 0, 30),
-    action_delay_max_seconds: normalizeDelaySeconds(body.action_delay_max_seconds ?? body.actionDelayMaxSeconds, 3, 1, 60),
-    between_posts_delay_minutes: normalizeDelaySeconds(body.between_posts_delay_minutes ?? body.betweenPostsDelayMinutes, 45, 1, 240),
+    action_delay_min_seconds: normalizeDelaySeconds(body.action_delay_min_seconds ?? body.actionDelayMinSeconds, 60, 0, 600),
+    action_delay_max_seconds: normalizeDelaySeconds(body.action_delay_max_seconds ?? body.actionDelayMaxSeconds, 60, 1, 600),
+    between_posts_delay_minutes: normalizeDelaySeconds(body.between_posts_delay_minutes ?? body.betweenPostsDelayMinutes, 120, 1, 1440),
     rss_url: normalizeRssUrl(body.rss_url || body.rssUrl),
     rss_match_status: body.rss_match_status || body.rssMatchStatus || null,
     rss_match_score: body.rss_match_score ?? body.rssMatchScore ?? 0,
@@ -2378,6 +2378,93 @@ async function addJobEvent(jobId, eventType, message, payload = {}) {
      VALUES ($1, $2, $3, $4)`,
     [jobId, eventType, message, payload]
   );
+}
+
+async function buildAutoPublishSlots({ tenantId, count, spacingMinutes = 120 }) {
+  const spacingMs = clampNumber(parseInt(spacingMinutes, 10) || 120, 1, 1440) * 60 * 1000;
+  const now = new Date();
+  const latest = await pool.query(
+    `SELECT scheduled_at
+     FROM content_jobs
+     WHERE COALESCE(tenant_id, 'owner') = $1
+       AND publish_mode = 'scheduled'
+       AND publish_status IN ('자동발행대기', '발행대기', '예약대기', '발행중')
+       AND scheduled_at IS NOT NULL
+     ORDER BY scheduled_at DESC
+     LIMIT 1`,
+    [tenantId]
+  );
+  const lastScheduledAt = latest.rows[0]?.scheduled_at ? new Date(latest.rows[0].scheduled_at) : null;
+  const startAt = lastScheduledAt
+    && lastScheduledAt.getTime() > now.getTime()
+    && lastScheduledAt.getTime() - now.getTime() <= spacingMs
+    ? new Date(lastScheduledAt.getTime() + spacingMs)
+    : now;
+
+  return Array.from({ length: count }, (_, index) => new Date(startAt.getTime() + index * spacingMs).toISOString());
+}
+
+async function createContentJobFromRewrite({ tenantId, rewriteJob, body = {} }) {
+  const input = normalizeJobInput({
+    ...body,
+    tenantId,
+    rewriteJobId: rewriteJob.id,
+    keyword: rewriteJob.target_keyword,
+    category: rewriteJob.category,
+    platform: rewriteJob.platform,
+    ctaUrl: rewriteJob.cta_url,
+    qrTargetUrl: rewriteJob.cta_url,
+    title: rewriteJob.title,
+    body: rewriteJob.body,
+    plainText: rewriteJob.plain_text,
+    charCount: rewriteJob.char_count,
+    kwCount: rewriteJob.kw_count,
+    imageCount: rewriteJob.image_count,
+    scores: {
+      seo: rewriteJob.seo_score,
+      geo: rewriteJob.geo_score,
+      aeo: rewriteJob.aeo_score,
+      total: rewriteJob.total_score,
+    },
+    qrStatus: rewriteJob.use_naver_qr ? 'QR 생성 필요' : 'QR 미사용',
+    generationStatus: '본문 생성 완료',
+    publishMode: body.publishMode || body.publish_mode || 'scheduled',
+    publishStatus: body.publishStatus || body.publish_status || '예약대기',
+    rssUrl: body.rssUrl || body.rss_url || null,
+    obsidianExportStatus: '관리자전용',
+  });
+  const qrName = makeNaverQrName(input.keyword, input.campaign_name || 'rewrite');
+  const { rows } = await pool.query(
+    `INSERT INTO content_jobs (
+       tenant_id, rewrite_job_id, keyword, category, platform, cta_url, qr_target_url,
+       title, body, plain_text, char_count, kw_count, image_count,
+       seo_score, geo_score, aeo_score, total_score,
+       naver_qr_name, qr_status, generation_status, editor_status,
+       publish_mode, scheduled_at, publish_status, publish_account_id,
+       publish_account_label, publish_account_platform, action_delay_min_seconds,
+       action_delay_max_seconds, between_posts_delay_minutes, rss_url, obsidian_export_status
+     )
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32)
+     RETURNING *`,
+    [
+      input.tenant_id, input.rewrite_job_id, input.keyword, input.category, input.platform,
+      input.cta_url, input.qr_target_url, input.title, input.body, input.plain_text,
+      input.char_count, input.kw_count, input.image_count, input.seo_score, input.geo_score,
+      input.aeo_score, input.total_score, qrName, input.qr_status, input.generation_status,
+      input.editor_status, input.publish_mode, input.scheduled_at, input.publish_status,
+      input.publish_account_id, input.publish_account_label, input.publish_account_platform,
+      input.action_delay_min_seconds, input.action_delay_max_seconds, input.between_posts_delay_minutes,
+      input.rss_url, input.obsidian_export_status,
+    ]
+  );
+  const images = await saveGeneratedImagesForContentJob({ tenantId, contentJobId: rows[0].id, rewriteJob });
+  await addJobEvent(rows[0].id, 'publish_queue_created', '재각색 작업을 발행 큐로 보냈습니다', {
+    rewriteJobId: rewriteJob.id,
+    imageCount: images.length,
+    scheduledAt: input.scheduled_at,
+    publishStatus: input.publish_status,
+  });
+  return { job: rows[0], images };
 }
 
 async function syncJobToGoogleSheet(job) {
@@ -2949,12 +3036,84 @@ router.patch('/collections/links/:id/main-keyword', async (req, res) => {
       `UPDATE source_analyses
        SET corrected_main_keyword = $2,
            keyword = $3,
+           main_keyword = COALESCE($3, main_keyword),
            kw_count = $4
        WHERE id = $1
        RETURNING id, main_keyword, corrected_main_keyword, keyword, kw_count`,
       [row.source_analysis_id, correctedMainKeyword || null, effectiveKeyword || null, kwCount]
     );
     res.json({ ok: true, analysis: rows[0] });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/collections/links/:id/recommend-main-keyword', async (req, res) => {
+  try {
+    const current = await pool.query(
+      `SELECT sl.id, sl.url, sl.source_analysis_id,
+              sa.plain_text, sa.title, sa.keyword_candidates, sa.main_keyword, sa.keyword,
+              sa.category_guess, sa.platform_guess
+       FROM source_links sl
+       LEFT JOIN source_analyses sa ON sa.id = sl.source_analysis_id
+       WHERE sl.id = $1`,
+      [req.params.id]
+    );
+    if (current.rows.length === 0) return res.status(404).json({ error: 'Source link not found' });
+    const row = current.rows[0];
+    if (!row.source_analysis_id) return res.status(400).json({ error: '수집완료 된 분석만 재분석할 수 있습니다' });
+
+    let analysis = null;
+    let fetchStatus = 'saved_only';
+    let errorMessage = null;
+    try {
+      const html = await fetchSourceHtml(row.url);
+      const mobileHtml = await fetchNaverMobileHtml(row.url);
+      const blogHomeHtml = await fetchNaverBlogHomeHtml(row.url);
+      analysis = buildSourceAnalysis({
+        sourceUrl: row.url,
+        html,
+        mobileHtml,
+        blogHomeHtml,
+        category: row.category_guess,
+        platform: row.platform_guess,
+        fetchStatus: 'refetched',
+      });
+      fetchStatus = 'refetched';
+    } catch (err) {
+      errorMessage = err.message;
+    }
+
+    const savedCandidates = parseJsonArray(row.keyword_candidates);
+    const candidates = analysis?.keywordCandidates?.length ? analysis.keywordCandidates : savedCandidates;
+    const recommendedKeyword = normalizeKeywordValue(
+      candidates[0]?.keyword || candidates[0]?.term || row.main_keyword || row.keyword || ''
+    );
+    if (!recommendedKeyword) return res.status(400).json({ error: '추천할 메인 키워드를 찾지 못했습니다' });
+
+    const plainText = analysis?.plainText || row.plain_text || '';
+    const kwCount = countKeywordInText(plainText, recommendedKeyword);
+    const { rows } = await pool.query(
+      `UPDATE source_analyses
+       SET corrected_main_keyword = $2,
+           keyword = $2,
+           main_keyword = $2,
+           kw_count = $3,
+           keyword_candidates = COALESCE($4, keyword_candidates),
+           fetch_status = COALESCE($5, fetch_status),
+           error_message = COALESCE($6, error_message)
+       WHERE id = $1
+       RETURNING id, main_keyword, corrected_main_keyword, keyword, kw_count, keyword_candidates`,
+      [
+        row.source_analysis_id,
+        recommendedKeyword,
+        kwCount,
+        candidates.length ? JSON.stringify(candidates) : null,
+        fetchStatus,
+        errorMessage,
+      ]
+    );
+    res.json({ ok: true, recommendedKeyword, candidates, analysis: rows[0] });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -3812,63 +3971,73 @@ router.post('/rewrite-jobs/:id/to-content-job', async (req, res) => {
     const rewrite = await pool.query('SELECT * FROM rewrite_jobs WHERE id = $1', [req.params.id]);
     if (rewrite.rows.length === 0) return res.status(404).json({ error: 'Rewrite job not found' });
     const rewriteJob = rewrite.rows[0];
-    const input = normalizeJobInput({
-      ...req.body,
+    const scheduledAt = req.body?.scheduledAt || req.body?.scheduled_at || (await buildAutoPublishSlots({ tenantId, count: 1, spacingMinutes: req.body?.spacingMinutes || req.body?.betweenPostsDelayMinutes || 120 }))[0];
+    const result = await createContentJobFromRewrite({
       tenantId,
-      rewriteJobId: rewriteJob.id,
-      keyword: rewriteJob.target_keyword,
-      category: rewriteJob.category,
-      platform: rewriteJob.platform,
-      ctaUrl: rewriteJob.cta_url,
-      qrTargetUrl: rewriteJob.cta_url,
-      title: rewriteJob.title,
-      body: rewriteJob.body,
-      plainText: rewriteJob.plain_text,
-      charCount: rewriteJob.char_count,
-      kwCount: rewriteJob.kw_count,
-      imageCount: rewriteJob.image_count,
-      scores: {
-        seo: rewriteJob.seo_score,
-        geo: rewriteJob.geo_score,
-        aeo: rewriteJob.aeo_score,
-        total: rewriteJob.total_score,
+      rewriteJob,
+      body: {
+        ...req.body,
+        publishMode: req.body?.publishMode || req.body?.publish_mode || 'scheduled',
+        publishStatus: req.body?.publishStatus || req.body?.publish_status || '예약대기',
+        scheduledAt,
       },
-      qrStatus: rewriteJob.use_naver_qr ? 'QR 생성 필요' : 'QR 미사용',
-      generationStatus: '본문 생성 완료',
-      publishMode: req.body?.publishMode || req.body?.publish_mode || 'draft',
-      rssUrl: req.body?.rssUrl || req.body?.rss_url || null,
-      obsidianExportStatus: '관리자전용',
     });
-    const qrName = makeNaverQrName(input.keyword, input.campaign_name || 'rewrite');
-    const { rows } = await pool.query(
-      `INSERT INTO content_jobs (
-         tenant_id, rewrite_job_id, keyword, category, platform, cta_url, qr_target_url,
-         title, body, plain_text, char_count, kw_count, image_count,
-         seo_score, geo_score, aeo_score, total_score,
-         naver_qr_name, qr_status, generation_status, editor_status,
-         publish_mode, scheduled_at, publish_status, publish_account_id,
-         publish_account_label, publish_account_platform, action_delay_min_seconds,
-         action_delay_max_seconds, between_posts_delay_minutes, rss_url, obsidian_export_status
-       )
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32)
-       RETURNING *`,
-      [
-        input.tenant_id, input.rewrite_job_id, input.keyword, input.category, input.platform,
-        input.cta_url, input.qr_target_url, input.title, input.body, input.plain_text,
-        input.char_count, input.kw_count, input.image_count, input.seo_score, input.geo_score,
-        input.aeo_score, input.total_score, qrName, input.qr_status, input.generation_status,
-        input.editor_status, input.publish_mode, input.scheduled_at, input.publish_status,
-        input.publish_account_id, input.publish_account_label, input.publish_account_platform,
-        input.action_delay_min_seconds, input.action_delay_max_seconds, input.between_posts_delay_minutes,
-        input.rss_url, input.obsidian_export_status,
-      ]
+    res.json({ ok: true, job: result.job, images: result.images });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/rewrite-jobs/to-content-jobs/bulk', async (req, res) => {
+  try {
+    const tenantId = tenantIdFromReq(req);
+    const body = req.body || {};
+    const rewriteJobIds = Array.isArray(body.rewriteJobIds)
+      ? body.rewriteJobIds.map((id) => parseInt(id, 10)).filter(Boolean)
+      : [];
+    if (rewriteJobIds.length === 0) return res.status(400).json({ error: 'rewriteJobIds is required' });
+
+    const spacingMinutes = clampNumber(parseInt(body.spacingMinutes || body.betweenPostsDelayMinutes || 120, 10) || 120, 1, 1440);
+    const actionDelayMinutes = clampNumber(parseInt(body.actionDelayMinutes || 1, 10) || 1, 1, 60);
+    const publishStatus = body.autoReady ? '자동발행대기' : '예약대기';
+    const slots = await buildAutoPublishSlots({ tenantId, count: rewriteJobIds.length, spacingMinutes });
+    const { rows: rewrites } = await pool.query(
+      `SELECT *
+       FROM rewrite_jobs
+       WHERE id = ANY($1::int[])
+       ORDER BY array_position($1::int[], id)`,
+      [rewriteJobIds]
     );
-    const images = await saveGeneratedImagesForContentJob({ tenantId, contentJobId: rows[0].id, rewriteJob });
-    await addJobEvent(rows[0].id, 'publish_queue_created', '재각색 작업을 발행 큐로 보냈습니다', {
-      rewriteJobId: rewriteJob.id,
-      imageCount: images.length,
+    if (rewrites.length === 0) return res.status(404).json({ error: 'Rewrite jobs not found' });
+
+    const created = [];
+    for (let index = 0; index < rewrites.length; index += 1) {
+      const rewriteJob = rewrites[index];
+      const result = await createContentJobFromRewrite({
+        tenantId,
+        rewriteJob,
+        body: {
+          ...body,
+          publishMode: 'scheduled',
+          publishStatus,
+          scheduledAt: slots[index],
+          actionDelayMinSeconds: actionDelayMinutes * 60,
+          actionDelayMaxSeconds: actionDelayMinutes * 60,
+          betweenPostsDelayMinutes: spacingMinutes,
+        },
+      });
+      created.push({ ...result.job, generated_image_count: result.images.length });
+    }
+
+    res.json({
+      ok: true,
+      created: created.length,
+      jobs: created,
+      spacingMinutes,
+      actionDelayMinutes,
+      publishStatus,
+      firstScheduledAt: created[0]?.scheduled_at || null,
     });
-    res.json({ ok: true, job: rows[0], images });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -3908,9 +4077,10 @@ router.get('/publish-queue', async (req, res) => {
        ORDER BY
          CASE cj.publish_status
            WHEN '발행중' THEN 1
-           WHEN '발행대기' THEN 2
-           WHEN '예약대기' THEN 3
-           WHEN '초안대기' THEN 4
+           WHEN '자동발행대기' THEN 2
+           WHEN '발행대기' THEN 3
+           WHEN '예약대기' THEN 4
+           WHEN '초안대기' THEN 5
            ELSE 9
          END,
          cj.scheduled_at NULLS LAST,
