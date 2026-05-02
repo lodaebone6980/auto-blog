@@ -533,16 +533,22 @@ function inferKeywordCandidates({ title = '', text = '', subheadings = [], keywo
   const compoundCompacts = candidates
     .filter((item) => item.wordCount >= 2)
     .map((item) => item.keyword.replace(/\s/g, '').toLowerCase());
+  const actionTerms = ['신청', '방법', '대상', '조건', '지급일', '링크', '예약', '결과', '유형'];
+  const signalActionCompounds = candidates
+    .filter((item) => item.wordCount >= 2 && item.sources.some((sourceName) => /naver|signal/i.test(sourceName)) && actionTerms.some((term) => item.keyword.includes(term)))
+    .map((item) => item.keyword.replace(/\s/g, '').toLowerCase());
 
   return candidates
     .map((item) => {
       const compactKeyword = item.keyword.replace(/\s/g, '').toLowerCase();
       const includedInCompound = item.wordCount === 1 && compoundCompacts.some((compound) => compound.includes(compactKeyword));
+      const shorterThanSignalAction = item.wordCount < 3 && signalActionCompounds.some((compound) => compound !== compactKeyword && compound.includes(compactKeyword));
+      const actionBoost = item.wordCount >= 2 && actionTerms.some((term) => item.keyword.includes(term)) ? 16 : 0;
       const broadPenalty = broadSingleTerms.has(item.keyword) ? 42 : 0;
       const compoundPenalty = includedInCompound ? 38 : 0;
       return {
         ...item,
-        score: Number((item.score - broadPenalty - compoundPenalty).toFixed(2)),
+        score: Number((item.score + actionBoost - broadPenalty - compoundPenalty - (shorterThanSignalAction ? 26 : 0)).toFixed(2)),
         broadSingle: broadSingleTerms.has(item.keyword),
       };
     })
@@ -3474,6 +3480,20 @@ router.post('/keyword-recommendations', async (req, res) => {
         naverWarning = err.message;
       }
     }
+
+    const actionTerms = ['신청', '방법', '대상', '조건', '지급일', '링크', '예약', '결과', '유형'];
+    const signalActionCompounds = candidates
+      .filter((item) => item.wordCount >= 2 && item.sources.some((sourceName) => /naver|signal/i.test(sourceName)) && actionTerms.some((term) => item.keyword.includes(term)))
+      .map((item) => item.keyword.replace(/\s/g, '').toLowerCase());
+    candidates.forEach((candidate) => {
+      const compact = candidate.keyword.replace(/\s/g, '').toLowerCase();
+      const hasAction = actionTerms.some((term) => candidate.keyword.includes(term));
+      const fromNaverSignal = candidate.sources.some((sourceName) => /naver_tag|naver_recommendation/i.test(sourceName));
+      const shorterThanSignalAction = candidate.wordCount < 3 && signalActionCompounds.some((compound) => compound !== compact && compound.includes(compact));
+      if (hasAction && candidate.wordCount >= 2) candidate.score = Number((candidate.score + 18).toFixed(2));
+      if (fromNaverSignal) candidate.score = Number((candidate.score + 18).toFixed(2));
+      if (shorterThanSignalAction) candidate.score = Number((candidate.score - 34).toFixed(2));
+    });
 
     candidates.sort((a, b) => b.score - a.score || (b.searchTotal || 0) - (a.searchTotal || 0));
 
