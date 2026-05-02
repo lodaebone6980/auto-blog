@@ -4044,6 +4044,46 @@ router.post('/rewrite-jobs/to-content-jobs/bulk', async (req, res) => {
 });
 
 // --- Publish Queue (rewrite -> editor -> RSS confirmation -> owner Obsidian export) ---
+router.post('/publish-queue/claim-next', async (req, res) => {
+  try {
+    const tenantId = tenantIdFromReq(req);
+    const platform = req.body?.platform || null;
+    const publishAccountId = req.body?.publishAccountId || req.body?.publish_account_id || null;
+    const publishAccountLabel = req.body?.publishAccountLabel || req.body?.publish_account_label || null;
+    const { rows } = await pool.query(
+      `WITH next_job AS (
+         SELECT id
+         FROM content_jobs
+         WHERE COALESCE(tenant_id, 'owner') = $1
+           AND publish_status IN ('자동발행대기', '발행대기', '예약대기')
+           AND (scheduled_at IS NULL OR scheduled_at <= NOW())
+           AND ($2::text IS NULL OR platform = $2 OR publish_account_platform = $2)
+         ORDER BY scheduled_at NULLS FIRST, created_at ASC
+         LIMIT 1
+         FOR UPDATE SKIP LOCKED
+       )
+       UPDATE content_jobs cj
+       SET publish_status = '발행중',
+           publish_account_id = COALESCE($3, publish_account_id),
+           publish_account_label = COALESCE($4, publish_account_label),
+           updated_at = NOW()
+       FROM next_job
+       WHERE cj.id = next_job.id
+       RETURNING cj.*`,
+      [tenantId, platform, publishAccountId, publishAccountLabel]
+    );
+    if (rows.length === 0) return res.json({ ok: true, job: null });
+    await addJobEvent(rows[0].id, 'publish_claimed', '자동발행 Runner가 작업을 점유했습니다', {
+      platform,
+      publishAccountId,
+      publishAccountLabel,
+    });
+    res.json({ ok: true, job: rows[0] });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.get('/publish-queue', async (req, res) => {
   try {
     const tenantId = tenantIdFromReq(req);
