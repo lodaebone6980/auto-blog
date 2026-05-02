@@ -391,6 +391,9 @@ export async function initDB() {
       -- Content Jobs (generated drafts + QR + sheet sync)
       CREATE TABLE IF NOT EXISTS content_jobs (
         id SERIAL PRIMARY KEY,
+        tenant_id TEXT DEFAULT 'owner',
+        created_by_user_id TEXT,
+        rewrite_job_id INTEGER REFERENCES rewrite_jobs(id) ON DELETE SET NULL,
         keyword TEXT NOT NULL,
         category TEXT DEFAULT 'general',
         platform TEXT DEFAULT 'blog',
@@ -420,16 +423,113 @@ export async function initDB() {
         sheet_synced_at TIMESTAMPTZ,
         notion_url TEXT,
         notion_exported_at TIMESTAMPTZ,
+        publish_mode TEXT DEFAULT 'draft',
+        scheduled_at TIMESTAMPTZ,
+        publish_status TEXT DEFAULT '초안대기',
+        publish_account_platform TEXT,
+        action_delay_min_seconds INTEGER DEFAULT 1,
+        action_delay_max_seconds INTEGER DEFAULT 3,
+        between_posts_delay_minutes INTEGER DEFAULT 45,
+        rss_url TEXT,
+        rss_checked_at TIMESTAMPTZ,
+        rss_match_status TEXT,
+        rss_match_score REAL DEFAULT 0,
+        rss_item_title TEXT,
+        rss_item_published_at TIMESTAMPTZ,
+        published_url TEXT,
+        published_at TIMESTAMPTZ,
+        obsidian_export_status TEXT DEFAULT '관리자전용',
         error_message TEXT,
         created_at TIMESTAMPTZ DEFAULT NOW(),
         updated_at TIMESTAMPTZ DEFAULT NOW()
       );
 
+      CREATE TABLE IF NOT EXISTS app_tenants (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        owner_email TEXT,
+        is_owner BOOLEAN DEFAULT FALSE,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );
+
+      INSERT INTO app_tenants (id, name, is_owner)
+      VALUES ('owner', 'NaviWrite Owner', TRUE)
+      ON CONFLICT (id) DO NOTHING;
+
+      CREATE TABLE IF NOT EXISTS generated_images (
+        id SERIAL PRIMARY KEY,
+        tenant_id TEXT DEFAULT 'owner',
+        content_job_id INTEGER REFERENCES content_jobs(id) ON DELETE CASCADE,
+        rewrite_job_id INTEGER REFERENCES rewrite_jobs(id) ON DELETE SET NULL,
+        image_type TEXT DEFAULT 'section',
+        section_no INTEGER DEFAULT 0,
+        prompt TEXT,
+        storage_provider TEXT DEFAULT 'data-url',
+        file_path TEXT,
+        public_url TEXT,
+        data_url TEXT,
+        naver_image_url TEXT,
+        width INTEGER DEFAULT 500,
+        height INTEGER DEFAULT 500,
+        status TEXT DEFAULT '생성완료',
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        uploaded_at TIMESTAMPTZ
+      );
+
+      CREATE TABLE IF NOT EXISTS published_post_metrics (
+        id SERIAL PRIMARY KEY,
+        tenant_id TEXT DEFAULT 'owner',
+        content_job_id INTEGER REFERENCES content_jobs(id) ON DELETE CASCADE,
+        published_url TEXT NOT NULL,
+        metric_date DATE DEFAULT CURRENT_DATE,
+        view_count INTEGER,
+        like_count INTEGER,
+        comment_count INTEGER,
+        scrap_count INTEGER,
+        rank_keyword TEXT,
+        rank_position INTEGER,
+        source TEXT DEFAULT 'runner',
+        checked_at TIMESTAMPTZ DEFAULT NOW(),
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+
+      CREATE TABLE IF NOT EXISTS obsidian_exports (
+        id SERIAL PRIMARY KEY,
+        tenant_id TEXT DEFAULT 'owner',
+        content_job_id INTEGER REFERENCES content_jobs(id) ON DELETE CASCADE,
+        export_scope TEXT DEFAULT 'owner-only',
+        vault_hint TEXT,
+        markdown_title TEXT,
+        markdown_body TEXT,
+        file_path TEXT,
+        exported_at TIMESTAMPTZ DEFAULT NOW()
+      );
+
+      ALTER TABLE content_jobs ADD COLUMN IF NOT EXISTS tenant_id TEXT DEFAULT 'owner';
+      ALTER TABLE content_jobs ADD COLUMN IF NOT EXISTS created_by_user_id TEXT;
+      ALTER TABLE content_jobs ADD COLUMN IF NOT EXISTS rewrite_job_id INTEGER;
       ALTER TABLE content_jobs ADD COLUMN IF NOT EXISTS source_analysis_id INTEGER;
       ALTER TABLE content_jobs ADD COLUMN IF NOT EXISTS publish_account_id TEXT;
       ALTER TABLE content_jobs ADD COLUMN IF NOT EXISTS publish_account_label TEXT;
       ALTER TABLE content_jobs ADD COLUMN IF NOT EXISTS learning_status TEXT DEFAULT '학습 필요';
       ALTER TABLE content_jobs ADD COLUMN IF NOT EXISTS login_status TEXT DEFAULT '계정 확인 필요';
+      ALTER TABLE content_jobs ADD COLUMN IF NOT EXISTS publish_mode TEXT DEFAULT 'draft';
+      ALTER TABLE content_jobs ADD COLUMN IF NOT EXISTS scheduled_at TIMESTAMPTZ;
+      ALTER TABLE content_jobs ADD COLUMN IF NOT EXISTS publish_status TEXT DEFAULT '초안대기';
+      ALTER TABLE content_jobs ADD COLUMN IF NOT EXISTS publish_account_platform TEXT;
+      ALTER TABLE content_jobs ADD COLUMN IF NOT EXISTS action_delay_min_seconds INTEGER DEFAULT 1;
+      ALTER TABLE content_jobs ADD COLUMN IF NOT EXISTS action_delay_max_seconds INTEGER DEFAULT 3;
+      ALTER TABLE content_jobs ADD COLUMN IF NOT EXISTS between_posts_delay_minutes INTEGER DEFAULT 45;
+      ALTER TABLE content_jobs ADD COLUMN IF NOT EXISTS rss_url TEXT;
+      ALTER TABLE content_jobs ADD COLUMN IF NOT EXISTS rss_checked_at TIMESTAMPTZ;
+      ALTER TABLE content_jobs ADD COLUMN IF NOT EXISTS rss_match_status TEXT;
+      ALTER TABLE content_jobs ADD COLUMN IF NOT EXISTS rss_match_score REAL DEFAULT 0;
+      ALTER TABLE content_jobs ADD COLUMN IF NOT EXISTS rss_item_title TEXT;
+      ALTER TABLE content_jobs ADD COLUMN IF NOT EXISTS rss_item_published_at TIMESTAMPTZ;
+      ALTER TABLE content_jobs ADD COLUMN IF NOT EXISTS published_url TEXT;
+      ALTER TABLE content_jobs ADD COLUMN IF NOT EXISTS published_at TIMESTAMPTZ;
+      ALTER TABLE content_jobs ADD COLUMN IF NOT EXISTS obsidian_export_status TEXT DEFAULT '관리자전용';
 
       -- Content Job Event Log
       CREATE TABLE IF NOT EXISTS content_job_events (
@@ -447,6 +547,10 @@ export async function initDB() {
       CREATE INDEX IF NOT EXISTS idx_views_post_id ON view_records(post_id);
       CREATE INDEX IF NOT EXISTS idx_feedbacks_post_id ON feedbacks(post_id);
       CREATE INDEX IF NOT EXISTS idx_content_jobs_created_at ON content_jobs(created_at);
+      CREATE INDEX IF NOT EXISTS idx_content_jobs_tenant ON content_jobs(tenant_id);
+      CREATE INDEX IF NOT EXISTS idx_content_jobs_publish_status ON content_jobs(publish_status);
+      CREATE INDEX IF NOT EXISTS idx_content_jobs_scheduled_at ON content_jobs(scheduled_at);
+      CREATE INDEX IF NOT EXISTS idx_content_jobs_published_url ON content_jobs(published_url);
       CREATE INDEX IF NOT EXISTS idx_content_jobs_keyword ON content_jobs(keyword);
       CREATE INDEX IF NOT EXISTS idx_content_jobs_qr_status ON content_jobs(qr_status);
       CREATE INDEX IF NOT EXISTS idx_content_jobs_sheet_sync_status ON content_jobs(sheet_sync_status);
@@ -469,6 +573,12 @@ export async function initDB() {
       CREATE INDEX IF NOT EXISTS idx_rewrite_jobs_status ON rewrite_jobs(status);
       CREATE INDEX IF NOT EXISTS idx_rewrite_jobs_keyword ON rewrite_jobs(target_keyword);
       CREATE INDEX IF NOT EXISTS idx_rewrite_job_events_job_id ON rewrite_job_events(rewrite_job_id);
+      CREATE INDEX IF NOT EXISTS idx_generated_images_job ON generated_images(content_job_id);
+      CREATE INDEX IF NOT EXISTS idx_generated_images_tenant ON generated_images(tenant_id);
+      CREATE INDEX IF NOT EXISTS idx_published_post_metrics_job_date ON published_post_metrics(content_job_id, metric_date DESC);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_published_post_metrics_unique_daily
+        ON published_post_metrics(content_job_id, metric_date, COALESCE(rank_keyword, ''));
+      CREATE INDEX IF NOT EXISTS idx_obsidian_exports_job ON obsidian_exports(content_job_id);
     `);
     console.log('[DB] Tables initialized successfully');
   } finally {

@@ -7,6 +7,7 @@ const JOB_STATUSES = new Set([
   '대기중',
   '본문 생성 완료',
   'QR 생성 필요',
+  'QR 미사용',
   'QR 생성 완료',
   '에디터 삽입 완료',
   '검수 필요',
@@ -1871,13 +1872,58 @@ async function collectSourceLinkOnServer(link) {
   }
 }
 
+function normalizeTenantId(value = '') {
+  return String(value || 'owner').trim().replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 48) || 'owner';
+}
+
+function tenantIdFromReq(req) {
+  return normalizeTenantId(req.headers['x-naviwrite-tenant'] || req.query.tenantId || req.body?.tenantId || 'owner');
+}
+
+function normalizePublishMode(value = '') {
+  const mode = String(value || '').toLowerCase();
+  if (['now', 'immediate', '즉시발행'].includes(mode)) return 'immediate';
+  if (['scheduled', '예약발행'].includes(mode)) return 'scheduled';
+  return 'draft';
+}
+
+function normalizePublishStatus(value = '') {
+  const status = String(value || '').trim();
+  const allowed = new Set(['초안대기', '발행대기', '예약대기', '발행중', '발행완료', 'RSS확인완료', '성과추적중', '오류']);
+  return allowed.has(status) ? status : '초안대기';
+}
+
+function normalizeOptionalDate(value) {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+function normalizeDelaySeconds(value, fallback, min, max) {
+  return clampNumber(parseInt(value, 10) || fallback, min, max);
+}
+
+function normalizeRssUrl(value = '') {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+  if (/^https?:\/\//i.test(raw)) return raw;
+  const blogId = raw.replace(/[^a-zA-Z0-9_-]/g, '');
+  return blogId ? `https://rss.blog.naver.com/${blogId}.xml` : null;
+}
+
 function normalizeJobInput(body = {}) {
   const scores = body.scores || {};
   const qrStatus = body.qr_status || body.qrStatus || 'QR 생성 필요';
   const generationStatus = body.generation_status || body.generationStatus || '대기중';
   const editorStatus = body.editor_status || body.editorStatus || '검수 필요';
+  const publishMode = normalizePublishMode(body.publish_mode || body.publishMode);
+  const publishStatus = body.publish_status || body.publishStatus
+    || (publishMode === 'scheduled' ? '예약대기' : publishMode === 'immediate' ? '발행대기' : '초안대기');
 
   return {
+    tenant_id: normalizeTenantId(body.tenant_id || body.tenantId || 'owner'),
+    created_by_user_id: body.created_by_user_id || body.createdByUserId || null,
+    rewrite_job_id: body.rewrite_job_id || body.rewriteJobId || null,
     keyword: body.keyword || body.targetKeyword,
     category: body.category || 'general',
     platform: body.platform || 'blog',
@@ -1909,14 +1955,30 @@ function normalizeJobInput(body = {}) {
     source_analysis_id: body.source_analysis_id || body.sourceAnalysisId || null,
     publish_account_id: body.publish_account_id || body.publishAccountId || null,
     publish_account_label: body.publish_account_label || body.publishAccountLabel || null,
+    publish_account_platform: body.publish_account_platform || body.publishAccountPlatform || body.platform || 'blog',
     learning_status: body.learning_status || body.learningStatus || '학습 필요',
     login_status: body.login_status || body.loginStatus || '계정 확인 필요',
+    publish_mode: publishMode,
+    scheduled_at: normalizeOptionalDate(body.scheduled_at || body.scheduledAt),
+    publish_status: normalizePublishStatus(publishStatus),
+    action_delay_min_seconds: normalizeDelaySeconds(body.action_delay_min_seconds ?? body.actionDelayMinSeconds, 1, 0, 30),
+    action_delay_max_seconds: normalizeDelaySeconds(body.action_delay_max_seconds ?? body.actionDelayMaxSeconds, 3, 1, 60),
+    between_posts_delay_minutes: normalizeDelaySeconds(body.between_posts_delay_minutes ?? body.betweenPostsDelayMinutes, 45, 1, 240),
+    rss_url: normalizeRssUrl(body.rss_url || body.rssUrl),
+    rss_match_status: body.rss_match_status || body.rssMatchStatus || null,
+    rss_match_score: body.rss_match_score ?? body.rssMatchScore ?? 0,
+    rss_item_title: body.rss_item_title || body.rssItemTitle || null,
+    rss_item_published_at: normalizeOptionalDate(body.rss_item_published_at || body.rssItemPublishedAt),
+    published_url: body.published_url || body.publishedUrl || null,
+    published_at: normalizeOptionalDate(body.published_at || body.publishedAt),
+    obsidian_export_status: body.obsidian_export_status || body.obsidianExportStatus || '관리자전용',
   };
 }
 
 function jobToSheetPayload(job) {
   return {
     id: job.id,
+    tenantId: job.tenant_id,
     keyword: job.keyword,
     category: job.category,
     platform: job.platform,
@@ -1934,6 +1996,13 @@ function jobToSheetPayload(job) {
     sourceAnalysisId: job.source_analysis_id,
     publishAccountId: job.publish_account_id,
     publishAccountLabel: job.publish_account_label,
+    publishMode: job.publish_mode,
+    scheduledAt: job.scheduled_at,
+    publishStatus: job.publish_status,
+    publishedUrl: job.published_url,
+    rssUrl: job.rss_url,
+    rssMatchStatus: job.rss_match_status,
+    rssMatchScore: job.rss_match_score,
     learningStatus: job.learning_status,
     loginStatus: job.login_status,
     charCount: job.char_count,
@@ -1945,6 +2014,142 @@ function jobToSheetPayload(job) {
     totalScore: job.total_score,
     updatedAt: job.updated_at,
   };
+}
+
+function parseJsonArray(value) {
+  if (Array.isArray(value)) return value;
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function rssUrlForJob(job = {}) {
+  if (job.rss_url) return job.rss_url;
+  const source = job.published_url || job.source_url || '';
+  const blogId = extractNaverBlogId(source);
+  return blogId ? `https://rss.blog.naver.com/${blogId}.xml` : null;
+}
+
+function extractXmlTag(xml = '', tag = '') {
+  const match = String(xml).match(new RegExp(`<${tag}\\b[^>]*>([\\s\\S]*?)<\\/${tag}>`, 'i'));
+  if (!match) return '';
+  return decodeHtmlEntities(match[1].replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')).trim();
+}
+
+function parseRssItems(xml = '') {
+  return [...String(xml).matchAll(/<item\b[^>]*>([\s\S]*?)<\/item>/gi)].map((match) => {
+    const block = match[1];
+    const title = stripHtml(extractXmlTag(block, 'title'));
+    const link = stripHtml(extractXmlTag(block, 'link'));
+    const pubDate = stripHtml(extractXmlTag(block, 'pubDate'));
+    const description = stripHtml(extractXmlTag(block, 'description'));
+    const date = pubDate ? new Date(pubDate) : null;
+    return {
+      title,
+      link,
+      pubDate: date && !Number.isNaN(date.getTime()) ? date.toISOString() : null,
+      description,
+    };
+  }).filter((item) => item.title || item.link).slice(0, 20);
+}
+
+function scorePublicationMatch(job = {}, item = {}) {
+  const titleScore = overlapRatio(job.title || job.keyword || '', item.title || '');
+  const keywordHit = item.title?.includes(job.keyword) ? 0.25 : 0;
+  const linkHint = job.published_url && item.link === job.published_url ? 0.35 : 0;
+  return clampNumber(Math.round((titleScore + keywordHit + linkHint) * 100), 0, 100);
+}
+
+async function saveGeneratedImagesForContentJob({ tenantId, contentJobId, rewriteJob }) {
+  const images = parseJsonArray(rewriteJob.images_json);
+  if (images.length === 0) return [];
+
+  await pool.query('DELETE FROM generated_images WHERE content_job_id = $1', [contentJobId]);
+  const saved = [];
+  for (const image of images) {
+    const index = Number(image.index || 0);
+    const { rows } = await pool.query(
+      `INSERT INTO generated_images (
+         tenant_id, content_job_id, rewrite_job_id, image_type, section_no,
+         prompt, storage_provider, file_path, public_url, data_url, width, height, status
+       )
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'생성완료')
+       RETURNING *`,
+      [
+        tenantId,
+        contentJobId,
+        rewriteJob.id,
+        index === 0 ? 'cover' : 'section',
+        index,
+        image.prompt || image.title || `${rewriteJob.target_keyword} image ${index}`,
+        String(image.url || '').startsWith('data:') ? 'data-url' : 'external-url',
+        `generated/${tenantId}/job-${contentJobId}/image-${String(index).padStart(2, '0')}.svg`,
+        String(image.url || '').startsWith('data:') ? null : image.url,
+        String(image.url || '').startsWith('data:') ? image.url : null,
+        500,
+        500,
+      ]
+    );
+    saved.push(rows[0]);
+  }
+  return saved;
+}
+
+function buildObsidianMarkdown(job = {}, images = []) {
+  const frontmatter = [
+    '---',
+    `tenant: ${job.tenant_id || 'owner'}`,
+    `keyword: ${JSON.stringify(job.keyword || '')}`,
+    `platform: ${job.platform || 'blog'}`,
+    `category: ${JSON.stringify(job.category || '')}`,
+    `publish_mode: ${job.publish_mode || 'draft'}`,
+    `publish_status: ${JSON.stringify(job.publish_status || '')}`,
+    `scheduled_at: ${job.scheduled_at || ''}`,
+    `published_url: ${job.published_url || ''}`,
+    `rss_url: ${job.rss_url || ''}`,
+    `seo_score: ${Math.round(Number(job.seo_score || 0))}`,
+    `geo_score: ${Math.round(Number(job.geo_score || 0))}`,
+    `aeo_score: ${Math.round(Number(job.aeo_score || 0))}`,
+    `created_at: ${job.created_at || ''}`,
+    '---',
+    '',
+  ].join('\n');
+  const imageList = images.length
+    ? images.map((image) => `- ${image.image_type} #${image.section_no}: ${image.file_path || image.public_url || 'data-url'}`).join('\n')
+    : '- 이미지 없음';
+  return `${frontmatter}# ${job.title || job.keyword}\n\n## 발행 정보\n\n- 계정: ${job.publish_account_label || '-'}\n- 모드: ${job.publish_mode || 'draft'}\n- 상태: ${job.publish_status || '-'}\n- URL: ${job.published_url || '-'}\n\n## 키워드/성과\n\n- 메인 키워드: ${job.keyword || '-'}\n- 글자수: ${job.char_count || 0}\n- KW 반복: ${job.kw_count || 0}\n- 이미지: ${job.image_count || 0}\n\n## 이미지\n\n${imageList}\n\n## 본문\n\n${job.plain_text || job.body || ''}\n`;
+}
+
+function isOwnerTenant(req) {
+  return tenantIdFromReq(req) === 'owner' || String(req.headers['x-naviwrite-role'] || '').toLowerCase() === 'owner';
+}
+
+async function loadTenantContentJob(req, id) {
+  const tenantId = tenantIdFromReq(req);
+  const { rows } = await pool.query(
+    `SELECT *
+     FROM content_jobs
+     WHERE id = $1
+       AND COALESCE(tenant_id, 'owner') = $2
+     LIMIT 1`,
+    [id, tenantId]
+  );
+  return rows[0] || null;
+}
+
+async function loadGeneratedImages(contentJobId) {
+  const { rows } = await pool.query(
+    `SELECT *
+     FROM generated_images
+     WHERE content_job_id = $1
+     ORDER BY image_type = 'cover' DESC, section_no ASC, id ASC`,
+    [contentJobId]
+  );
+  return rows;
 }
 
 async function addJobEvent(jobId, eventType, message, payload = {}) {
@@ -3120,6 +3325,359 @@ router.post('/rewrite-jobs/:id/process', async (req, res) => {
   }
 });
 
+router.post('/rewrite-jobs/:id/to-content-job', async (req, res) => {
+  try {
+    const tenantId = tenantIdFromReq(req);
+    const rewrite = await pool.query('SELECT * FROM rewrite_jobs WHERE id = $1', [req.params.id]);
+    if (rewrite.rows.length === 0) return res.status(404).json({ error: 'Rewrite job not found' });
+    const rewriteJob = rewrite.rows[0];
+    const input = normalizeJobInput({
+      ...req.body,
+      tenantId,
+      rewriteJobId: rewriteJob.id,
+      keyword: rewriteJob.target_keyword,
+      category: rewriteJob.category,
+      platform: rewriteJob.platform,
+      ctaUrl: rewriteJob.cta_url,
+      qrTargetUrl: rewriteJob.cta_url,
+      title: rewriteJob.title,
+      body: rewriteJob.body,
+      plainText: rewriteJob.plain_text,
+      charCount: rewriteJob.char_count,
+      kwCount: rewriteJob.kw_count,
+      imageCount: rewriteJob.image_count,
+      scores: {
+        seo: rewriteJob.seo_score,
+        geo: rewriteJob.geo_score,
+        aeo: rewriteJob.aeo_score,
+        total: rewriteJob.total_score,
+      },
+      qrStatus: rewriteJob.use_naver_qr ? 'QR 생성 필요' : 'QR 미사용',
+      generationStatus: '본문 생성 완료',
+      publishMode: req.body?.publishMode || req.body?.publish_mode || 'draft',
+      rssUrl: req.body?.rssUrl || req.body?.rss_url || null,
+      obsidianExportStatus: '관리자전용',
+    });
+    const qrName = makeNaverQrName(input.keyword, input.campaign_name || 'rewrite');
+    const { rows } = await pool.query(
+      `INSERT INTO content_jobs (
+         tenant_id, rewrite_job_id, keyword, category, platform, cta_url, qr_target_url,
+         title, body, plain_text, char_count, kw_count, image_count,
+         seo_score, geo_score, aeo_score, total_score,
+         naver_qr_name, qr_status, generation_status, editor_status,
+         publish_mode, scheduled_at, publish_status, publish_account_id,
+         publish_account_label, publish_account_platform, action_delay_min_seconds,
+         action_delay_max_seconds, between_posts_delay_minutes, rss_url, obsidian_export_status
+       )
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32)
+       RETURNING *`,
+      [
+        input.tenant_id, input.rewrite_job_id, input.keyword, input.category, input.platform,
+        input.cta_url, input.qr_target_url, input.title, input.body, input.plain_text,
+        input.char_count, input.kw_count, input.image_count, input.seo_score, input.geo_score,
+        input.aeo_score, input.total_score, qrName, input.qr_status, input.generation_status,
+        input.editor_status, input.publish_mode, input.scheduled_at, input.publish_status,
+        input.publish_account_id, input.publish_account_label, input.publish_account_platform,
+        input.action_delay_min_seconds, input.action_delay_max_seconds, input.between_posts_delay_minutes,
+        input.rss_url, input.obsidian_export_status,
+      ]
+    );
+    const images = await saveGeneratedImagesForContentJob({ tenantId, contentJobId: rows[0].id, rewriteJob });
+    await addJobEvent(rows[0].id, 'publish_queue_created', '재각색 작업을 발행 큐로 보냈습니다', {
+      rewriteJobId: rewriteJob.id,
+      imageCount: images.length,
+    });
+    res.json({ ok: true, job: rows[0], images });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --- Publish Queue (rewrite -> editor -> RSS confirmation -> owner Obsidian export) ---
+router.get('/publish-queue', async (req, res) => {
+  try {
+    const tenantId = tenantIdFromReq(req);
+    const limit = Math.min(parseInt(req.query.limit || '120', 10), 300);
+    const { status, mode, keyword } = req.query;
+    const where = [`COALESCE(cj.tenant_id, 'owner') = $1`];
+    const values = [tenantId];
+
+    if (status) {
+      values.push(status);
+      where.push(`cj.publish_status = $${values.length}`);
+    }
+    if (mode) {
+      values.push(mode);
+      where.push(`cj.publish_mode = $${values.length}`);
+    }
+    if (keyword) {
+      values.push(`%${keyword}%`);
+      where.push(`(cj.keyword ILIKE $${values.length} OR cj.title ILIKE $${values.length})`);
+    }
+
+    values.push(limit);
+    const { rows } = await pool.query(
+      `SELECT cj.*,
+              COUNT(gi.id)::int AS generated_image_count,
+              MAX(gi.created_at) AS last_image_created_at
+       FROM content_jobs cj
+       LEFT JOIN generated_images gi ON gi.content_job_id = cj.id
+       WHERE ${where.join(' AND ')}
+       GROUP BY cj.id
+       ORDER BY
+         CASE cj.publish_status
+           WHEN '발행중' THEN 1
+           WHEN '발행대기' THEN 2
+           WHEN '예약대기' THEN 3
+           WHEN '초안대기' THEN 4
+           ELSE 9
+         END,
+         cj.scheduled_at NULLS LAST,
+         cj.created_at DESC
+       LIMIT $${values.length}`,
+      values
+    );
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/publish-queue/:id/images', async (req, res) => {
+  try {
+    const job = await loadTenantContentJob(req, req.params.id);
+    if (!job) return res.status(404).json({ error: 'Content job not found' });
+    const images = await loadGeneratedImages(job.id);
+    res.json({ jobId: job.id, images });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.patch('/publish-queue/:id', async (req, res) => {
+  try {
+    const job = await loadTenantContentJob(req, req.params.id);
+    if (!job) return res.status(404).json({ error: 'Content job not found' });
+
+    const input = normalizeJobInput({ ...job, ...req.body, tenantId: tenantIdFromReq(req) });
+    if (Object.prototype.hasOwnProperty.call(req.body, 'scheduledAt') && !req.body.scheduledAt) input.scheduled_at = null;
+    if (Object.prototype.hasOwnProperty.call(req.body, 'scheduled_at') && !req.body.scheduled_at) input.scheduled_at = null;
+    const fieldAliases = {
+      publish_mode: ['publish_mode', 'publishMode'],
+      scheduled_at: ['scheduled_at', 'scheduledAt'],
+      publish_status: ['publish_status', 'publishStatus'],
+      publish_account_id: ['publish_account_id', 'publishAccountId'],
+      publish_account_label: ['publish_account_label', 'publishAccountLabel'],
+      publish_account_platform: ['publish_account_platform', 'publishAccountPlatform'],
+      action_delay_min_seconds: ['action_delay_min_seconds', 'actionDelayMinSeconds'],
+      action_delay_max_seconds: ['action_delay_max_seconds', 'actionDelayMaxSeconds'],
+      between_posts_delay_minutes: ['between_posts_delay_minutes', 'betweenPostsDelayMinutes'],
+      rss_url: ['rss_url', 'rssUrl'],
+      published_url: ['published_url', 'publishedUrl'],
+      published_at: ['published_at', 'publishedAt'],
+      obsidian_export_status: ['obsidian_export_status', 'obsidianExportStatus'],
+    };
+    const values = [];
+    const sets = [];
+
+    for (const [field, names] of Object.entries(fieldAliases)) {
+      const hasField = names.some((name) => Object.prototype.hasOwnProperty.call(req.body, name));
+      if (!hasField) continue;
+      values.push(input[field]);
+      sets.push(`${field} = $${values.length}`);
+    }
+
+    if (sets.length === 0) return res.json({ job });
+
+    values.push(job.id);
+    const { rows } = await pool.query(
+      `UPDATE content_jobs
+       SET ${sets.join(', ')}, updated_at = NOW()
+       WHERE id = $${values.length}
+       RETURNING *`,
+      values
+    );
+    await addJobEvent(job.id, 'publish_queue_updated', 'Publish queue settings updated', req.body);
+    res.json({ job: rows[0] });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/publish-queue/:id/mark-published', async (req, res) => {
+  try {
+    const job = await loadTenantContentJob(req, req.params.id);
+    if (!job) return res.status(404).json({ error: 'Content job not found' });
+
+    const publishedUrl = req.body.publishedUrl || req.body.published_url || job.published_url;
+    const publishedAt = normalizeOptionalDate(req.body.publishedAt || req.body.published_at) || new Date().toISOString();
+    const { rows } = await pool.query(
+      `UPDATE content_jobs
+       SET published_url = COALESCE($2, published_url),
+           published_at = $3,
+           publish_status = '발행완료',
+           updated_at = NOW()
+       WHERE id = $1
+       RETURNING *`,
+      [job.id, publishedUrl || null, publishedAt]
+    );
+    await addJobEvent(job.id, 'published_marked', 'Published URL/status saved', { publishedUrl, publishedAt });
+    res.json({ job: rows[0] });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/publish-queue/:id/rss-check', async (req, res) => {
+  try {
+    const job = await loadTenantContentJob(req, req.params.id);
+    if (!job) return res.status(404).json({ error: 'Content job not found' });
+
+    const rssUrl = normalizeRssUrl(req.body.rssUrl || req.body.rss_url) || rssUrlForJob(job);
+    if (!rssUrl) return res.status(400).json({ error: 'rss_url is required' });
+
+    const response = await fetch(rssUrl, {
+      headers: {
+        'User-Agent': 'NaviWrite/1.0 RSS checker',
+        Accept: 'application/rss+xml, application/xml, text/xml, */*',
+      },
+    });
+    if (!response.ok) throw new Error(`RSS fetch failed (${response.status})`);
+
+    const xml = await response.text();
+    const items = parseRssItems(xml).map((item) => ({
+      ...item,
+      score: scorePublicationMatch(job, item),
+    }));
+    const best = items.sort((a, b) => b.score - a.score)[0] || null;
+    const matched = Boolean(best && best.score >= 45);
+
+    const { rows } = await pool.query(
+      `UPDATE content_jobs
+       SET rss_url = $2,
+           rss_checked_at = NOW(),
+           rss_match_status = $3,
+           rss_match_score = $4,
+           rss_item_title = $5,
+           rss_item_published_at = $6,
+           published_url = CASE WHEN $7::boolean THEN COALESCE($8, published_url) ELSE published_url END,
+           published_at = CASE WHEN $7::boolean THEN COALESCE($9::timestamptz, published_at) ELSE published_at END,
+           publish_status = CASE WHEN $7::boolean THEN 'RSS확인완료' ELSE publish_status END,
+           updated_at = NOW()
+       WHERE id = $1
+       RETURNING *`,
+      [
+        job.id,
+        rssUrl,
+        matched ? 'matched' : 'not_matched',
+        best?.score || 0,
+        best?.title || null,
+        best?.pubDate || null,
+        matched,
+        best?.link || null,
+        best?.pubDate || null,
+      ]
+    );
+
+    await addJobEvent(job.id, 'rss_checked', matched ? 'RSS matched published post' : 'RSS checked without strong match', {
+      rssUrl,
+      best,
+      itemCount: items.length,
+    });
+    res.json({ job: rows[0], rssUrl, matched, best, items });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/publish-queue/:id/obsidian-markdown', async (req, res) => {
+  try {
+    if (!isOwnerTenant(req)) return res.status(403).json({ error: 'Obsidian export is owner-only' });
+    const job = await loadTenantContentJob(req, req.params.id);
+    if (!job) return res.status(404).json({ error: 'Content job not found' });
+    const images = await loadGeneratedImages(job.id);
+    const markdown = buildObsidianMarkdown(job, images);
+    res.json({ jobId: job.id, markdown, images });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/publish-queue/:id/obsidian-export', async (req, res) => {
+  try {
+    if (!isOwnerTenant(req)) return res.status(403).json({ error: 'Obsidian export is owner-only' });
+    const job = await loadTenantContentJob(req, req.params.id);
+    if (!job) return res.status(404).json({ error: 'Content job not found' });
+    const images = await loadGeneratedImages(job.id);
+    const markdown = buildObsidianMarkdown(job, images);
+    const title = job.title || job.keyword || `content-job-${job.id}`;
+    const filePath = req.body.filePath || req.body.file_path || `${kstDateString()}-${String(title).replace(/[\\/:*?"<>|]+/g, '').slice(0, 70)}.md`;
+
+    await pool.query(
+      `INSERT INTO obsidian_exports (tenant_id, content_job_id, export_scope, vault_hint, markdown_title, markdown_body, file_path)
+       VALUES ($1,$2,'owner-only',$3,$4,$5,$6)`,
+      [job.tenant_id || 'owner', job.id, req.body.vaultHint || req.body.vault_hint || null, title, markdown, filePath]
+    );
+    const { rows } = await pool.query(
+      `UPDATE content_jobs
+       SET obsidian_export_status = '내보내기 완료',
+           updated_at = NOW()
+       WHERE id = $1
+       RETURNING *`,
+      [job.id]
+    );
+    await addJobEvent(job.id, 'obsidian_export', 'Owner Obsidian markdown generated', { filePath });
+    res.json({ job: rows[0], markdown, filePath, images });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/publish-queue/:id/metrics', async (req, res) => {
+  try {
+    const job = await loadTenantContentJob(req, req.params.id);
+    if (!job) return res.status(404).json({ error: 'Content job not found' });
+    const metricDate = normalizeOptionalDate(req.body.metricDate || req.body.metric_date)?.slice(0, 10) || kstDateString();
+    const rankKeyword = req.body.rankKeyword || req.body.rank_keyword || job.keyword || '';
+    const publishedUrl = req.body.publishedUrl || req.body.published_url || job.published_url;
+    if (!publishedUrl) return res.status(400).json({ error: 'published_url is required' });
+
+    const { rows } = await pool.query(
+      `INSERT INTO published_post_metrics (
+         tenant_id, content_job_id, published_url, metric_date, view_count,
+         like_count, comment_count, scrap_count, rank_keyword, rank_position, source
+       )
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+       ON CONFLICT (content_job_id, metric_date, (COALESCE(rank_keyword, '')))
+       DO UPDATE SET
+         view_count = EXCLUDED.view_count,
+         like_count = EXCLUDED.like_count,
+         comment_count = EXCLUDED.comment_count,
+         scrap_count = EXCLUDED.scrap_count,
+         rank_position = EXCLUDED.rank_position,
+         source = EXCLUDED.source,
+         checked_at = NOW()
+       RETURNING *`,
+      [
+        job.tenant_id || tenantIdFromReq(req),
+        job.id,
+        publishedUrl,
+        metricDate,
+        req.body.viewCount ?? req.body.view_count ?? null,
+        req.body.likeCount ?? req.body.like_count ?? null,
+        req.body.commentCount ?? req.body.comment_count ?? null,
+        req.body.scrapCount ?? req.body.scrap_count ?? null,
+        rankKeyword,
+        req.body.rankPosition ?? req.body.rank_position ?? null,
+        req.body.source || 'manual',
+      ]
+    );
+    res.json({ metric: rows[0] });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // --- Content Jobs (draft + Naver QR + Google Sheets workflow) ---
 router.get('/content-jobs', async (req, res) => {
   try {
@@ -3127,6 +3685,10 @@ router.get('/content-jobs', async (req, res) => {
     const { status, keyword } = req.query;
     const where = [];
     const values = [];
+    const tenantId = tenantIdFromReq(req);
+
+    values.push(tenantId);
+    where.push(`COALESCE(tenant_id, 'owner') = $${values.length}`);
 
     if (status) {
       values.push(status);
@@ -3154,7 +3716,7 @@ router.get('/content-jobs', async (req, res) => {
 
 router.post('/content-jobs', async (req, res) => {
   try {
-    const job = normalizeJobInput(req.body);
+    const job = normalizeJobInput({ ...req.body, tenantId: tenantIdFromReq(req) });
     if (!job.keyword) {
       return res.status(400).json({ error: 'keyword is required' });
     }
@@ -3164,24 +3726,34 @@ router.post('/content-jobs', async (req, res) => {
 
     const { rows } = await pool.query(
       `INSERT INTO content_jobs (
+        tenant_id, created_by_user_id, rewrite_job_id,
         keyword, category, platform, source_url, cta_url, qr_target_url, tone, campaign_name,
         title, body, plain_text, char_count, kw_count, image_count,
         seo_score, geo_score, aeo_score, total_score,
         naver_qr_name, naver_qr_image_url, naver_qr_manage_url,
         qr_status, generation_status, editor_status, sheet_row_id, sheet_sync_status,
         notion_url, error_message, source_analysis_id, publish_account_id,
-        publish_account_label, learning_status, login_status
+        publish_account_label, publish_account_platform, learning_status, login_status,
+        publish_mode, scheduled_at, publish_status, action_delay_min_seconds,
+        action_delay_max_seconds, between_posts_delay_minutes, rss_url,
+        published_url, published_at, obsidian_export_status
        )
        VALUES (
-        $1,$2,$3,$4,$5,$6,$7,$8,
-        $9,$10,$11,$12,$13,$14,
-        $15,$16,$17,$18,
-        $19,$20,$21,
-        $22,$23,$24,$25,$26,
-        $27,$28,$29,$30,$31,$32,$33
+        $1,$2,$3,
+        $4,$5,$6,$7,$8,$9,$10,$11,
+        $12,$13,$14,$15,$16,$17,
+        $18,$19,$20,$21,
+        $22,$23,$24,
+        $25,$26,$27,$28,$29,
+        $30,$31,$32,$33,$34,
+        $35,$36,$37,$38,
+        $39,$40,$41,
+        $42,$43,$44,
+        $45,$46,$47
        )
        RETURNING *`,
       [
+        job.tenant_id, job.created_by_user_id, job.rewrite_job_id,
         job.keyword, job.category, job.platform, job.source_url, job.cta_url, job.qr_target_url,
         job.tone, job.campaign_name, job.title, job.body, job.plain_text,
         job.char_count, job.kw_count, job.image_count,
@@ -3189,7 +3761,11 @@ router.post('/content-jobs', async (req, res) => {
         qrName, job.naver_qr_image_url, job.naver_qr_manage_url,
         job.qr_status, generationStatus, job.editor_status, job.sheet_row_id,
         job.sheet_sync_status, job.notion_url, job.error_message, job.source_analysis_id,
-        job.publish_account_id, job.publish_account_label, job.learning_status, job.login_status,
+        job.publish_account_id, job.publish_account_label, job.publish_account_platform,
+        job.learning_status, job.login_status, job.publish_mode, job.scheduled_at,
+        job.publish_status, job.action_delay_min_seconds, job.action_delay_max_seconds,
+        job.between_posts_delay_minutes, job.rss_url, job.published_url,
+        job.published_at, job.obsidian_export_status,
       ]
     );
 
@@ -3205,14 +3781,14 @@ router.post('/content-jobs', async (req, res) => {
 
 router.get('/content-jobs/:id', async (req, res) => {
   try {
-    const job = await pool.query('SELECT * FROM content_jobs WHERE id = $1', [req.params.id]);
-    if (job.rows.length === 0) return res.status(404).json({ error: 'Content job not found' });
+    const job = await loadTenantContentJob(req, req.params.id);
+    if (!job) return res.status(404).json({ error: 'Content job not found' });
 
     const events = await pool.query(
       'SELECT * FROM content_job_events WHERE job_id = $1 ORDER BY created_at DESC LIMIT 50',
       [req.params.id]
     );
-    res.json({ ...job.rows[0], events: events.rows });
+    res.json({ ...job, events: events.rows });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -3220,6 +3796,9 @@ router.get('/content-jobs/:id', async (req, res) => {
 
 router.patch('/content-jobs/:id', async (req, res) => {
   try {
+    const currentJob = await loadTenantContentJob(req, req.params.id);
+    if (!currentJob) return res.status(404).json({ error: 'Content job not found' });
+
     const allowed = [
       'keyword', 'category', 'platform', 'source_url', 'cta_url', 'qr_target_url', 'tone',
       'campaign_name', 'title', 'body', 'plain_text', 'char_count', 'kw_count', 'image_count',
@@ -3227,7 +3806,10 @@ router.patch('/content-jobs/:id', async (req, res) => {
       'naver_qr_image_url', 'naver_qr_manage_url', 'qr_status', 'generation_status',
       'editor_status', 'sheet_row_id', 'sheet_sync_status', 'notion_url', 'error_message',
       'source_analysis_id', 'publish_account_id', 'publish_account_label',
-      'learning_status', 'login_status',
+      'publish_account_platform', 'learning_status', 'login_status', 'publish_mode',
+      'scheduled_at', 'publish_status', 'action_delay_min_seconds',
+      'action_delay_max_seconds', 'between_posts_delay_minutes', 'rss_url',
+      'published_url', 'published_at', 'obsidian_export_status',
     ];
     const normalized = normalizeJobInput(req.body);
     const aliases = {
@@ -3256,8 +3838,19 @@ router.patch('/content-jobs/:id', async (req, res) => {
       source_analysis_id: ['source_analysis_id', 'sourceAnalysisId'],
       publish_account_id: ['publish_account_id', 'publishAccountId'],
       publish_account_label: ['publish_account_label', 'publishAccountLabel'],
+      publish_account_platform: ['publish_account_platform', 'publishAccountPlatform'],
       learning_status: ['learning_status', 'learningStatus'],
       login_status: ['login_status', 'loginStatus'],
+      publish_mode: ['publish_mode', 'publishMode'],
+      scheduled_at: ['scheduled_at', 'scheduledAt'],
+      publish_status: ['publish_status', 'publishStatus'],
+      action_delay_min_seconds: ['action_delay_min_seconds', 'actionDelayMinSeconds'],
+      action_delay_max_seconds: ['action_delay_max_seconds', 'actionDelayMaxSeconds'],
+      between_posts_delay_minutes: ['between_posts_delay_minutes', 'betweenPostsDelayMinutes'],
+      rss_url: ['rss_url', 'rssUrl'],
+      published_url: ['published_url', 'publishedUrl'],
+      published_at: ['published_at', 'publishedAt'],
+      obsidian_export_status: ['obsidian_export_status', 'obsidianExportStatus'],
     };
     const values = [];
     const sets = [];
@@ -3273,12 +3866,10 @@ router.patch('/content-jobs/:id', async (req, res) => {
     }
 
     if (sets.length === 0) {
-      const current = await pool.query('SELECT * FROM content_jobs WHERE id = $1', [req.params.id]);
-      if (current.rows.length === 0) return res.status(404).json({ error: 'Content job not found' });
-      return res.json(current.rows[0]);
+      return res.json(currentJob);
     }
 
-    values.push(req.params.id);
+    values.push(currentJob.id);
     const { rows } = await pool.query(
       `UPDATE content_jobs
        SET ${sets.join(', ')}, updated_at = NOW()
@@ -3299,6 +3890,9 @@ router.patch('/content-jobs/:id', async (req, res) => {
 
 router.post('/content-jobs/:id/qr', async (req, res) => {
   try {
+    const currentJob = await loadTenantContentJob(req, req.params.id);
+    if (!currentJob) return res.status(404).json({ error: 'Content job not found' });
+
     const { naver_qr_image_url, naver_qr_manage_url, qr_status } = normalizeJobInput({
       ...req.body,
       qr_status: req.body.qr_status || 'QR 생성 완료',
@@ -3312,7 +3906,7 @@ router.post('/content-jobs/:id/qr', async (req, res) => {
            updated_at = NOW()
        WHERE id = $1
        RETURNING *`,
-      [req.params.id, naver_qr_image_url, naver_qr_manage_url, qr_status]
+      [currentJob.id, naver_qr_image_url, naver_qr_manage_url, qr_status]
     );
     if (rows.length === 0) return res.status(404).json({ error: 'Content job not found' });
 
@@ -3327,18 +3921,19 @@ router.post('/content-jobs/:id/qr', async (req, res) => {
 
 router.post('/content-jobs/:id/sync-sheet', async (req, res) => {
   try {
-    const { rows } = await pool.query('SELECT * FROM content_jobs WHERE id = $1', [req.params.id]);
-    if (rows.length === 0) return res.status(404).json({ error: 'Content job not found' });
-    const sheetSync = await syncJobToGoogleSheet(rows[0]);
-    const updated = await pool.query('SELECT * FROM content_jobs WHERE id = $1', [req.params.id]);
+    const job = await loadTenantContentJob(req, req.params.id);
+    if (!job) return res.status(404).json({ error: 'Content job not found' });
+    const sheetSync = await syncJobToGoogleSheet(job);
+    const updated = await pool.query('SELECT * FROM content_jobs WHERE id = $1', [job.id]);
     res.json({ job: updated.rows[0], sheetSync });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-router.post('/content-jobs/sheets/pull', async (_req, res) => {
+router.post('/content-jobs/sheets/pull', async (req, res) => {
   try {
+    const tenantId = tenantIdFromReq(req);
     const csvUrl = process.env.GOOGLE_SHEETS_CSV_URL;
     if (!csvUrl) {
       return res.status(400).json({ error: 'GOOGLE_SHEETS_CSV_URL is not configured' });
@@ -3365,8 +3960,11 @@ router.post('/content-jobs/sheets/pull', async (_req, res) => {
       }
 
       const existing = await pool.query(
-        'SELECT id FROM content_jobs WHERE sheet_row_id = $1 LIMIT 1',
-        [sheetRowId]
+        `SELECT id FROM content_jobs
+         WHERE sheet_row_id = $1
+           AND COALESCE(tenant_id, 'owner') = $2
+         LIMIT 1`,
+        [sheetRowId, tenantId]
       );
       if (existing.rows.length > 0) {
         skipped += 1;
@@ -3374,6 +3972,7 @@ router.post('/content-jobs/sheets/pull', async (_req, res) => {
       }
 
       const job = normalizeJobInput({
+        tenantId,
         keyword,
         category: pickColumn(row, headers, ['category', '카테고리']) || 'general',
         platform: pickColumn(row, headers, ['platform', '플랫폼']) || 'blog',
@@ -3390,13 +3989,13 @@ router.post('/content-jobs/sheets/pull', async (_req, res) => {
       const qrName = makeNaverQrName(job.keyword, job.campaign_name);
       const created = await pool.query(
         `INSERT INTO content_jobs (
-          keyword, category, platform, source_url, cta_url, qr_target_url,
+          tenant_id, keyword, category, platform, source_url, cta_url, qr_target_url,
           tone, campaign_name, naver_qr_name, sheet_row_id, sheet_sync_status
         )
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'시트에서 가져옴')
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'시트에서 가져옴')
         RETURNING *`,
         [
-          job.keyword, job.category, job.platform, job.source_url, job.cta_url, job.qr_target_url,
+          job.tenant_id, job.keyword, job.category, job.platform, job.source_url, job.cta_url, job.qr_target_url,
           job.tone, job.campaign_name, qrName, sheetRowId,
         ]
       );
@@ -3412,6 +4011,9 @@ router.post('/content-jobs/sheets/pull', async (_req, res) => {
 
 router.post('/content-jobs/:id/notion-export', async (req, res) => {
   try {
+    const currentJob = await loadTenantContentJob(req, req.params.id);
+    if (!currentJob) return res.status(404).json({ error: 'Content job not found' });
+
     const notionUrl = req.body.notion_url || req.body.notionUrl || null;
     const { rows } = await pool.query(
       `UPDATE content_jobs
@@ -3420,7 +4022,7 @@ router.post('/content-jobs/:id/notion-export', async (req, res) => {
            updated_at = NOW()
        WHERE id = $1
        RETURNING *`,
-      [req.params.id, notionUrl]
+      [currentJob.id, notionUrl]
     );
     if (rows.length === 0) return res.status(404).json({ error: 'Content job not found' });
     await addJobEvent(rows[0].id, 'notion_export', 'Notion 수동 내보내기 상태가 저장되었습니다', req.body);

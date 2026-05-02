@@ -1573,6 +1573,23 @@ function RewritePanel() {
     }
   };
 
+  const sendToPublishQueue = async (job) => {
+    setMessage(`작업 #${job.id}을 발행 큐로 보내는 중입니다.`);
+    const res = await safeFetch(`${API}/rewrite-jobs/${job.id}/to-content-job`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        publishMode: 'draft',
+        rssUrl: '',
+      }),
+    });
+    if (res?.ok) {
+      setMessage(`작업 #${job.id}을 발행 큐에 저장했습니다. 발행 큐 메뉴에서 계정과 시간을 확정하세요.`);
+    } else {
+      setMessage(res?.error || '발행 큐 저장에 실패했습니다.');
+    }
+  };
+
   const copyBody = async (job) => {
     try {
       await navigator.clipboard.writeText(job.body || job.plain_text || '');
@@ -2143,6 +2160,14 @@ function RewritePanel() {
                       style={{ height: 30, padding: '0 12px', borderRadius: 8, border: 'none', background: COLORS.primary, color: 'white', fontSize: 11, fontWeight: 850, cursor: 'pointer' }}
                     >
                       다시 생성
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => sendToPublishQueue(job)}
+                      disabled={!job.body && !job.plain_text}
+                      style={{ height: 30, padding: '0 12px', borderRadius: 8, border: 'none', background: !job.body && !job.plain_text ? COLORS.textMuted : COLORS.success, color: 'white', fontSize: 11, fontWeight: 850, cursor: !job.body && !job.plain_text ? 'not-allowed' : 'pointer' }}
+                    >
+                      발행 큐로 보내기
                     </button>
                   </div>
                 </div>
@@ -3341,6 +3366,302 @@ const smallButtonStyle = {
 
 /* ────────────────────── Main App ────────────────────── */
 
+function toDatetimeLocal(value) {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+  return local.toISOString().slice(0, 16);
+}
+
+function loadLocalOpsAccounts() {
+  try {
+    const saved = JSON.parse(localStorage.getItem('naviwrite.opsSettings') || '{}') || {};
+    return Array.isArray(saved.accounts) ? saved.accounts : [];
+  } catch {
+    return [];
+  }
+}
+
+function PublishQueuePanel() {
+  const [jobs, setJobs] = useState([]);
+  const [drafts, setDrafts] = useState({});
+  const [accounts, setAccounts] = useState(() => loadLocalOpsAccounts());
+  const [loading, setLoading] = useState(false);
+  const [workingId, setWorkingId] = useState(null);
+  const [message, setMessage] = useState('');
+
+  const loadQueue = useCallback(async () => {
+    setLoading(true);
+    const res = await safeFetch(`${API}/publish-queue?limit=160`);
+    setLoading(false);
+    if (Array.isArray(res)) {
+      setJobs(res);
+      setDrafts((prev) => {
+        const next = { ...prev };
+        res.forEach((job) => {
+          if (!next[job.id]) {
+            next[job.id] = {
+              publishMode: job.publish_mode || 'draft',
+              scheduledAt: toDatetimeLocal(job.scheduled_at),
+              publishAccountId: job.publish_account_id || '',
+              publishAccountLabel: job.publish_account_label || '',
+              publishAccountPlatform: job.publish_account_platform || job.platform || 'blog',
+              actionDelayMinSeconds: job.action_delay_min_seconds || 1,
+              actionDelayMaxSeconds: job.action_delay_max_seconds || 3,
+              betweenPostsDelayMinutes: job.between_posts_delay_minutes || 45,
+              rssUrl: job.rss_url || '',
+              publishedUrl: job.published_url || '',
+            };
+          }
+        });
+        return next;
+      });
+    }
+  }, []);
+
+  useEffect(() => {
+    loadQueue();
+  }, [loadQueue]);
+
+  const updateDraft = (id, patch) => {
+    setDrafts((prev) => ({ ...prev, [id]: { ...(prev[id] || {}), ...patch } }));
+  };
+
+  const saveQueueSettings = async (job) => {
+    const draft = drafts[job.id] || {};
+    const account = accounts.find((item) => item.id === draft.publishAccountId);
+    setWorkingId(job.id);
+    const res = await safeFetch(`${API}/publish-queue/${job.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        publishMode: draft.publishMode,
+        scheduledAt: draft.publishMode === 'scheduled' ? draft.scheduledAt : null,
+        publishStatus: draft.publishMode === 'scheduled' ? '예약대기' : draft.publishMode === 'immediate' ? '발행대기' : '초안대기',
+        publishAccountId: draft.publishAccountId,
+        publishAccountLabel: account?.label || draft.publishAccountLabel || '',
+        publishAccountPlatform: account?.platform || draft.publishAccountPlatform || job.platform,
+        actionDelayMinSeconds: Number(draft.actionDelayMinSeconds) || 1,
+        actionDelayMaxSeconds: Number(draft.actionDelayMaxSeconds) || 3,
+        betweenPostsDelayMinutes: Number(draft.betweenPostsDelayMinutes) || 45,
+        rssUrl: draft.rssUrl,
+        publishedUrl: draft.publishedUrl,
+      }),
+    });
+    setWorkingId(null);
+    if (res?.job) {
+      setMessage(`#${job.id} 발행 설정을 저장했습니다.`);
+      await loadQueue();
+    } else {
+      setMessage(res?.error || '발행 설정 저장에 실패했습니다.');
+    }
+  };
+
+  const markPublished = async (job) => {
+    const draft = drafts[job.id] || {};
+    if (!draft.publishedUrl) {
+      setMessage('발행 URL을 먼저 입력해주세요.');
+      return;
+    }
+    setWorkingId(job.id);
+    const res = await safeFetch(`${API}/publish-queue/${job.id}/mark-published`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ publishedUrl: draft.publishedUrl }),
+    });
+    setWorkingId(null);
+    if (res?.job) {
+      setMessage(`#${job.id} 발행완료로 저장했습니다.`);
+      await loadQueue();
+    } else {
+      setMessage(res?.error || '발행완료 저장에 실패했습니다.');
+    }
+  };
+
+  const checkRss = async (job) => {
+    const draft = drafts[job.id] || {};
+    setWorkingId(job.id);
+    const res = await safeFetch(`${API}/publish-queue/${job.id}/rss-check`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ rssUrl: draft.rssUrl }),
+    });
+    setWorkingId(null);
+    if (res?.job) {
+      setMessage(res.matched ? `RSS에서 발행 글을 찾았습니다. 점수 ${res.best?.score || 0}` : 'RSS를 확인했지만 강한 매칭은 없었습니다.');
+      await loadQueue();
+    } else {
+      setMessage(res?.error || 'RSS 확인에 실패했습니다.');
+    }
+  };
+
+  const exportObsidian = async (job) => {
+    setWorkingId(job.id);
+    const res = await safeFetch(`${API}/publish-queue/${job.id}/obsidian-export`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ vaultHint: 'NaviWrite Owner Vault' }),
+    });
+    setWorkingId(null);
+    if (res?.markdown) {
+      try {
+        await navigator.clipboard.writeText(res.markdown);
+        setMessage(`#${job.id} 옵시디언 Markdown을 생성하고 클립보드에 복사했습니다.`);
+      } catch {
+        setMessage(`#${job.id} 옵시디언 Markdown을 생성했습니다. 브라우저 권한 때문에 복사는 실패했습니다.`);
+      }
+      await loadQueue();
+    } else {
+      setMessage(res?.error || '옵시디언 내보내기에 실패했습니다.');
+    }
+  };
+
+  const reloadAccounts = () => {
+    setAccounts(loadLocalOpsAccounts());
+    setMessage('운영 설정의 계정 슬롯을 다시 읽었습니다.');
+  };
+
+  const summary = useMemo(() => ({
+    total: jobs.length,
+    waiting: jobs.filter((job) => ['발행대기', '예약대기'].includes(job.publish_status)).length,
+    done: jobs.filter((job) => ['발행완료', 'RSS확인완료'].includes(job.publish_status)).length,
+    rss: jobs.filter((job) => job.rss_match_status === 'matched').length,
+  }), [jobs]);
+
+  return (
+    <div style={{ display: 'grid', gap: 18 }}>
+      <section style={{ ...cardStyle, padding: 20 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap' }}>
+          <div>
+            <h2 style={{ fontSize: 18, fontWeight: 850, color: COLORS.primary, marginBottom: 4 }}>발행 큐</h2>
+            <p style={{ fontSize: 12, color: COLORS.textSecondary, lineHeight: 1.6 }}>
+              재각색 결과를 실제 발행 단위로 관리합니다. 즉시/예약 발행, 계정 슬롯, 행동 딜레이, RSS 확인, 옵시디언 내보내기를 여기에서 확정합니다.
+            </p>
+          </div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button type="button" onClick={reloadAccounts} style={smallButtonStyle}>계정 다시읽기</button>
+            <button type="button" onClick={loadQueue} disabled={loading} style={{ ...primaryButtonStyle, width: 'auto', padding: '0 14px', marginBottom: 0 }}>
+              {loading ? '불러오는 중' : '새로고침'}
+            </button>
+          </div>
+        </div>
+        {message && (
+          <p style={{ marginTop: 10, fontSize: 12, fontWeight: 800, color: message.includes('실패') ? COLORS.danger : COLORS.success }}>
+            {message}
+          </p>
+        )}
+      </section>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12 }}>
+        {[
+          ['전체 큐', summary.total, COLORS.primary],
+          ['발행 대기', summary.waiting, COLORS.warning],
+          ['발행 완료', summary.done, COLORS.success],
+          ['RSS 확인', summary.rss, COLORS.accent],
+        ].map(([label, value, color]) => (
+          <div key={label} style={{ ...cardStyle, padding: 16 }}>
+            <p style={{ fontSize: 11, color: COLORS.textSecondary, fontWeight: 700, marginBottom: 6 }}>{label}</p>
+            <p style={{ fontSize: 26, color, fontWeight: 900, lineHeight: 1 }}>{value}</p>
+          </div>
+        ))}
+      </div>
+
+      <section style={sectionStyle}>
+        <div style={{ padding: '14px 18px', borderBottom: `1px solid ${COLORS.border}` }}>
+          <h3 style={{ fontSize: 15, fontWeight: 850, color: COLORS.primary }}>발행 작업 목록</h3>
+          <p style={{ marginTop: 4, fontSize: 11, color: COLORS.textSecondary }}>
+            권장 기본 딜레이는 액션 사이 1~3초, 글 사이 45분입니다. 예약 발행은 실제 브라우저 러너가 이 값을 읽어 순차 실행하는 구조로 연결하면 됩니다.
+          </p>
+        </div>
+        <div style={{ overflowX: 'auto' }}>
+          {loading ? (
+            <div style={{ padding: 20 }}>
+              {[1, 2, 3].map((item) => <Skeleton key={item} height={72} style={{ marginBottom: 8 }} />)}
+            </div>
+          ) : jobs.length === 0 ? (
+            <div style={{ padding: 36, textAlign: 'center', color: COLORS.textMuted, fontSize: 13 }}>
+              아직 발행 큐에 들어온 글이 없습니다. 재각색 목록에서 `발행 큐로 보내기`를 눌러주세요.
+            </div>
+          ) : (
+            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1380 }}>
+              <thead>
+                <tr style={{ background: '#f8fafc', color: COLORS.textSecondary, fontSize: 11, textAlign: 'left' }}>
+                  {['상태', '제목/키워드', '플랫폼', '글/이미지', '발행 방식', '계정', '딜레이', 'RSS/발행 URL', '작업'].map((head) => (
+                    <th key={head} style={{ padding: '10px 12px', borderBottom: `1px solid ${COLORS.border}` }}>{head}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {jobs.map((job) => {
+                  const draft = drafts[job.id] || {};
+                  const busy = workingId === job.id;
+                  return (
+                    <tr key={job.id} style={{ fontSize: 12, borderBottom: `1px solid ${COLORS.border}`, verticalAlign: 'top' }}>
+                      <td style={{ padding: '12px' }}>
+                        <StatusBadge value={job.publish_status || '초안대기'} />
+                        <p style={{ marginTop: 6, fontSize: 10, color: COLORS.textMuted }}>#{job.id}</p>
+                      </td>
+                      <td style={{ padding: '12px', maxWidth: 260 }}>
+                        <p style={{ fontWeight: 900, color: COLORS.textPrimary, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{job.title || '-'}</p>
+                        <p style={{ marginTop: 3, fontSize: 10, color: COLORS.textMuted }}>{job.keyword || '-'}</p>
+                        {job.rss_match_score > 0 && <p style={{ marginTop: 4, fontSize: 10, color: COLORS.accent, fontWeight: 800 }}>RSS 점수 {Number(job.rss_match_score).toFixed(0)}</p>}
+                      </td>
+                      <td style={{ padding: '12px', color: COLORS.textSecondary, fontWeight: 800 }}>{job.platform || '-'}</td>
+                      <td style={{ padding: '12px', color: COLORS.textSecondary }}>
+                        <p>{Number(job.char_count || 0).toLocaleString()}자 / KW {job.kw_count || 0}</p>
+                        <p style={{ marginTop: 3 }}>이미지 {job.generated_image_count || job.image_count || 0}개</p>
+                      </td>
+                      <td style={{ padding: '12px', minWidth: 170 }}>
+                        <select value={draft.publishMode || 'draft'} onChange={(e) => updateDraft(job.id, { publishMode: e.target.value })} style={{ ...inputStyle, height: 32, marginBottom: 6 }}>
+                          <option value="draft">검수 후 발행</option>
+                          <option value="immediate">즉시 발행</option>
+                          <option value="scheduled">예약 발행</option>
+                        </select>
+                        <input type="datetime-local" value={draft.scheduledAt || ''} onChange={(e) => updateDraft(job.id, { scheduledAt: e.target.value })} disabled={draft.publishMode !== 'scheduled'} style={{ ...inputStyle, height: 32, marginBottom: 0 }} />
+                      </td>
+                      <td style={{ padding: '12px', minWidth: 170 }}>
+                        <select value={draft.publishAccountId || ''} onChange={(e) => updateDraft(job.id, { publishAccountId: e.target.value })} style={{ ...inputStyle, height: 32, marginBottom: 6 }}>
+                          <option value="">계정 선택</option>
+                          {accounts.map((account) => (
+                            <option key={account.id} value={account.id}>{account.label} · {account.platform}</option>
+                          ))}
+                        </select>
+                        <p style={{ fontSize: 10, color: COLORS.textMuted }}>{job.publish_account_label || '운영 설정에서 계정을 먼저 등록'}</p>
+                      </td>
+                      <td style={{ padding: '12px', minWidth: 160 }}>
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+                          <input type="number" min="0" max="30" value={draft.actionDelayMinSeconds ?? 1} onChange={(e) => updateDraft(job.id, { actionDelayMinSeconds: e.target.value })} style={{ ...inputStyle, height: 32, marginBottom: 0 }} />
+                          <input type="number" min="1" max="60" value={draft.actionDelayMaxSeconds ?? 3} onChange={(e) => updateDraft(job.id, { actionDelayMaxSeconds: e.target.value })} style={{ ...inputStyle, height: 32, marginBottom: 0 }} />
+                        </div>
+                        <input type="number" min="1" max="240" value={draft.betweenPostsDelayMinutes ?? 45} onChange={(e) => updateDraft(job.id, { betweenPostsDelayMinutes: e.target.value })} style={{ ...inputStyle, height: 32, marginTop: 6, marginBottom: 0 }} />
+                        <p style={{ marginTop: 4, fontSize: 10, color: COLORS.textMuted }}>초/초, 글 사이 분</p>
+                      </td>
+                      <td style={{ padding: '12px', minWidth: 250 }}>
+                        <input value={draft.rssUrl || ''} onChange={(e) => updateDraft(job.id, { rssUrl: e.target.value })} placeholder="RSS URL 또는 블로그 ID" style={{ ...inputStyle, height: 32, marginBottom: 6 }} />
+                        <input value={draft.publishedUrl || ''} onChange={(e) => updateDraft(job.id, { publishedUrl: e.target.value })} placeholder="발행 완료 URL" style={{ ...inputStyle, height: 32, marginBottom: 0 }} />
+                        {job.published_url && <a href={job.published_url} target="_blank" rel="noreferrer" style={{ display: 'block', marginTop: 5, fontSize: 10 }}>열기</a>}
+                      </td>
+                      <td style={{ padding: '12px', minWidth: 220 }}>
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+                          <button type="button" disabled={busy} onClick={() => saveQueueSettings(job)} style={smallButtonStyle}>저장</button>
+                          <button type="button" disabled={busy} onClick={() => markPublished(job)} style={smallButtonStyle}>발행완료</button>
+                          <button type="button" disabled={busy} onClick={() => checkRss(job)} style={smallButtonStyle}>RSS 확인</button>
+                          <button type="button" disabled={busy} onClick={() => exportObsidian(job)} style={{ ...smallButtonStyle, background: COLORS.primary, color: 'white', borderColor: COLORS.primary }}>Obsidian</button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </section>
+    </div>
+  );
+}
+
 export default function App() {
   const [health, setHealth] = useState(null);
   const [stats, setStats] = useState(null);
@@ -3566,6 +3887,7 @@ export default function App() {
             ['dashboard', '대시보드'],
             ['collect', '수집 링크'],
             ['rewrite', '재각색'],
+            ['publish', '발행 큐'],
             ['views', '조회수 근황'],
             ['settings', '운영 설정'],
           ].map(([view, label]) => (
@@ -3595,6 +3917,8 @@ export default function App() {
           <SourceCollectionPanel onOpenRewrite={() => setActiveView('rewrite')} />
         ) : activeView === 'rewrite' ? (
           <RewritePanel />
+        ) : activeView === 'publish' ? (
+          <PublishQueuePanel />
         ) : activeView === 'views' ? (
           <ViewStatusPanel />
         ) : activeView === 'settings' ? (
