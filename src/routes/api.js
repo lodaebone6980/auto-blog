@@ -1187,6 +1187,7 @@ function buildRewritePattern(analyses = [], settingsInput = {}) {
   const sourceTitles = analyses.map((row) => row.title).filter(Boolean).slice(0, 20);
   const sourceKeywords = [...new Set(analyses.map(effectiveMainKeyword).filter(Boolean))].slice(0, 20);
   const sourceActionTerms = inferTitleActionTerms(sourceTitles.join(' '));
+  const targetKwCount = clampNumber((settings.targetKwCount || DEFAULT_REWRITE_SETTINGS.targetKwCount) + 1, 5, 31);
 
   return {
     sampleCount: analyses.length,
@@ -1198,7 +1199,8 @@ function buildRewritePattern(analyses = [], settingsInput = {}) {
     },
     targetCharCount: settings.targetCharCount,
     sectionCharCount: settings.sectionCharCount,
-    targetKwCount: settings.targetKwCount,
+    targetKwCount,
+    keywordRepeatBuffer: 1,
     imageCount: settings.imageCount,
     quoteCount: settings.sectionCount,
     sectionCount: settings.sectionCount,
@@ -1287,21 +1289,21 @@ function makeTemplateImage({ keyword, section, subtitle, index, platform }) {
   const bg = platform === 'cafe' ? '#f8fafc' : '#ffffff';
   const primary = platform === 'cafe' ? '#1d4ed8' : '#1f5f4a';
   const accent = platform === 'cafe' ? '#dbeafe' : '#d8ebe4';
-  const badge = index === 0 ? '대표' : `SECTION ${String(index).padStart(2, '0')}`;
-  const safeKeyword = escapeSvgText(String(keyword || '').slice(0, 24));
-  const safeSection = escapeSvgText(String(section || '').slice(0, 24));
-  const safeSubtitle = escapeSvgText(String(subtitle || '핵심만 빠르게 정리').slice(0, 28));
+  const badge = index === 0 ? '대표' : `SEC ${String(index).padStart(2, '0')}`;
+  const safeKeyword = escapeSvgText(String(keyword || '').slice(0, 16));
+  const safeSection = escapeSvgText(String(section || '').slice(0, 18));
+  const safeSubtitle = escapeSvgText(String(subtitle || '핵심만 정리').slice(0, 20));
   const svg = `
-  <svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1080" viewBox="0 0 1080 1080">
-    <rect width="1080" height="1080" fill="${bg}"/>
-    <rect x="80" y="80" width="220" height="58" rx="10" fill="${primary}"/>
-    <text x="190" y="119" text-anchor="middle" font-family="Arial, sans-serif" font-size="30" font-weight="800" fill="#fff">${badge}</text>
-    <text x="540" y="410" text-anchor="middle" font-family="Arial, sans-serif" font-size="88" font-weight="900" fill="#111827">${safeKeyword}</text>
-    <rect x="160" y="490" width="760" height="96" rx="6" fill="${primary}"/>
-    <text x="540" y="553" text-anchor="middle" font-family="Arial, sans-serif" font-size="48" font-weight="900" fill="#fff">${safeSection}</text>
-    <rect x="210" y="660" width="660" height="86" rx="4" fill="${accent}"/>
-    <text x="540" y="715" text-anchor="middle" font-family="Arial, sans-serif" font-size="36" font-weight="800" fill="${primary}">${safeSubtitle}</text>
-    <rect x="160" y="820" width="760" height="8" fill="${primary}" opacity="0.22"/>
+  <svg xmlns="http://www.w3.org/2000/svg" width="500" height="500" viewBox="0 0 500 500">
+    <rect width="500" height="500" fill="${bg}"/>
+    <rect x="34" y="34" width="104" height="34" rx="8" fill="${primary}"/>
+    <text x="86" y="57" text-anchor="middle" dominant-baseline="middle" font-family="Arial, sans-serif" font-size="15" font-weight="800" fill="#fff">${badge}</text>
+    <text x="250" y="190" text-anchor="middle" dominant-baseline="middle" font-family="Arial, sans-serif" font-size="42" font-weight="900" fill="#111827">${safeKeyword}</text>
+    <rect x="60" y="228" width="380" height="52" rx="5" fill="${primary}"/>
+    <text x="250" y="254" text-anchor="middle" dominant-baseline="middle" font-family="Arial, sans-serif" font-size="23" font-weight="900" fill="#fff">${safeSection}</text>
+    <rect x="82" y="318" width="336" height="44" rx="5" fill="${accent}"/>
+    <text x="250" y="340" text-anchor="middle" dominant-baseline="middle" font-family="Arial, sans-serif" font-size="18" font-weight="800" fill="${primary}">${safeSubtitle}</text>
+    <rect x="78" y="406" width="344" height="5" fill="${primary}" opacity="0.22"/>
   </svg>`;
   return `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`;
 }
@@ -1313,9 +1315,14 @@ function buildRewriteDraft({ keyword, topic, platform, ctaUrl, useNaverQr, useAi
   const subject = topic || '이 내용';
   const targetSectionChars = pattern.sectionCharCount || DEFAULT_REWRITE_SETTINGS.sectionCharCount;
   const desiredKwCount = pattern.targetKwCount || DEFAULT_REWRITE_SETTINGS.targetKwCount;
+  const searchIntent = titleIntentTail(keyword, topic, pattern.sourceActionTerms || []);
+  const sourceKeywordHint = Array.isArray(pattern.sourceKeywords)
+    ? pattern.sourceKeywords.filter((item) => item && item !== keyword).slice(0, 3).join(', ')
+    : '';
   const intro = [
     `${subject}을 알아보다 보면 정보는 많은데 정작 지금 나에게 필요한 기준을 한 번에 잡기 어렵습니다.`,
     `그래서 이번 글은 ${keyword}를 중심으로 핵심 흐름과 확인 순서, 놓치기 쉬운 부분을 새롭게 정리했습니다.`,
+    `검색 의도는 ${searchIntent}에 맞추고, 주제 범위는 ${sourceKeywordHint || keyword} 흐름 안에서 벗어나지 않게 잡았습니다.`,
     `아래 내용은 참고 글의 문장을 가져온 것이 아니라 글 구성과 분량, 반복 밀도만 반영해 새로 작성한 초안입니다.`,
   ];
   const cta = ctaUrl
@@ -1417,6 +1424,20 @@ function scoreRewriteOutput(output, pattern) {
   return { seo, geo, aeo, total };
 }
 
+function estimateRewriteSimilarityRisk(output, pattern = {}) {
+  const text = `${output.title || ''}\n${output.plainText || ''}`;
+  const sourceTitles = Array.isArray(pattern.sourceTitles) ? pattern.sourceTitles : [];
+  const exactTitleHits = sourceTitles.filter((title) => {
+    const normalized = String(title || '').replace(/\s+/g, ' ').trim();
+    return normalized.length >= 16 && text.includes(normalized);
+  }).length;
+  const copiedHeadingHits = sourceTitles.filter((title) => {
+    const compact = String(title || '').replace(/\s+/g, '');
+    return compact.length >= 14 && text.replace(/\s+/g, '').includes(compact);
+  }).length;
+  return clampNumber(3 + exactTitleHits * 12 + copiedHeadingHits * 8, 2, 60);
+}
+
 async function addRewriteEvent(rewriteJobId, eventType, message, payload = {}) {
   await pool.query(
     `INSERT INTO rewrite_job_events (rewrite_job_id, event_type, message, payload)
@@ -1460,7 +1481,7 @@ async function processRewriteJob(jobId) {
   await addRewriteEvent(jobId, 'images_generated', '템플릿 이미지 세트를 생성했습니다', { count: output.images.length });
 
   const scores = scoreRewriteOutput(output, pattern);
-  const similarityRisk = 8;
+  const similarityRisk = estimateRewriteSimilarityRisk(output, pattern);
   const finalStatus = similarityRisk >= 45 ? '검수 필요' : '완료';
   const { rows } = await pool.query(
     `UPDATE rewrite_jobs
@@ -1501,7 +1522,7 @@ async function processRewriteJob(jobId) {
     ]
   );
 
-  await addRewriteEvent(jobId, 'completed', '재각색 작업이 완료되었습니다', { finalStatus, scores });
+  await addRewriteEvent(jobId, 'completed', '재각색 작업이 완료되었습니다', { finalStatus, scores, similarityRisk });
   return rows[0];
 }
 
