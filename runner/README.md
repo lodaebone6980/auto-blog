@@ -43,7 +43,19 @@ POST   /profiles/:id/credentials/verify
 DELETE /profiles/:id/credentials
 GET    /vpn/status
 POST   /vpn/connect
+GET    /publish/queue
+POST   /publish/queue
+POST   /publish/claim-next
 ```
+
+## 자동발행 대기와 딜레이
+
+대시보드에서 `자동발행 대기`를 누르면 Runner의 `/publish/queue`에도 작업 묶음이 저장됩니다.
+
+- `actionDelayMinutes`: 발행 동작 사이 대기 시간입니다. 기본 1분입니다.
+- `spacingMinutes`: 글과 글 사이 예약 간격입니다. 기본 120분입니다.
+- 실제 실행 시 Runner/확장프로그램은 `/publish/claim-next`로 서버 작업을 하나씩 점유하고, 응답의 `delayPlan` 값을 따라 대기합니다.
+- 여러 PC에서 동시에 실행해도 서버의 `claim-next`가 한 작업을 한 PC에만 넘기도록 처리합니다.
 
 ## 데이터 위치
 

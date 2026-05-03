@@ -1707,6 +1707,7 @@ function RewritePanel() {
 
   const queueSelectedForAutoPublish = async () => {
     const opsSettings = loadOpsSettings();
+    const runnerUrl = opsSettings.runnerUrl || 'http://127.0.0.1:39271';
     const blogAccounts = Array.isArray(opsSettings.accounts)
       ? opsSettings.accounts.filter((account) => account.platform === 'blog')
       : [];
@@ -1724,9 +1725,26 @@ function RewritePanel() {
     window.postMessage({
       type: 'NAVIWRITE_AUTO_PUBLISH_WAIT',
       jobIds,
-      runnerUrl: opsSettings.runnerUrl || 'http://127.0.0.1:39271',
+      runnerUrl,
+      spacingMinutes: Number(publishSpacingMinutes) || 120,
+      actionDelayMinutes: Number(publishActionDelayMinutes) || 1,
     }, '*');
-    setMessage(`자동발행 대기 ${jobIds.length}개를 확장프로그램/Runner로 넘겼습니다. 블로그 계정 세션을 먼저 체크해 주세요.`);
+    const runnerRes = await safeFetch(`${runnerUrl}/publish/queue`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        apiBase: API,
+        jobIds,
+        spacingMinutes: Number(publishSpacingMinutes) || 120,
+        actionDelayMinutes: Number(publishActionDelayMinutes) || 1,
+        createdAt: new Date().toISOString(),
+      }),
+    });
+    setMessage(
+      runnerRes?.ok
+        ? `자동발행 대기 ${jobIds.length}개를 Runner에 저장했습니다. 딜레이 ${publishActionDelayMinutes || 1}분, 간격 ${publishSpacingMinutes || 120}분으로 실행됩니다.`
+        : `자동발행 대기 ${jobIds.length}개를 DB에 저장했습니다. Runner가 꺼져 있으면 실행 PC에서 Runner를 켠 뒤 진행하세요.`
+    );
   };
 
   const copyBody = async (job) => {
@@ -3786,9 +3804,8 @@ function PublishQueuePanel() {
               publishAccountId: job.publish_account_id || '',
               publishAccountLabel: job.publish_account_label || '',
               publishAccountPlatform: job.publish_account_platform || job.platform || 'blog',
-              actionDelayMinSeconds: job.action_delay_min_seconds || 1,
-              actionDelayMaxSeconds: job.action_delay_max_seconds || 3,
-              betweenPostsDelayMinutes: job.between_posts_delay_minutes || 45,
+              actionDelayMinutes: Math.max(1, Math.round(Number(job.action_delay_max_seconds || job.action_delay_min_seconds || 60) / 60)),
+              betweenPostsDelayMinutes: job.between_posts_delay_minutes || 120,
               rssUrl: job.rss_url || '',
               publishedUrl: job.published_url || '',
             };
@@ -3821,9 +3838,9 @@ function PublishQueuePanel() {
         publishAccountId: draft.publishAccountId,
         publishAccountLabel: account?.label || draft.publishAccountLabel || '',
         publishAccountPlatform: account?.platform || draft.publishAccountPlatform || job.platform,
-        actionDelayMinSeconds: Number(draft.actionDelayMinSeconds) || 1,
-        actionDelayMaxSeconds: Number(draft.actionDelayMaxSeconds) || 3,
-        betweenPostsDelayMinutes: Number(draft.betweenPostsDelayMinutes) || 45,
+        actionDelayMinSeconds: (Number(draft.actionDelayMinutes) || 1) * 60,
+        actionDelayMaxSeconds: (Number(draft.actionDelayMinutes) || 1) * 60,
+        betweenPostsDelayMinutes: Number(draft.betweenPostsDelayMinutes) || 120,
         rssUrl: draft.rssUrl,
         publishedUrl: draft.publishedUrl,
       }),
@@ -3903,7 +3920,7 @@ function PublishQueuePanel() {
 
   const summary = useMemo(() => ({
     total: jobs.length,
-    waiting: jobs.filter((job) => ['발행대기', '예약대기'].includes(job.publish_status)).length,
+    waiting: jobs.filter((job) => ['자동발행대기', '발행대기', '예약대기'].includes(job.publish_status)).length,
     done: jobs.filter((job) => ['발행완료', 'RSS확인완료'].includes(job.publish_status)).length,
     rss: jobs.filter((job) => job.rss_match_status === 'matched').length,
   }), [jobs]);
@@ -3950,7 +3967,7 @@ function PublishQueuePanel() {
         <div style={{ padding: '14px 18px', borderBottom: `1px solid ${COLORS.border}` }}>
           <h3 style={{ fontSize: 15, fontWeight: 850, color: COLORS.primary }}>발행 작업 목록</h3>
           <p style={{ marginTop: 4, fontSize: 11, color: COLORS.textSecondary }}>
-            권장 기본 딜레이는 액션 사이 1~3초, 글 사이 45분입니다. 예약 발행은 실제 브라우저 러너가 이 값을 읽어 순차 실행하는 구조로 연결하면 됩니다.
+            기본 딜레이는 액션 사이 1분, 글 사이 120분입니다. Runner/확장프로그램은 이 DB 값을 읽어 순차 실행합니다.
           </p>
         </div>
         <div style={{ overflowX: 'auto' }}>
@@ -3966,7 +3983,7 @@ function PublishQueuePanel() {
             <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1380 }}>
               <thead>
                 <tr style={{ background: '#f8fafc', color: COLORS.textSecondary, fontSize: 11, textAlign: 'left' }}>
-                  {['상태', '제목/키워드', '플랫폼', '글/이미지', '발행 방식', '계정', '딜레이', 'RSS/발행 URL', '작업'].map((head) => (
+                  {['상태', '제목/키워드', '플랫폼', '글/이미지', '발행 방식', '계정', '딜레이/간격', 'RSS/발행 URL', '작업'].map((head) => (
                     <th key={head} style={{ padding: '10px 12px', borderBottom: `1px solid ${COLORS.border}` }}>{head}</th>
                   ))}
                 </tr>
@@ -4009,12 +4026,14 @@ function PublishQueuePanel() {
                         <p style={{ fontSize: 10, color: COLORS.textMuted }}>{job.publish_account_label || '운영 설정에서 계정을 먼저 등록'}</p>
                       </td>
                       <td style={{ padding: '12px', minWidth: 160 }}>
-                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
-                          <input type="number" min="0" max="30" value={draft.actionDelayMinSeconds ?? 1} onChange={(e) => updateDraft(job.id, { actionDelayMinSeconds: e.target.value })} style={{ ...inputStyle, height: 32, marginBottom: 0 }} />
-                          <input type="number" min="1" max="60" value={draft.actionDelayMaxSeconds ?? 3} onChange={(e) => updateDraft(job.id, { actionDelayMaxSeconds: e.target.value })} style={{ ...inputStyle, height: 32, marginBottom: 0 }} />
-                        </div>
-                        <input type="number" min="1" max="240" value={draft.betweenPostsDelayMinutes ?? 45} onChange={(e) => updateDraft(job.id, { betweenPostsDelayMinutes: e.target.value })} style={{ ...inputStyle, height: 32, marginTop: 6, marginBottom: 0 }} />
-                        <p style={{ marginTop: 4, fontSize: 10, color: COLORS.textMuted }}>초/초, 글 사이 분</p>
+                        <label style={{ display: 'grid', gap: 4, fontSize: 10, color: COLORS.textMuted, fontWeight: 800 }}>
+                          액션 딜레이(분)
+                          <input type="number" min="1" max="60" value={draft.actionDelayMinutes ?? 1} onChange={(e) => updateDraft(job.id, { actionDelayMinutes: e.target.value })} style={{ ...inputStyle, height: 32, marginBottom: 0 }} />
+                        </label>
+                        <label style={{ display: 'grid', gap: 4, fontSize: 10, color: COLORS.textMuted, fontWeight: 800, marginTop: 6 }}>
+                          글 사이 간격(분)
+                          <input type="number" min="1" max="1440" value={draft.betweenPostsDelayMinutes ?? 120} onChange={(e) => updateDraft(job.id, { betweenPostsDelayMinutes: e.target.value })} style={{ ...inputStyle, height: 32, marginBottom: 0 }} />
+                        </label>
                       </td>
                       <td style={{ padding: '12px', minWidth: 250 }}>
                         <input value={draft.rssUrl || ''} onChange={(e) => updateDraft(job.id, { rssUrl: e.target.value })} placeholder="RSS URL 또는 블로그 ID" style={{ ...inputStyle, height: 32, marginBottom: 6 }} />

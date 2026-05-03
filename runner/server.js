@@ -13,6 +13,7 @@ const PORT = Number(process.env.NAVIWRITE_RUNNER_PORT || 39271);
 const DATA_DIR = process.env.NAVIWRITE_RUNNER_DATA || path.join(os.homedir(), 'NaviWriteRunner');
 const PROFILE_DIR = path.join(DATA_DIR, 'profiles');
 const STORE_FILE = path.join(DATA_DIR, 'profiles.json');
+const PUBLISH_QUEUE_FILE = path.join(DATA_DIR, 'publish-queue.json');
 const LOGIN_CHECK_INTERVAL_MS = Number(process.env.NAVIWRITE_LOGIN_CHECK_MS || 6 * 60 * 60 * 1000);
 const INACTIVITY_RECHECK_MS = Number(process.env.NAVIWRITE_INACTIVITY_RECHECK_MS || 2 * 60 * 60 * 1000);
 
@@ -44,6 +45,20 @@ async function readStore() {
 async function writeStore(store) {
   await ensureStore();
   await fs.writeFile(STORE_FILE, JSON.stringify(store, null, 2), 'utf8');
+}
+
+async function readPublishQueue() {
+  await ensureStore();
+  if (!existsSync(PUBLISH_QUEUE_FILE)) {
+    return { batches: [], updatedAt: null };
+  }
+  const raw = await fs.readFile(PUBLISH_QUEUE_FILE, 'utf8');
+  return JSON.parse(raw || '{"batches":[]}');
+}
+
+async function writePublishQueue(queue) {
+  await ensureStore();
+  await fs.writeFile(PUBLISH_QUEUE_FILE, JSON.stringify({ ...queue, updatedAt: nowIso() }, null, 2), 'utf8');
 }
 
 async function readBody(req) {
@@ -277,6 +292,20 @@ async function profilePayload(profile) {
   };
 }
 
+function delayPlanForJob(job = {}) {
+  const actionDelaySeconds = Math.max(
+    1,
+    Number(job.action_delay_max_seconds || job.actionDelayMaxSeconds || job.action_delay_min_seconds || job.actionDelayMinSeconds || 60)
+  );
+  const betweenPostsMinutes = Math.max(1, Number(job.between_posts_delay_minutes || job.betweenPostsDelayMinutes || 120));
+  return {
+    actionDelaySeconds,
+    actionDelayMs: actionDelaySeconds * 1000,
+    betweenPostsMinutes,
+    betweenPostsMs: betweenPostsMinutes * 60 * 1000,
+  };
+}
+
 async function router(req, res) {
   const requestUrl = new URL(req.url, `http://127.0.0.1:${PORT}`);
   const parts = requestUrl.pathname.split('/').filter(Boolean);
@@ -304,6 +333,53 @@ async function router(req, res) {
         ok: true,
         checkedAt: nowIso(),
         profiles,
+      });
+    }
+
+    if (req.method === 'GET' && requestUrl.pathname === '/publish/queue') {
+      return send(res, 200, await readPublishQueue());
+    }
+
+    if (req.method === 'POST' && requestUrl.pathname === '/publish/queue') {
+      const body = await readBody(req);
+      const queue = await readPublishQueue();
+      const batch = {
+        id: `batch_${Date.now()}`,
+        apiBase: body.apiBase || '',
+        jobIds: Array.isArray(body.jobIds) ? body.jobIds : [],
+        spacingMinutes: Number(body.spacingMinutes || 120),
+        actionDelayMinutes: Number(body.actionDelayMinutes || 1),
+        status: '자동발행 대기',
+        createdAt: body.createdAt || nowIso(),
+      };
+      const next = {
+        batches: [batch, ...(Array.isArray(queue.batches) ? queue.batches : [])].slice(0, 50),
+      };
+      await writePublishQueue(next);
+      return send(res, 200, { ok: true, batch, queue: next });
+    }
+
+    if (req.method === 'POST' && requestUrl.pathname === '/publish/claim-next') {
+      const body = await readBody(req);
+      const apiBase = String(body.apiBase || '').replace(/\/$/, '');
+      if (!apiBase) return send(res, 400, { error: 'apiBase is required' });
+      const response = await fetch(`${apiBase}/publish-queue/claim-next`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(body.tenantId ? { 'x-naviwrite-tenant': body.tenantId } : {}),
+        },
+        body: JSON.stringify({
+          platform: body.platform || null,
+          publishAccountId: body.publishAccountId || null,
+          publishAccountLabel: body.publishAccountLabel || null,
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok) return send(res, response.status, payload);
+      return send(res, 200, {
+        ...payload,
+        delayPlan: payload.job ? delayPlanForJob(payload.job) : null,
       });
     }
 
