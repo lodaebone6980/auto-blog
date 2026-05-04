@@ -1668,12 +1668,6 @@ function RewritePanel() {
   const [recommendingTitle, setRecommendingTitle] = useState(false);
   const [platform, setPlatform] = useState('blog');
   const [category, setCategory] = useState('IT/테크');
-  const [ctaUrl, setCtaUrl] = useState('');
-  const [useNaverQr, setUseNaverQr] = useState(true);
-  const [useAiImages, setUseAiImages] = useState(true);
-  const [concurrency, setConcurrency] = useState(3);
-  const [publishSpacingMinutes, setPublishSpacingMinutes] = useState(() => Number(localStorage.getItem('naviwrite.rewrite.publishSpacingMinutes') || 120));
-  const [publishActionDelayMinutes, setPublishActionDelayMinutes] = useState(() => Number(localStorage.getItem('naviwrite.rewrite.publishActionDelayMinutes') || 1));
   const [rewriteSettings, setRewriteSettings] = useState(() => {
     try {
       const saved = JSON.parse(localStorage.getItem('naviwrite.rewrite.settings') || 'null') || {};
@@ -1685,7 +1679,6 @@ function RewritePanel() {
   const [loading, setLoading] = useState(false);
   const [creating, setCreating] = useState(false);
   const [queueing, setQueueing] = useState(false);
-  const [reanalyzingKeywords, setReanalyzingKeywords] = useState(false);
   const [benchmarking, setBenchmarking] = useState(false);
   const [creatingRssJobs, setCreatingRssJobs] = useState(false);
   const [message, setMessage] = useState('');
@@ -1740,14 +1733,6 @@ function RewritePanel() {
     localStorage.setItem('naviwrite.rewrite.settings', JSON.stringify(rewriteSettings));
   }, [rewriteSettings]);
 
-  useEffect(() => {
-    localStorage.setItem('naviwrite.rewrite.publishSpacingMinutes', String(publishSpacingMinutes || 120));
-  }, [publishSpacingMinutes]);
-
-  useEffect(() => {
-    localStorage.setItem('naviwrite.rewrite.publishActionDelayMinutes', String(publishActionDelayMinutes || 1));
-  }, [publishActionDelayMinutes]);
-
   const collectedLinks = useMemo(
     () => links.filter((link) => link.status === '수집완료' && link.source_analysis_id),
     [links]
@@ -1797,21 +1782,6 @@ function RewritePanel() {
   const rewriteJobCount = keywordsText.trim() ? keywordCount : selectedSources.length;
   const canCreateGenerationJobs = keywordCount > 0 || selectedSources.length > 0;
 
-  const patternSummary = useMemo(() => {
-    const avg = (field, fallback = 0) => {
-      const values = selectedSources.map((item) => Number(item[field] || 0)).filter((value) => value > 0);
-      if (values.length === 0) return fallback;
-      return Math.round(values.reduce((sum, value) => sum + value, 0) / values.length);
-    };
-    const quoteTotal = selectedSources.reduce((sum, item) => sum + parseArray(item.quote_blocks).length, 0);
-    return {
-      charCount: avg('char_count'),
-      kwCount: avg('kw_count'),
-      imageCount: avg('image_count'),
-      quoteCount: selectedSources.length ? Math.round(quoteTotal / selectedSources.length) : 0,
-    };
-  }, [selectedSources]);
-
   const toggleSource = (id) => {
     setSelectedSourceLinkIds((prev) => (
       prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
@@ -1844,9 +1814,8 @@ function RewritePanel() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         itemIds: selectedRssItems.map((item) => item.id),
-        ctaUrl,
-        useNaverQr,
-        useAiImages,
+        useNaverQr: true,
+        useAiImages: true,
         rewriteSettings,
       }),
     });
@@ -2002,29 +1971,28 @@ function RewritePanel() {
     }
 
     setCreating(true);
-    setMessage(`발행 생성 작업 ${rewriteJobCount}개를 병렬 처리 중입니다.`);
+    setMessage(`발행 생성 작업 ${rewriteJobCount}개를 생성 중입니다.`);
     const res = await safeFetch(`${API}/rewrite-jobs`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         keywordsText: keywordsText.trim() ? keywordsText : '',
         sourceRowMode: !keywordsText.trim(),
-        sourceLinkIds: selectedSourceLinkIds,
+        sourceLinkIds: keywordsText.trim() ? [] : selectedSourceLinkIds,
         targetTopic,
         platform,
         category,
-        ctaUrl,
-        useNaverQr,
-        useAiImages,
+        useNaverQr: true,
+        useAiImages: true,
         customTitle,
         rewriteSettings,
-        concurrency: Number(concurrency) || 3,
+        concurrency: 3,
       }),
     });
     setCreating(false);
 
     if (res?.ok) {
-      setMessage(`발행 생성 완료 · 생성 ${res.created}개 · 병렬 ${res.concurrency}개`);
+      setMessage(`발행 생성 완료 · 생성 ${res.created}개`);
       setKeywordsText('');
       await loadRewriteData();
     } else {
@@ -2058,45 +2026,28 @@ function RewritePanel() {
     await loadRewriteData();
   };
 
-  const reanalyzeSelectedMainKeywords = async () => {
-    if (selectedSourceLinkIds.length === 0) {
-      setMessage('메인 키워드를 다시 잡을 수집 링크를 체크해 주세요.');
-      return;
-    }
-    setReanalyzingKeywords(true);
-    setMessage(`선택한 ${selectedSourceLinkIds.length}개 링크의 메인 키워드를 재분석 중입니다.`);
-    let updated = 0;
-    for (const linkId of selectedSourceLinkIds) {
-      const res = await safeFetch(`${API}/collections/links/${linkId}/recommend-main-keyword`, { method: 'POST' });
-      if (res?.ok) updated += 1;
-    }
-    setReanalyzingKeywords(false);
-    setMessage(`메인 키워드 재분석 완료 · ${updated}/${selectedSourceLinkIds.length}개 반영`);
-    await loadRewriteData();
-  };
-
-  const sendRewriteIdsToPublishQueue = async (rewriteJobIds, { autoReady = false } = {}) => {
+  const sendRewriteIdsToPublishQueue = async (rewriteJobIds) => {
     if (!rewriteJobIds.length) {
       setMessage('발행 큐로 보낼 발행 생성 완료 행을 체크해 주세요.');
       return null;
     }
     setQueueing(true);
-    setMessage(`${rewriteJobIds.length}개 작업을 ${autoReady ? '자동발행 대기' : '예약 발행 큐'}로 보내는 중입니다.`);
+    setMessage(`${rewriteJobIds.length}개 작업을 발행 큐로 보내는 중입니다.`);
     const res = await safeFetch(`${API}/rewrite-jobs/to-content-jobs/bulk`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         rewriteJobIds,
         publishMode: 'scheduled',
-        spacingMinutes: Number(publishSpacingMinutes) || 120,
-        actionDelayMinutes: Number(publishActionDelayMinutes) || 1,
-        autoReady,
+        spacingMinutes: 120,
+        actionDelayMinutes: 1,
+        autoReady: false,
       }),
     });
     setQueueing(false);
     if (res?.ok) {
       const firstTime = res.firstScheduledAt ? new Date(res.firstScheduledAt).toLocaleString('ko-KR') : '즉시';
-      setMessage(`${res.created || rewriteJobIds.length}개 작업을 ${autoReady ? '자동발행 대기' : '예약 발행 큐'}로 보냈습니다. 첫 시간: ${firstTime}`);
+      setMessage(`${res.created || rewriteJobIds.length}개 작업을 발행 큐로 보냈습니다. 첫 시간: ${firstTime}`);
       await loadRewriteData();
       return res;
     } else {
@@ -2111,50 +2062,6 @@ function RewritePanel() {
 
   const sendSelectedToPublishQueue = async () => {
     await sendRewriteIdsToPublishQueue(selectedRewriteLinks.map((link) => link.rewrite_job_id));
-  };
-
-  const queueSelectedForAutoPublish = async () => {
-    const opsSettings = loadOpsSettings();
-    const runnerUrl = opsSettings.runnerUrl || 'http://127.0.0.1:39271';
-    const blogAccounts = Array.isArray(opsSettings.accounts)
-      ? opsSettings.accounts.filter((account) => account.platform === 'blog')
-      : [];
-    if (blogAccounts.length === 0) {
-      setMessage('운영 설정에서 네이버 블로그 계정 슬롯을 먼저 만들고 인증 창에서 로그인 체크를 해주세요.');
-      return;
-    }
-    const res = await sendRewriteIdsToPublishQueue(
-      selectedRewriteLinks.map((link) => link.rewrite_job_id),
-      { autoReady: true }
-    );
-    if (!res?.ok) return;
-    const jobIds = (res.jobs || []).map((job) => job.id);
-    const apiBase = new URL(API, window.location.origin).toString().replace(/\/$/, '');
-    localStorage.setItem('naviwrite.autoPublish.pendingJobIds', JSON.stringify(jobIds));
-    window.postMessage({
-      type: 'NAVIWRITE_AUTO_PUBLISH_WAIT',
-      jobIds,
-      runnerUrl,
-      apiBase,
-      spacingMinutes: Number(publishSpacingMinutes) || 120,
-      actionDelayMinutes: Number(publishActionDelayMinutes) || 1,
-    }, '*');
-    const runnerRes = await safeFetch(`${runnerUrl}/publish/queue`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        apiBase,
-        jobIds,
-        spacingMinutes: Number(publishSpacingMinutes) || 120,
-        actionDelayMinutes: Number(publishActionDelayMinutes) || 1,
-        createdAt: new Date().toISOString(),
-      }),
-    });
-    setMessage(
-      runnerRes?.ok
-        ? `자동발행 대기 ${jobIds.length}개를 Runner에 저장했습니다. 딜레이 ${publishActionDelayMinutes || 1}분, 간격 ${publishSpacingMinutes || 120}분으로 실행됩니다.`
-        : `자동발행 대기 ${jobIds.length}개를 DB에 저장했습니다. Runner가 꺼져 있으면 실행 PC에서 Runner를 켠 뒤 진행하세요.`
-    );
   };
 
   const copyBody = async (job) => {
@@ -2207,7 +2114,7 @@ function RewritePanel() {
           <div>
             <h2 style={{ fontSize: 18, fontWeight: 850, color: COLORS.primary, marginBottom: 4 }}>발행 생성</h2>
             <p style={{ fontSize: 12, color: COLORS.textSecondary, lineHeight: 1.6 }}>
-              URL 수집 글, RSS 감지 글, 직접 입력한 메인키워드를 발행 가능한 초안으로 바로 생성합니다. 문장은 새로 쓰고 수치와 발행 규칙만 반영합니다.
+              수집 완료 글, RSS 검토 완료 글, 직접 입력한 메인키워드를 발행 가능한 초안으로 생성합니다. 문장은 새로 쓰고 수치와 발행 규칙만 반영합니다.
             </p>
           </div>
           <button
@@ -2230,32 +2137,37 @@ function RewritePanel() {
           </button>
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 14, marginTop: 16 }}>
-          <div>
-            <label style={{ display: 'block', fontSize: 11, fontWeight: 800, color: COLORS.textSecondary, marginBottom: 6 }}>공통 키워드 override · 보통은 비워두세요</label>
-            <textarea
-              value={keywordsText}
-              onChange={(e) => setKeywordsText(e.target.value)}
-              placeholder={`직접 새 글을 만들 메인키워드를 줄바꿈으로 입력하세요.\n비워두면 아래 수집 소스 표의 수정 KW, 없으면 자동 메인키워드로 각 행이 따로 생성됩니다.`}
-              rows={4}
-              style={{
-                width: '100%',
-                border: `1px solid ${COLORS.border}`,
-                borderRadius: 10,
-                padding: 12,
-                fontSize: 13,
-                lineHeight: 1.55,
-                resize: 'vertical',
-                outline: 'none',
-              }}
-            />
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 8 }}>
+        <details style={{ marginTop: 16, border: `1px solid ${COLORS.border}`, borderRadius: 12, padding: 14, background: '#f8fafc' }}>
+          <summary style={{ cursor: 'pointer', fontSize: 13, fontWeight: 900, color: COLORS.primary }}>
+            직접 키워드로 새 글 만들기
+          </summary>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 14, marginTop: 14 }}>
+            <div>
+              <label style={{ display: 'block', fontSize: 11, fontWeight: 800, color: COLORS.textSecondary, marginBottom: 6 }}>직접 생성 메인키워드</label>
+              <textarea
+                value={keywordsText}
+                onChange={(e) => setKeywordsText(e.target.value)}
+                placeholder={`새 글을 만들 메인키워드를 줄바꿈으로 입력하세요.\n수집/RSS 글은 각 행의 키워드를 사용하므로 여기에 입력하지 않아도 됩니다.`}
+                rows={4}
+                style={{
+                  width: '100%',
+                  border: `1px solid ${COLORS.border}`,
+                  borderRadius: 10,
+                  padding: 12,
+                  fontSize: 13,
+                  lineHeight: 1.55,
+                  resize: 'vertical',
+                  outline: 'none',
+                  background: 'white',
+                }}
+              />
               <button
                 type="button"
                 onClick={recommendKeywords}
                 disabled={recommendingKeywords}
                 style={{
                   height: 32,
+                  marginTop: 8,
                   padding: '0 12px',
                   borderRadius: 8,
                   border: 'none',
@@ -2268,103 +2180,59 @@ function RewritePanel() {
               >
                 {recommendingKeywords ? '키워드 검증중' : 'AI 키워드 추천'}
               </button>
-              <span style={{ fontSize: 11, color: COLORS.textMuted, fontWeight: 700 }}>
-                추천 버튼은 주제형 새 글을 만들 때 쓰고, 수집 글 기준 생성은 표의 행별 수정 KW가 우선입니다.
-              </span>
             </div>
-            {!keywordsText.trim() && derivedSourceKeywords.length > 0 && (
-              <p style={{ marginTop: 6, fontSize: 11, color: COLORS.success, fontWeight: 800 }}>
-                자동 사용 KW: {derivedSourceKeywords.slice(0, 5).join(', ')}{derivedSourceKeywords.length > 5 ? ` 외 ${derivedSourceKeywords.length - 5}개` : ''}
-              </p>
-            )}
-          </div>
-          <div style={{ display: 'grid', gap: 10 }}>
-            <details style={{ border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: 10, background: '#f8fafc' }}>
-              <summary style={{ cursor: 'pointer', fontSize: 11, fontWeight: 900, color: COLORS.textSecondary }}>
-                직접 키워드/고급 생성 기본값
-              </summary>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginTop: 10 }}>
-              <div>
-                <label style={{ display: 'block', fontSize: 11, fontWeight: 800, color: COLORS.textSecondary, marginBottom: 6 }}>직접 키워드 기본 플랫폼</label>
-                <select
-                  value={platform}
-                  onChange={(e) => setPlatform(e.target.value)}
-                  style={{ width: '100%', height: 38, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: '0 10px', fontSize: 12, color: COLORS.textPrimary, background: 'white' }}
-                >
-                  <option value="blog">네이버 블로그</option>
-                  <option value="cafe">네이버 카페</option>
-                  <option value="premium">네이버프리미엄</option>
-                  <option value="brunch">브런치</option>
-                  <option value="web">웹사이트</option>
-                </select>
-              </div>
-              <div>
-                <label style={{ display: 'block', fontSize: 11, fontWeight: 800, color: COLORS.textSecondary, marginBottom: 6 }}>초안 생성 병렬 수</label>
-                <select
-                  value={concurrency}
-                  onChange={(e) => setConcurrency(e.target.value)}
-                  style={{ width: '100%', height: 38, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: '0 10px', fontSize: 12, color: COLORS.textPrimary, background: 'white' }}
-                >
-                  {[1, 2, 3, 4, 5].map((value) => <option key={value} value={value}>{value}개</option>)}
-                </select>
-              </div>
-              </div>
-            </details>
-            <input
-              value={targetTopic}
-              onChange={(e) => setTargetTopic(e.target.value)}
-              placeholder="주제 보정값 예: 링크 결과 유형 정리"
-              style={{ width: '100%', height: 38, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: '0 12px', fontSize: 12, outline: 'none' }}
-            />
-            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 118px', gap: 8 }}>
-              <input
-                value={customTitle}
-                onChange={(e) => setCustomTitle(e.target.value)}
-                placeholder="추천/고정 제목 · 비워두면 자동 생성"
-                style={{ width: '100%', height: 38, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: '0 12px', fontSize: 12, outline: 'none' }}
-              />
-              <button
-                type="button"
-                onClick={recommendTitles}
-                disabled={recommendingTitle}
-                style={{
-                  height: 38,
-                  borderRadius: 8,
-                  border: 'none',
-                  background: recommendingTitle ? COLORS.textMuted : COLORS.accent,
-                  color: 'white',
-                  fontSize: 11,
-                  fontWeight: 850,
-                  cursor: recommendingTitle ? 'wait' : 'pointer',
-                }}
+            <div style={{ display: 'grid', gap: 8 }}>
+              <select
+                value={platform}
+                onChange={(e) => setPlatform(e.target.value)}
+                style={{ width: '100%', height: 38, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: '0 10px', fontSize: 12, color: COLORS.textPrimary, background: 'white' }}
               >
-                {recommendingTitle ? '추천중' : 'AI 제목 추천'}
-              </button>
-            </div>
-            <input
-              value={category}
-              onChange={(e) => setCategory(e.target.value)}
-              placeholder="카테고리 예: IT/테크"
-              style={{ width: '100%', height: 38, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: '0 12px', fontSize: 12, outline: 'none' }}
-            />
-            <input
-              value={ctaUrl}
-              onChange={(e) => setCtaUrl(e.target.value)}
-              placeholder="CTA 링크 또는 QR 연결 링크"
-              style={{ width: '100%', height: 38, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: '0 12px', fontSize: 12, outline: 'none' }}
-            />
-            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', fontSize: 12, color: COLORS.textSecondary, fontWeight: 800 }}>
-              <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                <input type="checkbox" checked={useNaverQr} onChange={(e) => setUseNaverQr(e.target.checked)} />
-                네이버 QR 삽입
-              </label>
-              <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                <input type="checkbox" checked={useAiImages} onChange={(e) => setUseAiImages(e.target.checked)} />
-                이미지 초안 생성
-              </label>
+                <option value="blog">네이버 블로그</option>
+                <option value="cafe">네이버 카페</option>
+                <option value="premium">네이버프리미엄</option>
+                <option value="brunch">브런치</option>
+                <option value="web">웹사이트</option>
+              </select>
+              <input
+                value={category}
+                onChange={(e) => setCategory(e.target.value)}
+                placeholder="카테고리 예: IT/테크"
+                style={{ width: '100%', height: 38, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: '0 12px', fontSize: 12, outline: 'none', background: 'white' }}
+              />
+              <input
+                value={targetTopic}
+                onChange={(e) => setTargetTopic(e.target.value)}
+                placeholder="주제 보정값 예: 링크 결과 유형 정리"
+                style={{ width: '100%', height: 38, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: '0 12px', fontSize: 12, outline: 'none', background: 'white' }}
+              />
+              <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 118px', gap: 8 }}>
+                <input
+                  value={customTitle}
+                  onChange={(e) => setCustomTitle(e.target.value)}
+                  placeholder="추천/고정 제목 · 비워두면 자동 생성"
+                  style={{ width: '100%', height: 38, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: '0 12px', fontSize: 12, outline: 'none', background: 'white' }}
+                />
+                <button
+                  type="button"
+                  onClick={recommendTitles}
+                  disabled={recommendingTitle}
+                  style={{
+                    height: 38,
+                    borderRadius: 8,
+                    border: 'none',
+                    background: recommendingTitle ? COLORS.textMuted : COLORS.accent,
+                    color: 'white',
+                    fontSize: 11,
+                    fontWeight: 850,
+                    cursor: recommendingTitle ? 'wait' : 'pointer',
+                  }}
+                >
+                  {recommendingTitle ? '추천중' : 'AI 제목 추천'}
+                </button>
+              </div>
             </div>
           </div>
-        </div>
+        </details>
 
         {keywordRecommendations?.candidates?.length > 0 && (
           <div style={{
@@ -2718,20 +2586,6 @@ function RewritePanel() {
         </div>
       </section>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12 }}>
-        {[
-          ['선택 소스', selectedSources.length, COLORS.primary],
-          ['평균 글자수', patternSummary.charCount ? patternSummary.charCount.toLocaleString() : '-', COLORS.textPrimary],
-          ['평균 KW', patternSummary.kwCount || '-', COLORS.accent],
-          ['평균 이미지', patternSummary.imageCount || '-', COLORS.success],
-          ['평균 인용구', patternSummary.quoteCount || '-', COLORS.warning],
-        ].map(([label, value, color]) => (
-          <div key={label} style={{ ...cardStyle, padding: 16 }}>
-            <p style={{ fontSize: 11, color: COLORS.textSecondary, fontWeight: 700, marginBottom: 6 }}>{label}</p>
-            <p style={{ fontSize: 25, color, fontWeight: 900, lineHeight: 1 }}>{value}</p>
-          </div>
-        ))}
-      </div>
       <section style={sectionStyle}>
         <div style={{ padding: '14px 18px', borderBottom: `1px solid ${COLORS.border}`, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
           <div style={{ marginRight: 'auto' }}>
@@ -2758,14 +2612,6 @@ function RewritePanel() {
           </button>
           <button
             type="button"
-            onClick={reanalyzeSelectedMainKeywords}
-            disabled={selectedSourceLinkIds.length === 0 || reanalyzingKeywords}
-            style={{ height: 30, padding: '0 12px', borderRadius: 8, border: `1px solid ${COLORS.border}`, background: 'white', color: COLORS.primary, fontSize: 11, fontWeight: 850, cursor: selectedSourceLinkIds.length === 0 || reanalyzingKeywords ? 'not-allowed' : 'pointer' }}
-          >
-            {reanalyzingKeywords ? 'KW 재분석중' : '메인 KW 재분석'}
-          </button>
-          <button
-            type="button"
             onClick={reprocessSelectedJobs}
             disabled={selectedRewriteLinks.length === 0 || creating}
             style={{ height: 30, padding: '0 12px', borderRadius: 8, border: `1px solid ${COLORS.border}`, background: 'white', color: COLORS.accent, fontSize: 11, fontWeight: 850, cursor: selectedRewriteLinks.length === 0 || creating ? 'not-allowed' : 'pointer' }}
@@ -2780,36 +2626,6 @@ function RewritePanel() {
           >
             발행큐로 보내기
           </button>
-          <button
-            type="button"
-            onClick={queueSelectedForAutoPublish}
-            disabled={selectedRewriteLinks.length === 0 || queueing}
-            style={{ height: 30, padding: '0 12px', borderRadius: 8, border: 'none', background: selectedRewriteLinks.length === 0 || queueing ? COLORS.textMuted : COLORS.primary, color: 'white', fontSize: 11, fontWeight: 850, cursor: selectedRewriteLinks.length === 0 || queueing ? 'not-allowed' : 'pointer' }}
-          >
-            자동발행 대기
-          </button>
-          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 10, color: COLORS.textSecondary, fontWeight: 800 }}>
-            간격(분)
-            <input
-              type="number"
-              min="1"
-              max="1440"
-              value={publishSpacingMinutes}
-              onChange={(e) => setPublishSpacingMinutes(Number(e.target.value) || 120)}
-              style={{ width: 64, height: 30, border: `1px solid ${COLORS.border}`, borderRadius: 7, padding: '0 7px', fontSize: 11, fontWeight: 800 }}
-            />
-          </label>
-          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 10, color: COLORS.textSecondary, fontWeight: 800 }}>
-            딜레이(분)
-            <input
-              type="number"
-              min="1"
-              max="60"
-              value={publishActionDelayMinutes}
-              onChange={(e) => setPublishActionDelayMinutes(Number(e.target.value) || 1)}
-              style={{ width: 58, height: 30, border: `1px solid ${COLORS.border}`, borderRadius: 7, padding: '0 7px', fontSize: 11, fontWeight: 800 }}
-            />
-          </label>
         </div>
         <div style={{ overflowX: 'auto', maxHeight: 430 }}>
           {loading ? (
