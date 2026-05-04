@@ -1045,9 +1045,9 @@ function SourceCollectionPanel({ onOpenRewrite }) {
       <section style={{ ...cardStyle, padding: 20 }}>
         <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16, marginBottom: 14 }}>
           <div>
-            <h2 style={{ fontSize: 18, fontWeight: 850, color: COLORS.primary, marginBottom: 4 }}>수집 링크</h2>
+            <h2 style={{ fontSize: 18, fontWeight: 850, color: COLORS.primary, marginBottom: 4 }}>수집/감지</h2>
             <p style={{ fontSize: 12, color: COLORS.textSecondary }}>
-              URL을 줄바꿈으로 넣으면 웹 서버가 공개 페이지를 바로 가져와 본문, 이미지 수, 키워드 반복수, 글 구조를 분석합니다.
+              URL 수집과 RSS 감지를 여기에서 처리하고, 검토한 글만 발행 생성 메뉴로 넘깁니다.
             </p>
           </div>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
@@ -1162,6 +1162,8 @@ function SourceCollectionPanel({ onOpenRewrite }) {
           </div>
         ))}
       </div>
+
+      <RssDetectionPanel onOpenRewrite={onOpenRewrite} />
 
       {stats.pending > 0 && (
         <section style={{ ...cardStyle, padding: 16, background: '#fff7ed', borderColor: '#fed7aa' }}>
@@ -1355,15 +1357,298 @@ function SourceCollectionPanel({ onOpenRewrite }) {
   );
 }
 
-function RewritePanel() {
-  const [links, setLinks] = useState([]);
-  const [jobs, setJobs] = useState([]);
+function RssDetectionPanel({ onOpenRewrite }) {
   const [rssSources, setRssSources] = useState([]);
   const [rssItems, setRssItems] = useState([]);
-  const [selectedRssItemIds, setSelectedRssItemIds] = useState([]);
+  const [selectedRssItemIds, setSelectedRssItemIds] = useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem('naviwrite.rewrite.selectedRssItemIds') || '[]');
+      return Array.isArray(saved) ? saved : [];
+    } catch {
+      return [];
+    }
+  });
   const [rssForm, setRssForm] = useState({ label: '', rssUrl: '', platform: 'blog', category: 'IT/테크' });
   const [rssVolumeFilter, setRssVolumeFilter] = useState('all');
   const [checkingRssId, setCheckingRssId] = useState(null);
+  const [preparing, setPreparing] = useState(false);
+  const [message, setMessage] = useState('');
+
+  const loadRssData = useCallback(async () => {
+    const [sourceRes, itemRes] = await Promise.all([
+      safeFetch(`${API}/rss-sources?limit=60`),
+      safeFetch(`${API}/rss-items?limit=160`),
+    ]);
+    if (Array.isArray(sourceRes)) setRssSources(sourceRes);
+    if (Array.isArray(itemRes)) setRssItems(itemRes);
+  }, []);
+
+  useEffect(() => {
+    loadRssData();
+  }, [loadRssData]);
+
+  const filteredRssItems = useMemo(
+    () => rssItems.filter((item) => rssVolumeFilter === 'all' || (item.volume_band || 'unknown') === rssVolumeFilter),
+    [rssItems, rssVolumeFilter]
+  );
+  const allRssItemsSelected = filteredRssItems.length > 0 && filteredRssItems.every((item) => selectedRssItemIds.includes(item.id));
+  const selectedRssItems = useMemo(
+    () => filteredRssItems.filter((item) => selectedRssItemIds.includes(item.id)),
+    [filteredRssItems, selectedRssItemIds]
+  );
+
+  const loadOpsSettings = () => {
+    try {
+      return JSON.parse(localStorage.getItem('naviwrite.opsSettings') || localStorage.getItem('naviwrite.ops.settings') || '{}') || {};
+    } catch {
+      return {};
+    }
+  };
+
+  const toggleRssItem = (id) => {
+    setSelectedRssItemIds((prev) => (
+      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
+    ));
+  };
+
+  const toggleAllRssItems = () => {
+    setSelectedRssItemIds(allRssItemsSelected ? [] : readyRssItems.map((item) => item.id));
+  };
+
+  const createRssSource = async () => {
+    if (!rssForm.rssUrl.trim()) {
+      setMessage('감지할 RSS URL이나 네이버 블로그 ID를 입력해 주세요.');
+      return;
+    }
+    const res = await safeFetch(`${API}/rss-sources`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(rssForm),
+    });
+    if (res?.ok) {
+      setRssForm({ label: '', rssUrl: '', platform: rssForm.platform, category: rssForm.category });
+      setMessage('RSS 감지 소스를 저장했습니다.');
+      await loadRssData();
+    } else {
+      setMessage(res?.error || 'RSS 소스 저장에 실패했습니다.');
+    }
+  };
+
+  const checkRssSource = async (source) => {
+    const opsSettings = loadOpsSettings();
+    setCheckingRssId(source.id);
+    setMessage(`${source.label || source.rss_url} RSS를 확인하고 키워드 후보를 검증 중입니다.`);
+    const res = await safeFetch(`${API}/rss-sources/${source.id}/check`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        naverClientId: opsSettings.naverClientId,
+        naverClientSecret: opsSettings.naverClientSecret,
+        limit: 20,
+      }),
+    });
+    setCheckingRssId(null);
+    if (res?.ok) {
+      setMessage(`RSS 감지 완료 · ${res.detected || 0}개 글 확인`);
+      await loadRssData();
+    } else {
+      setMessage(res?.error || 'RSS 감지에 실패했습니다.');
+    }
+  };
+
+  const updateRssItemKeyword = async (item, selectedKeyword, checkedForPublish = item.checked_for_publish) => {
+    const res = await safeFetch(`${API}/rss-items/${item.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ selectedKeyword, checkedForPublish }),
+    });
+    if (res?.ok) {
+      await loadRssData();
+    } else {
+      setMessage(res?.error || 'RSS 키워드 저장에 실패했습니다.');
+    }
+  };
+
+  const prepareSelectedRssItems = async () => {
+    if (selectedRssItems.length === 0) {
+      setMessage('발행 생성으로 넘길 RSS 글을 선택해 주세요.');
+      return;
+    }
+    setPreparing(true);
+    await Promise.all(selectedRssItems.map((item) => safeFetch(`${API}/rss-items/${item.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        selectedKeyword: item.selected_keyword || item.main_keyword || '',
+        checkedForPublish: true,
+      }),
+    })));
+    localStorage.setItem('naviwrite.rewrite.selectedRssItemIds', JSON.stringify(selectedRssItems.map((item) => item.id)));
+    setPreparing(false);
+    setMessage(`RSS 글 ${selectedRssItems.length}개를 발행 생성 대기로 넘겼습니다.`);
+    await loadRssData();
+    if (onOpenRewrite) onOpenRewrite();
+  };
+
+  return (
+    <section style={{ ...cardStyle, padding: 18 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap', marginBottom: 12 }}>
+        <div>
+          <h3 style={{ fontSize: 15, fontWeight: 850, color: COLORS.primary, marginBottom: 4 }}>RSS 감지 키워드 검토</h3>
+          <p style={{ fontSize: 11, color: COLORS.textSecondary, lineHeight: 1.6 }}>
+            블로그/워드프레스 RSS 새 글을 감지하고 메인키워드, 자동완성어, 검색량 밴드를 검토합니다. 선택한 글만 발행 생성 대기로 넘깁니다.
+          </p>
+        </div>
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+          {VOLUME_BANDS.map((band) => (
+            <button
+              key={band.key}
+              type="button"
+              onClick={() => setRssVolumeFilter(band.key)}
+              style={{
+                height: 28,
+                padding: '0 9px',
+                borderRadius: 999,
+                border: `1px solid ${rssVolumeFilter === band.key ? band.textColor : COLORS.border}`,
+                background: band.color,
+                color: band.textColor,
+                fontSize: 10,
+                fontWeight: 900,
+                cursor: 'pointer',
+              }}
+            >
+              {band.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 8, marginBottom: 10 }}>
+        <input value={rssForm.label} onChange={(e) => setRssForm({ ...rssForm, label: e.target.value })} placeholder="RSS 이름 예: 워드프레스 새 글" style={{ ...inputStyle, marginBottom: 0 }} />
+        <input value={rssForm.rssUrl} onChange={(e) => setRssForm({ ...rssForm, rssUrl: e.target.value })} placeholder="RSS URL 또는 네이버 블로그 ID" style={{ ...inputStyle, marginBottom: 0 }} />
+        <select value={rssForm.platform} onChange={(e) => setRssForm({ ...rssForm, platform: e.target.value })} style={{ ...inputStyle, marginBottom: 0 }}>
+          <option value="blog">네이버 블로그</option>
+          <option value="cafe">네이버 카페</option>
+          <option value="web">워드프레스/웹</option>
+        </select>
+        <input value={rssForm.category} onChange={(e) => setRssForm({ ...rssForm, category: e.target.value })} placeholder="카테고리" style={{ ...inputStyle, marginBottom: 0 }} />
+        <button type="button" onClick={createRssSource} style={{ ...primaryButtonStyle, marginBottom: 0 }}>RSS 추가</button>
+      </div>
+
+      {rssSources.length > 0 && (
+        <div style={{ display: 'flex', gap: 8, overflowX: 'auto', paddingBottom: 8, marginBottom: 8 }}>
+          {rssSources.map((source) => (
+            <div key={source.id} style={{ flex: '0 0 230px', padding: 10, borderRadius: 9, border: `1px solid ${COLORS.border}`, background: '#f8fafc' }}>
+              <p style={{ fontSize: 12, fontWeight: 900, color: COLORS.textPrimary, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{source.label || source.rss_url}</p>
+              <p style={{ marginTop: 3, fontSize: 10, color: COLORS.textMuted }}>{source.platform} · {source.category} · {source.item_count || 0}개</p>
+              <button
+                type="button"
+                disabled={checkingRssId === source.id}
+                onClick={() => checkRssSource(source)}
+                style={{ ...smallButtonStyle, marginTop: 8, width: '100%', background: checkingRssId === source.id ? '#f3f4f6' : 'white' }}
+              >
+                {checkingRssId === source.id ? '감지 중' : 'RSS 감지'}
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
+        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11, fontWeight: 900, color: COLORS.textSecondary }}>
+          <input type="checkbox" checked={allRssItemsSelected} onChange={toggleAllRssItems} />
+          전체 선택/해제
+        </label>
+        <button
+          type="button"
+          onClick={prepareSelectedRssItems}
+          disabled={selectedRssItems.length === 0 || preparing}
+          style={{
+            height: 30,
+            padding: '0 12px',
+            borderRadius: 8,
+            border: 'none',
+            background: selectedRssItems.length === 0 || preparing ? COLORS.textMuted : COLORS.success,
+            color: 'white',
+            fontSize: 11,
+            fontWeight: 850,
+            cursor: selectedRssItems.length === 0 || preparing ? 'not-allowed' : 'pointer',
+          }}
+        >
+          {preparing ? '넘기는 중' : `선택 RSS 발행 생성 준비 (${selectedRssItems.length})`}
+        </button>
+        {message && <span style={{ fontSize: 11, color: message.includes('완료') || message.includes('넘겼') ? COLORS.success : COLORS.warning, fontWeight: 800 }}>{message}</span>}
+      </div>
+
+      <div style={{ overflowX: 'auto', maxHeight: 280 }}>
+        {filteredRssItems.length === 0 ? (
+          <div style={{ padding: 22, textAlign: 'center', color: COLORS.textMuted, fontSize: 12 }}>아직 감지된 RSS 글이 없습니다.</div>
+        ) : (
+          <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1040 }}>
+            <thead>
+              <tr style={{ background: '#f8fafc', color: COLORS.textSecondary, fontSize: 11, textAlign: 'left' }}>
+                {['선택', '검색량', '상태', '제목', '선택 KW', '후보/자동완성', '발행 생성'].map((head) => (
+                  <th key={head} style={{ padding: '9px 10px', borderBottom: `1px solid ${COLORS.border}` }}>{head}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {filteredRssItems.map((item) => {
+                const band = volumeBandFor(item.volume_band || 'unknown');
+                const candidates = parseJsonList(item.keyword_candidates);
+                const autocompletes = parseJsonList(item.autocomplete_keywords);
+                return (
+                  <tr key={item.id} style={{ fontSize: 12, borderBottom: `1px solid ${COLORS.border}` }}>
+                    <td style={{ padding: '9px 10px' }}>
+                      <input type="checkbox" checked={selectedRssItemIds.includes(item.id)} onChange={() => toggleRssItem(item.id)} />
+                    </td>
+                    <td style={{ padding: '9px 10px' }}>
+                      <span style={{ display: 'inline-flex', alignItems: 'center', height: 24, padding: '0 8px', borderRadius: 999, background: band.color, color: band.textColor, fontSize: 10, fontWeight: 900 }}>
+                        {item.search_volume != null ? Number(item.search_volume).toLocaleString() : band.label}
+                      </span>
+                    </td>
+                    <td style={{ padding: '9px 10px' }}><StatusBadge value={item.status} /></td>
+                    <td style={{ padding: '9px 10px', maxWidth: 270 }}>
+                      <a href={item.link} target="_blank" rel="noreferrer" style={{ fontWeight: 850, color: COLORS.textPrimary, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', display: 'block' }}>{item.title || '-'}</a>
+                      <p style={{ marginTop: 2, fontSize: 10, color: COLORS.textMuted }}>{formatDateTime(item.published_at || item.detected_at)}</p>
+                    </td>
+                    <td style={{ padding: '9px 10px', minWidth: 150 }}>
+                      <input
+                        defaultValue={item.selected_keyword || item.main_keyword || ''}
+                        onBlur={(e) => updateRssItemKeyword(item, e.target.value, item.checked_for_publish)}
+                        style={{ width: 138, height: 30, border: `1px solid ${COLORS.border}`, borderRadius: 7, padding: '0 8px', fontSize: 11, fontWeight: 850 }}
+                      />
+                    </td>
+                    <td style={{ padding: '9px 10px', maxWidth: 260, color: COLORS.textSecondary }}>
+                      <p style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>후보 {candidates.slice(0, 3).map((candidate) => candidate.keyword).filter(Boolean).join(', ') || '-'}</p>
+                      <p style={{ marginTop: 2, fontSize: 10, color: COLORS.textMuted, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>자동완성 {autocompletes.slice(0, 4).join(', ') || '-'}</p>
+                    </td>
+                    <td style={{ padding: '9px 10px', color: COLORS.textSecondary }}>
+                      {item.rewrite_job_id ? `#${item.rewrite_job_id}` : (item.checked_for_publish ? '대기중' : '-')}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function RewritePanel() {
+  const [links, setLinks] = useState([]);
+  const [jobs, setJobs] = useState([]);
+  const [rssItems, setRssItems] = useState([]);
+  const [selectedRssItemIds, setSelectedRssItemIds] = useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem('naviwrite.rewrite.selectedRssItemIds') || '[]');
+      return Array.isArray(saved) ? saved : [];
+    } catch {
+      return [];
+    }
+  });
   const [selectedSourceLinkIds, setSelectedSourceLinkIds] = useState(() => {
     try {
       const saved = JSON.parse(localStorage.getItem('naviwrite.rewrite.selectedSourceLinkIds') || '[]');
@@ -1418,16 +1703,14 @@ function RewritePanel() {
 
   const loadRewriteData = useCallback(async () => {
     setLoading(true);
-    const [linkRes, jobRes, rssSourceRes, rssItemRes] = await Promise.all([
+    const [linkRes, jobRes, rssItemRes] = await Promise.all([
       safeFetch(`${API}/collections/links?limit=150`),
       safeFetch(`${API}/rewrite-jobs?limit=80`),
-      safeFetch(`${API}/rss-sources?limit=60`),
       safeFetch(`${API}/rss-items?limit=160`),
     ]);
     setLoading(false);
     if (Array.isArray(linkRes)) setLinks(linkRes);
     if (Array.isArray(jobRes)) setJobs(jobRes);
-    if (Array.isArray(rssSourceRes)) setRssSources(rssSourceRes);
     if (Array.isArray(rssItemRes)) setRssItems(rssItemRes);
   }, []);
 
@@ -1448,6 +1731,10 @@ function RewritePanel() {
   useEffect(() => {
     localStorage.setItem('naviwrite.rewrite.selectedSourceLinkIds', JSON.stringify(selectedSourceLinkIds));
   }, [selectedSourceLinkIds]);
+
+  useEffect(() => {
+    localStorage.setItem('naviwrite.rewrite.selectedRssItemIds', JSON.stringify(selectedRssItemIds));
+  }, [selectedRssItemIds]);
 
   useEffect(() => {
     localStorage.setItem('naviwrite.rewrite.settings', JSON.stringify(rewriteSettings));
@@ -1478,16 +1765,21 @@ function RewritePanel() {
     [selectedSources]
   );
 
-  const filteredRssItems = useMemo(
-    () => rssItems.filter((item) => rssVolumeFilter === 'all' || (item.volume_band || 'unknown') === rssVolumeFilter),
-    [rssItems, rssVolumeFilter]
+  const readyRssItems = useMemo(
+    () => rssItems.filter((item) => (
+      item.checked_for_publish
+      || item.status === '발행 생성 대기'
+      || item.rewrite_job_id
+      || selectedRssItemIds.includes(item.id)
+    )),
+    [rssItems, selectedRssItemIds]
   );
 
-  const allRssItemsSelected = filteredRssItems.length > 0 && filteredRssItems.every((item) => selectedRssItemIds.includes(item.id));
+  const allRssItemsSelected = readyRssItems.length > 0 && readyRssItems.every((item) => selectedRssItemIds.includes(item.id));
 
   const selectedRssItems = useMemo(
-    () => filteredRssItems.filter((item) => selectedRssItemIds.includes(item.id)),
-    [filteredRssItems, selectedRssItemIds]
+    () => readyRssItems.filter((item) => selectedRssItemIds.includes(item.id)),
+    [readyRssItems, selectedRssItemIds]
   );
 
   const derivedSourceKeywords = useMemo(
@@ -1537,61 +1829,7 @@ function RewritePanel() {
   };
 
   const toggleAllRssItems = () => {
-    setSelectedRssItemIds(allRssItemsSelected ? [] : filteredRssItems.map((item) => item.id));
-  };
-
-  const createRssSource = async () => {
-    if (!rssForm.rssUrl.trim()) {
-      setMessage('감지할 RSS URL이나 네이버 블로그 ID를 입력해 주세요.');
-      return;
-    }
-    const res = await safeFetch(`${API}/rss-sources`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(rssForm),
-    });
-    if (res?.ok) {
-      setRssForm({ label: '', rssUrl: '', platform: rssForm.platform, category: rssForm.category });
-      setMessage('RSS 감지 소스를 저장했습니다.');
-      await loadRewriteData();
-    } else {
-      setMessage(res?.error || 'RSS 소스 저장에 실패했습니다.');
-    }
-  };
-
-  const checkRssSource = async (source) => {
-    const opsSettings = loadOpsSettings();
-    setCheckingRssId(source.id);
-    setMessage(`${source.label || source.rss_url} RSS를 확인하고 키워드 후보를 검증 중입니다.`);
-    const res = await safeFetch(`${API}/rss-sources/${source.id}/check`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        naverClientId: opsSettings.naverClientId,
-        naverClientSecret: opsSettings.naverClientSecret,
-        limit: 20,
-      }),
-    });
-    setCheckingRssId(null);
-    if (res?.ok) {
-      setMessage(`RSS 감지 완료 · ${res.detected || 0}개 글 확인`);
-      await loadRewriteData();
-    } else {
-      setMessage(res?.error || 'RSS 감지에 실패했습니다.');
-    }
-  };
-
-  const updateRssItemKeyword = async (item, selectedKeyword, checkedForPublish = item.checked_for_publish) => {
-    const res = await safeFetch(`${API}/rss-items/${item.id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ selectedKeyword, checkedForPublish }),
-    });
-    if (res?.ok) {
-      await loadRewriteData();
-    } else {
-      setMessage(res?.error || 'RSS 키워드 저장에 실패했습니다.');
-    }
+    setSelectedRssItemIds(allRssItemsSelected ? [] : readyRssItems.map((item) => item.id));
   };
 
   const createJobsFromSelectedRssItems = async () => {
@@ -1606,8 +1844,6 @@ function RewritePanel() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         itemIds: selectedRssItems.map((item) => item.id),
-        platform,
-        category,
         ctaUrl,
         useNaverQr,
         useAiImages,
@@ -2043,9 +2279,13 @@ function RewritePanel() {
             )}
           </div>
           <div style={{ display: 'grid', gap: 10 }}>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+            <details style={{ border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: 10, background: '#f8fafc' }}>
+              <summary style={{ cursor: 'pointer', fontSize: 11, fontWeight: 900, color: COLORS.textSecondary }}>
+                직접 키워드/고급 생성 기본값
+              </summary>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginTop: 10 }}>
               <div>
-                <label style={{ display: 'block', fontSize: 11, fontWeight: 800, color: COLORS.textSecondary, marginBottom: 6 }}>플랫폼</label>
+                <label style={{ display: 'block', fontSize: 11, fontWeight: 800, color: COLORS.textSecondary, marginBottom: 6 }}>직접 키워드 기본 플랫폼</label>
                 <select
                   value={platform}
                   onChange={(e) => setPlatform(e.target.value)}
@@ -2059,7 +2299,7 @@ function RewritePanel() {
                 </select>
               </div>
               <div>
-                <label style={{ display: 'block', fontSize: 11, fontWeight: 800, color: COLORS.textSecondary, marginBottom: 6 }}>병렬 수</label>
+                <label style={{ display: 'block', fontSize: 11, fontWeight: 800, color: COLORS.textSecondary, marginBottom: 6 }}>초안 생성 병렬 수</label>
                 <select
                   value={concurrency}
                   onChange={(e) => setConcurrency(e.target.value)}
@@ -2068,7 +2308,8 @@ function RewritePanel() {
                   {[1, 2, 3, 4, 5].map((value) => <option key={value} value={value}>{value}개</option>)}
                 </select>
               </div>
-            </div>
+              </div>
+            </details>
             <input
               value={targetTopic}
               onChange={(e) => setTargetTopic(e.target.value)}
@@ -2266,92 +2507,13 @@ function RewritePanel() {
           borderRadius: 10,
           background: '#ffffff',
         }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap', marginBottom: 12 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap', marginBottom: 10 }}>
             <div>
-              <h3 style={{ fontSize: 14, fontWeight: 900, color: COLORS.primary, marginBottom: 4 }}>RSS 감지 키워드 검토</h3>
+              <h3 style={{ fontSize: 14, fontWeight: 900, color: COLORS.primary, marginBottom: 4 }}>RSS 검토 완료 글 기준 발행 생성</h3>
               <p style={{ fontSize: 11, color: COLORS.textSecondary, lineHeight: 1.6 }}>
-                블로그/워드프레스 RSS 새 글을 감지한 뒤 메인키워드, 자동완성어, 검색량 밴드를 보고 사람이 체크한 글만 발행 생성으로 넘깁니다.
+                수집/감지 메뉴에서 키워드를 검토하고 넘긴 RSS 글만 표시됩니다. 플랫폼과 카테고리는 각 RSS 행의 값을 우선 사용합니다.
               </p>
             </div>
-            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-              {VOLUME_BANDS.map((band) => (
-                <button
-                  key={band.key}
-                  type="button"
-                  onClick={() => setRssVolumeFilter(band.key)}
-                  style={{
-                    height: 28,
-                    padding: '0 9px',
-                    borderRadius: 999,
-                    border: `1px solid ${rssVolumeFilter === band.key ? band.textColor : COLORS.border}`,
-                    background: band.color,
-                    color: band.textColor,
-                    fontSize: 10,
-                    fontWeight: 900,
-                    cursor: 'pointer',
-                  }}
-                >
-                  {band.label}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 8, marginBottom: 10 }}>
-            <input
-              value={rssForm.label}
-              onChange={(e) => setRssForm({ ...rssForm, label: e.target.value })}
-              placeholder="RSS 이름 예: 워드프레스 새 글"
-              style={{ ...inputStyle, marginBottom: 0 }}
-            />
-            <input
-              value={rssForm.rssUrl}
-              onChange={(e) => setRssForm({ ...rssForm, rssUrl: e.target.value })}
-              placeholder="RSS URL 또는 네이버 블로그 ID"
-              style={{ ...inputStyle, marginBottom: 0 }}
-            />
-            <select
-              value={rssForm.platform}
-              onChange={(e) => setRssForm({ ...rssForm, platform: e.target.value })}
-              style={{ ...inputStyle, marginBottom: 0 }}
-            >
-              <option value="blog">네이버 블로그</option>
-              <option value="cafe">네이버 카페</option>
-              <option value="web">워드프레스/웹</option>
-            </select>
-            <input
-              value={rssForm.category}
-              onChange={(e) => setRssForm({ ...rssForm, category: e.target.value })}
-              placeholder="카테고리"
-              style={{ ...inputStyle, marginBottom: 0 }}
-            />
-            <button type="button" onClick={createRssSource} style={{ ...primaryButtonStyle, marginBottom: 0 }}>RSS 추가</button>
-          </div>
-
-          {rssSources.length > 0 && (
-            <div style={{ display: 'flex', gap: 8, overflowX: 'auto', paddingBottom: 8, marginBottom: 8 }}>
-              {rssSources.map((source) => (
-                <div key={source.id} style={{ flex: '0 0 230px', padding: 10, borderRadius: 9, border: `1px solid ${COLORS.border}`, background: '#f8fafc' }}>
-                  <p style={{ fontSize: 12, fontWeight: 900, color: COLORS.textPrimary, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{source.label || source.rss_url}</p>
-                  <p style={{ marginTop: 3, fontSize: 10, color: COLORS.textMuted }}>{source.platform} · {source.category} · {source.item_count || 0}개</p>
-                  <button
-                    type="button"
-                    disabled={checkingRssId === source.id}
-                    onClick={() => checkRssSource(source)}
-                    style={{ ...smallButtonStyle, marginTop: 8, width: '100%', background: checkingRssId === source.id ? '#f3f4f6' : 'white' }}
-                  >
-                    {checkingRssId === source.id ? '감지 중' : 'RSS 감지'}
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
-            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11, fontWeight: 900, color: COLORS.textSecondary }}>
-              <input type="checkbox" checked={allRssItemsSelected} onChange={toggleAllRssItems} />
-              전체 선택/해제
-            </label>
             <button
               type="button"
               onClick={createJobsFromSelectedRssItems}
@@ -2368,37 +2530,41 @@ function RewritePanel() {
                 cursor: selectedRssItems.length === 0 || creatingRssJobs ? 'not-allowed' : 'pointer',
               }}
             >
-              {creatingRssJobs ? '발행 생성 중' : `체크 RSS 발행 생성 (${selectedRssItems.length})`}
+              {creatingRssJobs ? '발행 생성 중' : `선택 RSS 발행 생성 (${selectedRssItems.length})`}
             </button>
           </div>
 
-          <div style={{ overflowX: 'auto', maxHeight: 280 }}>
-            {filteredRssItems.length === 0 ? (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11, fontWeight: 900, color: COLORS.textSecondary }}>
+              <input type="checkbox" checked={allRssItemsSelected} onChange={toggleAllRssItems} />
+              전체 선택/해제
+            </label>
+            <span style={{ fontSize: 11, color: COLORS.textMuted, fontWeight: 800 }}>
+              준비된 RSS {readyRssItems.length}개
+            </span>
+          </div>
+
+          <div style={{ overflowX: 'auto', maxHeight: 220 }}>
+            {readyRssItems.length === 0 ? (
               <div style={{ padding: 22, textAlign: 'center', color: COLORS.textMuted, fontSize: 12 }}>
-                아직 감지된 RSS 글이 없습니다.
+                아직 발행 생성 대기로 넘어온 RSS 글이 없습니다. 수집/감지 메뉴에서 RSS 글을 선택해 넘겨주세요.
               </div>
             ) : (
-              <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1040 }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 860 }}>
                 <thead>
                   <tr style={{ background: '#f8fafc', color: COLORS.textSecondary, fontSize: 11, textAlign: 'left' }}>
-                    {['선택', '검색량', '상태', '제목', '선택 KW', '후보/자동완성', '발행 생성'].map((head) => (
+                    {['선택', '검색량', '상태', '제목', '플랫폼', '선택 KW', '작업'].map((head) => (
                       <th key={head} style={{ padding: '9px 10px', borderBottom: `1px solid ${COLORS.border}` }}>{head}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredRssItems.map((item) => {
+                  {readyRssItems.map((item) => {
                     const band = volumeBandFor(item.volume_band || 'unknown');
-                    const candidates = parseJsonList(item.keyword_candidates);
-                    const autocompletes = parseJsonList(item.autocomplete_keywords);
                     return (
                       <tr key={item.id} style={{ fontSize: 12, borderBottom: `1px solid ${COLORS.border}` }}>
                         <td style={{ padding: '9px 10px' }}>
-                          <input
-                            type="checkbox"
-                            checked={selectedRssItemIds.includes(item.id)}
-                            onChange={() => toggleRssItem(item.id)}
-                          />
+                          <input type="checkbox" checked={selectedRssItemIds.includes(item.id)} onChange={() => toggleRssItem(item.id)} />
                         </td>
                         <td style={{ padding: '9px 10px' }}>
                           <span style={{ display: 'inline-flex', alignItems: 'center', height: 24, padding: '0 8px', borderRadius: 999, background: band.color, color: band.textColor, fontSize: 10, fontWeight: 900 }}>
@@ -2406,28 +2572,13 @@ function RewritePanel() {
                           </span>
                         </td>
                         <td style={{ padding: '9px 10px' }}><StatusBadge value={item.status} /></td>
-                        <td style={{ padding: '9px 10px', maxWidth: 270 }}>
+                        <td style={{ padding: '9px 10px', maxWidth: 320 }}>
                           <a href={item.link} target="_blank" rel="noreferrer" style={{ fontWeight: 850, color: COLORS.textPrimary, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', display: 'block' }}>{item.title || '-'}</a>
                           <p style={{ marginTop: 2, fontSize: 10, color: COLORS.textMuted }}>{formatDateTime(item.published_at || item.detected_at)}</p>
                         </td>
-                        <td style={{ padding: '9px 10px', minWidth: 150 }}>
-                          <input
-                            defaultValue={item.selected_keyword || item.main_keyword || ''}
-                            onBlur={(e) => updateRssItemKeyword(item, e.target.value, selectedRssItemIds.includes(item.id))}
-                            style={{ width: 138, height: 30, border: `1px solid ${COLORS.border}`, borderRadius: 7, padding: '0 8px', fontSize: 11, fontWeight: 850 }}
-                          />
-                        </td>
-                        <td style={{ padding: '9px 10px', maxWidth: 260, color: COLORS.textSecondary }}>
-                          <p style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                            후보 {candidates.slice(0, 3).map((candidate) => candidate.keyword).filter(Boolean).join(', ') || '-'}
-                          </p>
-                          <p style={{ marginTop: 2, fontSize: 10, color: COLORS.textMuted, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                            자동완성 {autocompletes.slice(0, 4).join(', ') || '-'}
-                          </p>
-                        </td>
-                        <td style={{ padding: '9px 10px', color: COLORS.textSecondary }}>
-                          {item.rewrite_job_id ? `#${item.rewrite_job_id}` : '-'}
-                        </td>
+                        <td style={{ padding: '9px 10px', color: COLORS.textSecondary }}>{platformLabel[item.platform] || item.platform || '-'}</td>
+                        <td style={{ padding: '9px 10px', fontWeight: 850, color: COLORS.primary }}>{item.selected_keyword || item.main_keyword || '-'}</td>
+                        <td style={{ padding: '9px 10px', color: COLORS.textSecondary }}>{item.rewrite_job_id ? `#${item.rewrite_job_id}` : '-'}</td>
                       </tr>
                     );
                   })}
@@ -4772,7 +4923,7 @@ export default function App() {
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 18 }}>
           {[
             ['dashboard', '대시보드'],
-            ['collect', '수집 링크'],
+            ['collect', '수집/감지'],
             ['rewrite', '발행 생성'],
             ['publish', '발행 큐'],
             ['views', '조회수 근황'],
