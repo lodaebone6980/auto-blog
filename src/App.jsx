@@ -116,14 +116,17 @@ function formatSearchVolume(value) {
 
 function keywordCandidateVolume(candidate) {
   if (!candidate || typeof candidate !== 'object') return null;
+  const pc = Number(candidate.monthlyPcQcCnt ?? candidate.monthly_pc_qc_cnt ?? '');
+  const mobile = Number(candidate.monthlyMobileQcCnt ?? candidate.monthly_mobile_qc_cnt ?? '');
+  if (Number.isFinite(pc) || Number.isFinite(mobile)) {
+    return (Number.isFinite(pc) ? pc : 0) + (Number.isFinite(mobile) ? mobile : 0);
+  }
   return candidate.searchVolume
     ?? candidate.search_volume
     ?? candidate.monthlySearchVolume
     ?? candidate.monthly_search_volume
     ?? candidate.monthlyTotal
     ?? candidate.monthly_total
-    ?? candidate.searchTotal
-    ?? candidate.search_total
     ?? null;
 }
 
