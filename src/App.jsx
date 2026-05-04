@@ -170,6 +170,170 @@ function SkeletonCard() {
   );
 }
 
+function SidebarNav({ groups, activeView, onSelect, onGuideOpen, healthOk }) {
+  return (
+    <aside className="app-sidebar" style={{
+      width: 268,
+      flex: '0 0 268px',
+      minHeight: '100vh',
+      padding: 18,
+      background: '#f8fafc',
+      borderRight: `1px solid ${COLORS.border}`,
+      display: 'flex',
+      flexDirection: 'column',
+      position: 'sticky',
+      top: 0,
+      alignSelf: 'flex-start',
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 11, marginBottom: 24 }}>
+        <div style={{
+          width: 38,
+          height: 38,
+          borderRadius: 10,
+          background: COLORS.primary,
+          color: 'white',
+          display: 'grid',
+          placeItems: 'center',
+          fontWeight: 900,
+          fontSize: 18,
+        }}>N</div>
+        <div>
+          <h1 style={{ fontSize: 17, fontWeight: 900, color: COLORS.primary }}>자동발행 사이트</h1>
+          <p style={{ marginTop: 2, fontSize: 11, color: COLORS.textMuted, fontWeight: 700 }}>NaviWrite Workflow</p>
+        </div>
+      </div>
+
+      <nav style={{ display: 'grid', gap: 16 }}>
+        {groups.map((group) => (
+          <div key={group.key} style={{ display: 'grid', gap: 6 }}>
+            {group.label && (
+              <p style={{
+                padding: '0 8px',
+                fontSize: 10,
+                fontWeight: 900,
+                color: COLORS.textMuted,
+                letterSpacing: 0.4,
+              }}>
+                {group.label}
+              </p>
+            )}
+            {group.items.map((item) => {
+              const active = item.view && activeView === item.view;
+              const handleClick = () => {
+                if (item.action === 'guide') onGuideOpen();
+                if (item.view) onSelect(item.view);
+              };
+              return (
+                <button
+                  key={item.key}
+                  type="button"
+                  onClick={handleClick}
+                  style={{
+                    width: '100%',
+                    minHeight: 48,
+                    border: `1px solid ${active ? COLORS.primary : 'transparent'}`,
+                    borderRadius: 8,
+                    background: active ? COLORS.primary : 'transparent',
+                    color: active ? 'white' : COLORS.textPrimary,
+                    padding: '8px 9px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: 10,
+                    textAlign: 'left',
+                    cursor: 'pointer',
+                    boxShadow: active ? '0 7px 18px rgba(27,58,92,0.18)' : 'none',
+                  }}
+                >
+                  <span style={{ minWidth: 0 }}>
+                    <span style={{ display: 'block', fontSize: 13, fontWeight: 900 }}>{item.label}</span>
+                    {item.caption && (
+                      <span style={{
+                        display: 'block',
+                        marginTop: 2,
+                        fontSize: 10,
+                        fontWeight: 700,
+                        color: active ? 'rgba(255,255,255,0.72)' : COLORS.textMuted,
+                        whiteSpace: 'nowrap',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                      }}>
+                        {item.caption}
+                      </span>
+                    )}
+                  </span>
+                  {item.badge !== undefined && item.badge !== null && item.badge !== '' && (
+                    <span style={{
+                      minWidth: 26,
+                      height: 22,
+                      padding: '0 7px',
+                      borderRadius: 999,
+                      background: active ? 'rgba(255,255,255,0.18)' : '#e0ecf7',
+                      color: active ? 'white' : COLORS.primary,
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      fontSize: 10,
+                      fontWeight: 900,
+                      whiteSpace: 'nowrap',
+                    }}>
+                      {item.badge}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        ))}
+      </nav>
+
+      <div style={{ marginTop: 'auto', display: 'grid', gap: 10 }}>
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 7,
+          padding: '9px 10px',
+          borderRadius: 8,
+          background: 'white',
+          border: `1px solid ${COLORS.border}`,
+        }}>
+          <span style={{
+            width: 8,
+            height: 8,
+            borderRadius: '50%',
+            background: healthOk ? '#22c55e' : '#f87171',
+            boxShadow: healthOk ? '0 0 7px rgba(34,197,94,0.45)' : '0 0 7px rgba(248,113,113,0.45)',
+          }} />
+          <span style={{ fontSize: 11, fontWeight: 800, color: COLORS.textSecondary }}>
+            {healthOk ? '서버 정상' : '서버 확인 중'}
+          </span>
+        </div>
+        <a
+          href="/downloads/naviwrite-extension.zip"
+          download
+          style={{
+            minHeight: 44,
+            borderRadius: 8,
+            background: COLORS.accent,
+            color: 'white',
+            textDecoration: 'none',
+            display: 'grid',
+            placeItems: 'center',
+            fontSize: 13,
+            fontWeight: 900,
+            boxShadow: '0 8px 20px rgba(46,117,182,0.22)',
+          }}
+        >
+          확장프로그램 다운로드
+        </a>
+        <p style={{ fontSize: 10, lineHeight: 1.45, color: COLORS.textMuted }}>
+          Chrome 개발자 모드에서 압축 해제 후 로드해서 발행 작업과 연결합니다.
+        </p>
+      </div>
+    </aside>
+  );
+}
+
 /* ────────────────────── Score Bar ────────────────────── */
 
 function ScoreBar({ label, score, max = 100, color }) {
@@ -734,7 +898,7 @@ function GuideModal({ onClose }) {
     {
       title: '확장프로그램 설치',
       items: [
-        '우측 상단의 확장프로그램 버튼을 눌러 zip 파일을 내려받습니다.',
+        '왼쪽 네비게이션 하단의 확장프로그램 다운로드 버튼을 눌러 zip 파일을 내려받습니다.',
         '크롬 확장 프로그램 관리 화면에서 개발자 모드를 켠 뒤 압축을 푼 폴더를 로드합니다.',
         '네이버 블로그, 카페, 프리미엄콘텐츠, 브런치 작업 전 이 사이트와 확장프로그램을 함께 열어둡니다.',
       ],
@@ -5013,6 +5177,40 @@ export default function App() {
   }, [dashboard]);
 
   const healthOk = health && health.status === 'ok';
+  const navBadge = (value) => {
+    const number = Number(value);
+    return Number.isFinite(number) && number > 0 ? number : null;
+  };
+  const navGroups = [
+    {
+      key: 'home',
+      label: '',
+      items: [
+        { key: 'dashboard', view: 'dashboard', label: '홈', caption: '오늘 작업 요약', badge: '요약' },
+      ],
+    },
+    {
+      key: 'workflow',
+      label: '작업 흐름',
+      items: [
+        { key: 'collect', view: 'collect', label: '수집', caption: '링크 · 키워드 소스', badge: navBadge(stats?.sourceLinks || stats?.collectedLinks) },
+        { key: 'benchmark', view: 'benchmark', label: '벤치마킹', caption: '패턴 소스 · 기준값' },
+        { key: 'rss', view: 'rss', label: '키워드 검토', caption: 'RSS · 검색량 · 제목 후보' },
+        { key: 'rewrite', view: 'rewrite', label: '발행 생성', caption: 'SEO · AEO · GEO · 이미지', badge: navBadge(contentJobs.length) },
+        { key: 'publish', view: 'publish', label: '발행 큐', caption: '예약 · 계정 · 자동발행', badge: navBadge(stats?.publishQueuePending || stats?.queuedPublishJobs) },
+        { key: 'views', view: 'views', label: '성과', caption: '조회수 · 댓글 · 공감', badge: navBadge(posts.length) },
+      ],
+    },
+    {
+      key: 'management',
+      label: '관리',
+      items: [
+        { key: 'settings', view: 'settings', label: '연결/설정', caption: '계정 · QR · Sheets · Obsidian' },
+        { key: 'guide', action: 'guide', label: '사용법', caption: '설치와 운영 가이드' },
+      ],
+    },
+  ];
+  const activeNavItem = navGroups.flatMap((group) => group.items).find((item) => item.view === activeView) || navGroups[0].items[0];
 
   return (
     <div style={{ background: COLORS.bg, minHeight: '100vh' }}>
@@ -5029,109 +5227,114 @@ export default function App() {
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans KR', sans-serif; }
         ::-webkit-scrollbar { width: 6px; }
         ::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 3px; }
+        @media (max-width: 900px) {
+          .app-shell { flex-direction: column !important; }
+          .app-sidebar {
+            width: 100% !important;
+            flex: 0 0 auto !important;
+            min-height: auto !important;
+            position: relative !important;
+            border-right: none !important;
+            border-bottom: 1px solid #e5e7eb !important;
+          }
+          .app-main-header { position: relative !important; }
+        }
       `}</style>
 
       {guideOpen && <GuideModal onClose={() => setGuideOpen(false)} />}
 
-      {/* ────── Header ────── */}
-      <header style={{
-        background: 'linear-gradient(135deg, #1B3A5C 0%, #2E75B6 100%)',
-        padding: '16px 24px',
-        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        flexWrap: 'wrap', gap: 12,
-        boxShadow: '0 2px 12px rgba(27,58,92,0.3)',
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <div style={{
-            width: 38, height: 38, background: 'rgba(255,255,255,0.15)',
-            borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center',
-            color: 'white', fontWeight: 800, fontSize: 18, backdropFilter: 'blur(4px)',
-          }}>N</div>
-          <div>
-            <h1 style={{ fontSize: 18, fontWeight: 800, color: 'white', letterSpacing: '-0.3px' }}>자동발행 사이트</h1>
-            <p style={{ fontSize: 11, color: 'rgba(255,255,255,0.7)' }}>NaviWrite SEO/GEO/AEO 자동 발행 관리</p>
-          </div>
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-          <button
-            type="button"
-            onClick={() => setGuideOpen(true)}
-            style={{
-              display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-              height: 34, padding: '0 14px', borderRadius: 18,
-              border: '1px solid rgba(255,255,255,0.26)',
-              background: 'rgba(255,255,255,0.14)', color: 'white',
-              fontSize: 12, fontWeight: 800, boxShadow: '0 2px 10px rgba(0,0,0,0.10)',
-              whiteSpace: 'nowrap', cursor: 'pointer',
-            }}
-          >
-            사용법
-          </button>
-          <a
-            href="/downloads/naviwrite-extension.zip"
-            download
-            style={{
-              display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-              height: 34, padding: '0 14px', borderRadius: 18,
-              background: 'white', color: COLORS.primary, textDecoration: 'none',
-              fontSize: 12, fontWeight: 800, boxShadow: '0 2px 10px rgba(0,0,0,0.12)',
-              whiteSpace: 'nowrap',
-            }}
-          >
-            확장프로그램
-          </a>
-          <div style={{
-            display: 'flex', alignItems: 'center', gap: 6,
-            background: 'rgba(255,255,255,0.12)', padding: '5px 12px', borderRadius: 20,
-          }}>
-            <span style={{
-              width: 8, height: 8, borderRadius: '50%',
-              background: healthOk ? '#4ade80' : '#f87171',
-              boxShadow: healthOk ? '0 0 6px #4ade80' : '0 0 6px #f87171',
-            }} />
-            <span style={{ fontSize: 11, color: 'white', fontWeight: 500 }}>
-              {healthOk ? '서버 정상' : health === null ? '확인 중...' : '서버 오류'}
-            </span>
-          </div>
-          <span style={{ fontSize: 12, color: 'rgba(255,255,255,0.8)', fontVariantNumeric: 'tabular-nums' }}>
-            {formatTime(currentTime)}
-          </span>
-        </div>
-      </header>
+      <div className="app-shell" style={{ display: 'flex', minHeight: '100vh' }}>
+        <SidebarNav
+          groups={navGroups}
+          activeView={activeView}
+          onSelect={setActiveView}
+          onGuideOpen={() => setGuideOpen(true)}
+          healthOk={healthOk}
+        />
 
-      <div style={{ maxWidth: 1200, margin: '0 auto', padding: '20px 16px' }}>
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 18 }}>
-          {[
-            ['dashboard', '대시보드'],
-            ['collect', '수집 링크'],
-            ['rss', 'RSS 감지'],
-            ['rewrite', '발행 생성'],
-            ['publish', '발행 큐'],
-            ['views', '조회수 근황'],
-            ['benchmark', '벤치마킹 설정'],
-            ['settings', '운영 설정'],
-          ].map(([view, label]) => (
-            <button
-              key={view}
-              type="button"
-              onClick={() => setActiveView(view)}
-              style={{
-                height: 36,
-                padding: '0 16px',
-                borderRadius: 9,
-                border: `1px solid ${activeView === view ? COLORS.primary : COLORS.border}`,
-                background: activeView === view ? COLORS.primary : 'white',
-                color: activeView === view ? 'white' : COLORS.textSecondary,
+        <main style={{ flex: 1, minWidth: 0 }}>
+          <header className="app-main-header" style={{
+            minHeight: 66,
+            padding: '14px 24px',
+            background: 'white',
+            borderBottom: `1px solid ${COLORS.border}`,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 16,
+            flexWrap: 'wrap',
+            position: 'sticky',
+            top: 0,
+            zIndex: 10,
+          }}>
+            <div>
+              <h2 style={{ fontSize: 18, fontWeight: 900, color: COLORS.primary }}>{activeNavItem.label}</h2>
+              <p style={{ marginTop: 3, fontSize: 12, color: COLORS.textMuted, fontWeight: 700 }}>
+                {activeNavItem.caption || 'NaviWrite 작업 관리'}
+              </p>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+              <button
+                type="button"
+                onClick={() => setGuideOpen(true)}
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  height: 34,
+                  padding: '0 13px',
+                  borderRadius: 8,
+                  border: `1px solid ${COLORS.border}`,
+                  background: 'white',
+                  color: COLORS.textSecondary,
+                  fontSize: 12,
+                  fontWeight: 850,
+                  whiteSpace: 'nowrap',
+                  cursor: 'pointer',
+                }}
+              >
+                사용법
+              </button>
+              <span style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
+                height: 34,
+                padding: '0 11px',
+                borderRadius: 8,
+                background: '#f8fafc',
+                border: `1px solid ${COLORS.border}`,
+                fontSize: 11,
+                color: COLORS.textSecondary,
+                fontWeight: 800,
+              }}>
+                <span style={{
+                  width: 8,
+                  height: 8,
+                  borderRadius: '50%',
+                  background: healthOk ? '#22c55e' : '#f87171',
+                }} />
+                {healthOk ? '서버 정상' : health === null ? '확인 중' : '서버 오류'}
+              </span>
+              <span style={{
+                height: 34,
+                display: 'inline-flex',
+                alignItems: 'center',
+                padding: '0 10px',
+                borderRadius: 8,
+                background: '#f8fafc',
+                border: `1px solid ${COLORS.border}`,
                 fontSize: 12,
-                fontWeight: 850,
-                cursor: 'pointer',
-                boxShadow: activeView === view ? '0 2px 10px rgba(27,58,92,0.18)' : '0 1px 2px rgba(0,0,0,0.04)',
-              }}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
+                color: COLORS.textSecondary,
+                fontVariantNumeric: 'tabular-nums',
+                fontWeight: 800,
+              }}>
+                {formatTime(currentTime)}
+              </span>
+            </div>
+          </header>
+
+          <div style={{ maxWidth: 1240, margin: '0 auto', padding: '20px 18px' }}>
 
         {activeView === 'collect' ? (
           <SourceCollectionPanel onOpenRewrite={() => setActiveView('rewrite')} />
@@ -5335,6 +5538,8 @@ export default function App() {
           자동발행 사이트 v1.0.0 · NaviWrite · Powered by Railway
         </footer>
       </div>
+        </main>
+    </div>
     </div>
   );
 }
