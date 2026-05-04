@@ -3840,11 +3840,8 @@ router.post('/rss-sources', async (req, res) => {
   }
 });
 
-router.post('/rss-sources/:id/check', async (req, res) => {
+async function checkRssSourceNow(source, { body = {}, limit = 20 } = {}) {
   try {
-    const sourceResult = await pool.query('SELECT * FROM rss_sources WHERE id = $1', [req.params.id]);
-    if (sourceResult.rows.length === 0) return res.status(404).json({ error: 'RSS source not found' });
-    const source = sourceResult.rows[0];
     const response = await fetch(source.rss_url, {
       headers: {
         'User-Agent': 'NaviWrite/1.0 RSS monitor',
@@ -3852,7 +3849,7 @@ router.post('/rss-sources/:id/check', async (req, res) => {
       },
     });
     if (!response.ok) throw new Error(`RSS fetch failed (${response.status})`);
-    const items = parseRssItems(await response.text()).slice(0, clampNumber(parseInt(req.body?.limit || '20', 10) || 20, 1, 50));
+    const items = parseRssItems(await response.text()).slice(0, clampNumber(parseInt(limit || '20', 10) || 20, 1, 50));
     const saved = [];
     let latestPublishedAt = source.last_item_published_at;
 
@@ -3864,7 +3861,7 @@ router.post('/rss-sources/:id/check', async (req, res) => {
         sourceUrl: item.link,
         platform: source.platform,
         category: source.category,
-        body: req.body || {},
+        body,
         limit: 10,
       });
       const mainKeyword = research.mainKeyword || '';
@@ -3930,13 +3927,60 @@ router.post('/rss-sources/:id/check', async (req, res) => {
       [source.id, latestPublishedAt]
     );
 
-    res.json({ ok: true, source: updated.rows[0], detected: saved.length, items: saved });
+    return { ok: true, source: updated.rows[0], detected: saved.length, items: saved };
   } catch (err) {
     await pool.query(
       `UPDATE rss_sources SET status = '오류', error_message = $2, updated_at = NOW() WHERE id = $1`,
-      [req.params.id, err.message]
+      [source.id, err.message]
     ).catch(() => null);
-    res.status(500).json({ error: err.message });
+    throw err;
+  }
+}
+
+async function checkRssSourceById(sourceId, options = {}) {
+  const sourceResult = await pool.query('SELECT * FROM rss_sources WHERE id = $1', [sourceId]);
+  if (sourceResult.rows.length === 0) {
+    const err = new Error('RSS source not found');
+    err.statusCode = 404;
+    throw err;
+  }
+  return checkRssSourceNow(sourceResult.rows[0], options);
+}
+
+async function checkDueRssSources({ maxSources = 12, limit = 20 } = {}) {
+  const intervalMinutes = clampNumber(parseInt(process.env.RSS_CHECK_INTERVAL_MINUTES || '30', 10) || 30, 5, 1440);
+  const { rows: sources } = await pool.query(
+    `SELECT *
+     FROM rss_sources
+     WHERE status <> '중지'
+       AND (
+         last_checked_at IS NULL
+         OR last_checked_at < NOW() - ($1::int * INTERVAL '1 minute')
+       )
+     ORDER BY last_checked_at ASC NULLS FIRST, updated_at ASC
+     LIMIT $2`,
+    [intervalMinutes, maxSources]
+  );
+  const results = [];
+  for (const source of sources) {
+    try {
+      results.push(await checkRssSourceNow(source, { body: {}, limit }));
+    } catch (err) {
+      results.push({ ok: false, sourceId: source.id, error: err.message });
+    }
+  }
+  return results;
+}
+
+router.post('/rss-sources/:id/check', async (req, res) => {
+  try {
+    const result = await checkRssSourceById(req.params.id, {
+      body: req.body || {},
+      limit: req.body?.limit || 20,
+    });
+    res.json(result);
+  } catch (err) {
+    res.status(err.statusCode || 500).json({ error: err.message });
   }
 });
 
@@ -5412,6 +5456,7 @@ router.get('/stats', async (req, res) => {
 let collectionSchedulerStarted = false;
 let lastBlogSnapshotDate = null;
 let lastBlogCloseDate = null;
+let lastRssMonitorAt = 0;
 
 export function startCollectionSchedulers() {
   if (collectionSchedulerStarted) return;
@@ -5440,6 +5485,22 @@ export function startCollectionSchedulers() {
         console.log(`[collections] daily cafe snapshots: ${cafeResults.filter((item) => item.ok).length}/${cafeResults.length}`);
       } catch (err) {
         console.warn('[collections] daily view snapshot failed:', err.message);
+      }
+    }
+    const rssIntervalMs = clampNumber(parseInt(process.env.RSS_CHECK_INTERVAL_MINUTES || '30', 10) || 30, 5, 1440) * 60 * 1000;
+    if (Date.now() - lastRssMonitorAt >= rssIntervalMs) {
+      lastRssMonitorAt = Date.now();
+      try {
+        const rssResults = await checkDueRssSources({
+          maxSources: clampNumber(parseInt(process.env.RSS_CHECK_MAX_SOURCES || '12', 10) || 12, 1, 100),
+          limit: clampNumber(parseInt(process.env.RSS_CHECK_ITEM_LIMIT || '20', 10) || 20, 1, 50),
+        });
+        if (rssResults.length > 0) {
+          const okCount = rssResults.filter((item) => item.ok).length;
+          console.log(`[collections] rss monitor: ${okCount}/${rssResults.length}`);
+        }
+      } catch (err) {
+        console.warn('[collections] rss monitor failed:', err.message);
       }
     }
   };
