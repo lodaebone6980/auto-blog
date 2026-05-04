@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import crypto from 'node:crypto';
 import pool from '../db/index.js';
 
 const router = Router();
@@ -1226,6 +1227,47 @@ function parseRewriteSettings(input = {}) {
   };
 }
 
+function buildPublishSpec(platform = 'blog', settingsInput = {}, overrides = {}) {
+  const settings = parseRewriteSettings(settingsInput);
+  const normalizedPlatform = normalizePlatform(platform);
+  const sectionCount = settings.sectionCount;
+  const base = {
+    mechanism: 'publish_generation',
+    platform: normalizedPlatform,
+    structureMutation: '원문 구성 순서와 소제목 표현은 그대로 쓰지 않고 의도만 재배열',
+    targetCharCount: settings.targetCharCount,
+    sectionCharCount: settings.sectionCharCount,
+    sectionCount,
+    keywordRepeatCount: settings.targetKwCount + 1,
+    thumbnailCount: 1,
+    sectionImageCount: sectionCount,
+    imageSize: '500x500',
+    imageAlignment: 'center',
+    imageStyle: '상하좌우 여백 균형, 중앙정렬, 모바일에서 읽히는 고대비 텍스트 카드',
+    quotePerSection: normalizedPlatform === 'blog' || normalizedPlatform === 'cafe',
+    videoRequired: normalizedPlatform === 'blog',
+    qrOrLinkRequired: true,
+    qrPosition: '도입 CTA 이후 또는 2번째 목차 뒤',
+    ctaUrlRequiredPerRow: true,
+    customShortlinkFirst: true,
+    fallbackNaverQr: true,
+    ...overrides,
+  };
+  if (normalizedPlatform === 'cafe') {
+    return {
+      ...base,
+      linkInsertionType: 'yellow_hyperlink_table',
+      linkTableBackground: '#fff4b8',
+      linkTableRule: '네이버 링크 위치에는 노란색 배경 표를 넣고 하이퍼링크를 연결',
+    };
+  }
+  return {
+    ...base,
+    linkInsertionType: 'qr_or_plain_cta',
+    linkTableBackground: null,
+  };
+}
+
 function extractNaverPostListJson(raw = '') {
   try {
     return JSON.parse(raw);
@@ -1474,6 +1516,234 @@ async function fetchNaverSearchResults({ query, platform = 'blog', credentials, 
   };
 }
 
+function normalizeSearchVolumeNumber(value) {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  const raw = String(value).replace(/,/g, '').trim();
+  if (!raw || raw === '-' || /^null$/i.test(raw)) return null;
+  if (/^<\s*10/.test(raw)) return 9;
+  const number = parseInt(raw.replace(/[^0-9]/g, ''), 10);
+  return Number.isFinite(number) ? number : null;
+}
+
+function keywordVolumeBand(volume) {
+  const value = normalizeSearchVolumeNumber(volume);
+  if (value === null) return { key: 'unknown', label: '검색량 미확인', color: '#e5e7eb', textColor: '#6b7280' };
+  if (value <= 500) return { key: '0-500', label: '500 이하', color: '#fee2e2', textColor: '#991b1b' };
+  if (value <= 1000) return { key: '501-1000', label: '501~1000', color: '#ffedd5', textColor: '#9a3412' };
+  if (value <= 2000) return { key: '1001-2000', label: '1001~2000', color: '#fef3c7', textColor: '#92400e' };
+  if (value <= 5000) return { key: '2001-5000', label: '2001~5000', color: '#dcfce7', textColor: '#166534' };
+  return { key: '5000+', label: '5000 이상', color: '#dbeafe', textColor: '#1e40af' };
+}
+
+function naverKeywordToolCredentials(body = {}) {
+  const customerId = String(
+    body.customerId || body.naverCustomerId || body.naverSearchAdCustomerId
+    || process.env.NAVER_SEARCHAD_CUSTOMER_ID || process.env.NAVER_AD_CUSTOMER_ID || ''
+  ).trim();
+  const accessLicense = String(
+    body.accessLicense || body.naverAccessLicense || body.naverSearchAdAccessLicense
+    || process.env.NAVER_SEARCHAD_ACCESS_LICENSE || process.env.NAVER_SEARCHAD_API_KEY || process.env.NAVER_AD_ACCESS_LICENSE || ''
+  ).trim();
+  const secretKey = String(
+    body.secretKey || body.naverSecretKey || body.naverSearchAdSecretKey
+    || process.env.NAVER_SEARCHAD_SECRET_KEY || process.env.NAVER_AD_SECRET_KEY || ''
+  ).trim();
+  return customerId && accessLicense && secretKey ? { customerId, accessLicense, secretKey } : null;
+}
+
+function naverSearchAdSignature({ timestamp, method, path: pathName, secretKey }) {
+  return crypto.createHmac('sha256', secretKey).update(`${timestamp}.${method}.${pathName}`).digest('base64');
+}
+
+async function fetchNaverKeywordVolumes(keywords = [], credentials = null) {
+  const uniqueKeywords = [...new Set(keywords.map(normalizeKeywordValue).filter(Boolean))].slice(0, 50);
+  if (!credentials || uniqueKeywords.length === 0) return new Map();
+  const pathName = '/keywordstool';
+  const url = new URL(`https://api.searchad.naver.com${pathName}`);
+  url.searchParams.set('hintKeywords', uniqueKeywords.join(','));
+  url.searchParams.set('showDetail', '1');
+  const timestamp = String(Date.now());
+  const response = await fetch(url, {
+    headers: {
+      'X-Timestamp': timestamp,
+      'X-API-KEY': credentials.accessLicense,
+      'X-Customer': credentials.customerId,
+      'X-Signature': naverSearchAdSignature({ timestamp, method: 'GET', path: pathName, secretKey: credentials.secretKey }),
+      Accept: 'application/json',
+    },
+  });
+  if (!response.ok) {
+    const text = await response.text().catch(() => '');
+    throw new Error(`Naver SearchAd API ${response.status}: ${text.slice(0, 160)}`);
+  }
+  const data = await response.json();
+  const map = new Map();
+  for (const row of data.keywordList || []) {
+    const keyword = normalizeKeywordValue(row.relKeyword || row.keyword || '');
+    if (!keyword) continue;
+    const pc = normalizeSearchVolumeNumber(row.monthlyPcQcCnt);
+    const mobile = normalizeSearchVolumeNumber(row.monthlyMobileQcCnt);
+    const searchVolume = (pc || 0) + (mobile || 0);
+    const band = keywordVolumeBand(searchVolume);
+    map.set(keyword.replace(/\s/g, '').toLowerCase(), {
+      searchVolume,
+      monthlyPcQcCnt: pc,
+      monthlyMobileQcCnt: mobile,
+      competition: row.compIdx || null,
+      volumeBand: band.key,
+      volumeBandLabel: band.label,
+      volumeBandColor: band.color,
+      volumeBandTextColor: band.textColor,
+    });
+  }
+  return map;
+}
+
+function flattenAutocompletePayload(value, out = []) {
+  if (typeof value === 'string') out.push(value);
+  else if (Array.isArray(value)) value.forEach((item) => flattenAutocompletePayload(item, out));
+  else if (value && typeof value === 'object') Object.values(value).forEach((item) => flattenAutocompletePayload(item, out));
+  return out;
+}
+
+async function fetchNaverAutocompleteKeywords(query = '') {
+  const seed = normalizeKeywordValue(query);
+  if (!seed) return [];
+  const url = new URL('https://ac.search.naver.com/nx/ac');
+  url.searchParams.set('q', seed);
+  url.searchParams.set('q_enc', 'UTF-8');
+  url.searchParams.set('st', '100');
+  url.searchParams.set('r_format', 'json');
+  url.searchParams.set('r_enc', 'UTF-8');
+  url.searchParams.set('r_unicode', '0');
+  url.searchParams.set('t_koreng', '1');
+  url.searchParams.set('run', '2');
+  url.searchParams.set('rev', '4');
+  url.searchParams.set('con', '0');
+  const response = await fetch(url, {
+    headers: { 'User-Agent': 'Mozilla/5.0 NaviWrite/1.0', Accept: 'application/json,text/plain,*/*' },
+  });
+  if (!response.ok) return [];
+  const data = await response.json().catch(() => null);
+  const seedCompact = seed.replace(/\s/g, '').toLowerCase();
+  return [...new Set(flattenAutocompletePayload(data)
+    .map((item) => stripHtml(item).replace(/\s+/g, ' ').trim())
+    .filter((item) => {
+      const compact = item.replace(/\s/g, '').toLowerCase();
+      return item.length >= 2 && compact.includes(seedCompact.slice(0, Math.min(seedCompact.length, 3)));
+    }))]
+    .slice(0, 20);
+}
+
+async function enrichKeywordCandidates(candidates = [], { body = {}, seedQuery = '', limit = 20 } = {}) {
+  const seed = seedQuery || candidates[0]?.keyword || '';
+  let autocompleteKeywords = [];
+  try {
+    autocompleteKeywords = await fetchNaverAutocompleteKeywords(seed);
+  } catch {
+    autocompleteKeywords = [];
+  }
+
+  const byKey = new Map();
+  const add = (candidate, source = '') => {
+    const keyword = normalizeKeywordValue(candidate.keyword || candidate.term || candidate);
+    if (!keyword) return;
+    const key = keyword.replace(/\s/g, '').toLowerCase();
+    const current = byKey.get(key) || { keyword, score: 0, count: 0, sources: [], category: candidate.category };
+    current.score += Number(candidate.score || 0);
+    current.count += Number(candidate.count || 0);
+    current.searchTotal = candidate.searchTotal ?? current.searchTotal;
+    current.serpTopTitles = candidate.serpTopTitles || current.serpTopTitles || [];
+    current.suggestedTitles = candidate.suggestedTitles || current.suggestedTitles || [];
+    current.verificationScore = Number(candidate.verificationScore || current.verificationScore || 0);
+    current.sources = [...new Set([...(current.sources || []), ...(candidate.sources || []), source].filter(Boolean))];
+    byKey.set(key, current);
+  };
+
+  candidates.forEach((candidate) => add(candidate));
+  autocompleteKeywords.forEach((keyword, index) => add({ keyword, score: Math.max(18, 34 - index * 2) }, 'naver_autocomplete'));
+  const merged = [...byKey.values()].sort((a, b) => Number(b.score || 0) - Number(a.score || 0)).slice(0, limit);
+
+  const keywordToolCredentials = naverKeywordToolCredentials(body);
+  let volumeMap = new Map();
+  let keywordToolWarning = '';
+  if (keywordToolCredentials) {
+    try {
+      volumeMap = await fetchNaverKeywordVolumes(merged.map((item) => item.keyword), keywordToolCredentials);
+    } catch (err) {
+      keywordToolWarning = err.message;
+    }
+  }
+
+  return {
+    hasKeywordTool: Boolean(keywordToolCredentials && !keywordToolWarning),
+    keywordToolWarning,
+    autocompleteKeywords,
+    candidates: merged.map((candidate) => {
+      const key = candidate.keyword.replace(/\s/g, '').toLowerCase();
+      const volume = volumeMap.get(key) || {};
+      const band = keywordVolumeBand(volume.searchVolume);
+      return {
+        ...candidate,
+        score: Number(Number(candidate.score || 0).toFixed(2)),
+        searchVolume: volume.searchVolume ?? null,
+        monthlyPcQcCnt: volume.monthlyPcQcCnt ?? null,
+        monthlyMobileQcCnt: volume.monthlyMobileQcCnt ?? null,
+        competition: volume.competition ?? null,
+        volumeBand: volume.volumeBand || band.key,
+        volumeBandLabel: volume.volumeBandLabel || band.label,
+        volumeBandColor: volume.volumeBandColor || band.color,
+        volumeBandTextColor: volume.volumeBandTextColor || band.textColor,
+      };
+    }).sort((a, b) => {
+      const av = a.searchVolume ?? -1;
+      const bv = b.searchVolume ?? -1;
+      if (av !== bv) return bv - av;
+      return Number(b.score || 0) - Number(a.score || 0);
+    }),
+  };
+}
+
+async function researchKeywordsFromText({ title = '', text = '', sourceUrl = '', platform = 'blog', category = 'general', body = {}, limit = 12 }) {
+  const candidateMap = new Map();
+  const addCandidate = (keyword, score = 0, source = '', extra = {}) => {
+    const normalized = normalizeKeywordValue(keyword);
+    if (!normalized || normalized.replace(/\s/g, '').length < 2) return;
+    const key = normalized.replace(/\s/g, '').toLowerCase();
+    const current = candidateMap.get(key) || { keyword: normalized, score: 0, count: 0, sources: [], category };
+    current.score += Number(score || 0);
+    current.count += Number(extra.count || 0);
+    current.sources = [...new Set([...(current.sources || []), source].filter(Boolean))];
+    candidateMap.set(key, current);
+  };
+
+  inferKeywordCandidates({ title, text: `${title}\n${text}`, subheadings: [], keywordSignals: [] })
+    .forEach((item) => addCandidate(item.keyword, Number(item.score || 0), 'rss_text', { count: item.count || 0 }));
+
+  const credentials = naverSearchCredentials(body);
+  const candidates = [...candidateMap.values()].sort((a, b) => Number(b.score || 0) - Number(a.score || 0)).slice(0, limit);
+  for (const candidate of candidates.slice(0, 6)) {
+    if (!credentials) break;
+    try {
+      const search = await fetchNaverSearchResults({ query: candidate.keyword, platform, credentials, display: 5 });
+      candidate.searchTotal = search.total;
+      candidate.serpTopTitles = search.items.map((item) => item.title).filter(Boolean).slice(0, 5);
+      candidate.sources.push('naver_search_verified');
+      candidate.score = Number((candidate.score + Math.min(24, Math.log10(Number(search.total || 0) + 1) * 4)).toFixed(2));
+    } catch {
+      break;
+    }
+  }
+
+  const enriched = await enrichKeywordCandidates(candidates, {
+    body,
+    seedQuery: title || sourceUrl || candidates[0]?.keyword || '',
+    limit,
+  });
+  return { ...enriched, platform, category, mainKeyword: enriched.candidates[0]?.keyword || candidates[0]?.keyword || '' };
+}
+
 const TITLE_RECOMMENDATION_ACTIONS = [
   '링크', '결과', '유형', '확인', '방법', '정리', '신청', '대상', '기준', '지급일',
   '일정', '예매', '가격', '후기', '추천', '비교', '주의사항', '바로가기',
@@ -1687,6 +1957,11 @@ function buildRewriteDraft({ keyword, topic, platform, ctaUrl, useNaverQr, useAi
   const subject = topic || '이 내용';
   const targetSectionChars = pattern.sectionCharCount || DEFAULT_REWRITE_SETTINGS.sectionCharCount;
   const desiredKwCount = pattern.targetKwCount || DEFAULT_REWRITE_SETTINGS.targetKwCount;
+  const publishSpec = buildPublishSpec(platform, pattern.settings || pattern, { hasCtaUrl: Boolean(ctaUrl), useNaverQr });
+  const requiredImageCount = Math.max(
+    pattern.imageCount || 0,
+    (publishSpec.thumbnailCount || 1) + Math.max(sectionTitles.length, publishSpec.sectionImageCount || 0)
+  );
   const searchIntent = titleIntentTail(keyword, topic, pattern.sourceActionTerms || []);
   const sourceKeywordHint = Array.isArray(pattern.sourceKeywords)
     ? pattern.sourceKeywords.filter((item) => item && item !== keyword).slice(0, 3).join(', ')
@@ -1697,15 +1972,32 @@ function buildRewriteDraft({ keyword, topic, platform, ctaUrl, useNaverQr, useAi
     `검색 의도는 ${searchIntent}에 맞추고, 주제 범위는 ${sourceKeywordHint || keyword} 흐름 안에서 벗어나지 않게 잡았습니다.`,
     `아래 내용은 참고 글의 문장을 가져온 것이 아니라 글 구성과 분량, 반복 밀도만 반영해 새로 작성한 초안입니다.`,
   ];
-  const cta = ctaUrl
-    ? [`지금 바로 아래에서 ${keyword} 관련 내용을 확인하세요.`, ctaUrl]
-    : [`필요한 부분부터 차근차근 확인해 보세요.`];
+  const linkTarget = ctaUrl || '[글별 CTA 링크 입력 필요]';
+  const cta = platform === 'cafe'
+    ? [
+        `${keyword} 관련 확인 링크는 아래 표에서 바로 볼 수 있게 배치합니다.`,
+        '| 구분 | 바로가기 |',
+        '| --- | --- |',
+        `| ${keyword} 확인 | ${linkTarget} |`,
+        '[카페 표 스타일: 배경 #fff4b8, 링크 셀 하이퍼링크 적용]',
+      ]
+    : [
+        `지금 바로 아래에서 ${keyword} 관련 내용을 확인하세요.`,
+        linkTarget,
+        useNaverQr
+          ? `[네이버 QR 삽입 위치: ${linkTarget}]`
+          : `[링크 삽입 위치: ${linkTarget}]`,
+      ];
   const bodyParts = [title, ''];
   if (useAiImages) {
-    bodyParts.push(`[대표이미지: ${title}]`);
+    bodyParts.push(`[대표이미지 500x500 중앙정렬: ${title}]`);
     bodyParts.push('');
   }
   bodyParts.push(...intro, '', ...cta, '');
+  if (platform === 'blog') {
+    bodyParts.push(`[네이버 동영상 업로드 위치: ${keyword} 핵심 요약 15초 영상]`);
+    bodyParts.push('');
+  }
 
   const makeSectionBody = (section, index) => {
     const sentences = [
@@ -1732,10 +2024,10 @@ function buildRewriteDraft({ keyword, topic, platform, ctaUrl, useNaverQr, useAi
     bodyParts.push(...makeSectionBody(section, index));
     bodyParts.push('');
     if (useAiImages) {
-      bodyParts.push(`[이미지 ${index + 1}: ${section}]`);
+      bodyParts.push(`[이미지 ${index + 1} 500x500 중앙정렬: ${section}]`);
       bodyParts.push('');
       if (extraImageCursor < extraImageSlots) {
-        bodyParts.push(`[보조 이미지 ${extraImageCursor + 1}: ${section} 핵심 카드]`);
+        bodyParts.push(`[보조 이미지 ${extraImageCursor + 1} 500x500 중앙정렬: ${section} 핵심 카드]`);
         bodyParts.push('');
         extraImageCursor += 1;
       }
@@ -1746,7 +2038,7 @@ function buildRewriteDraft({ keyword, topic, platform, ctaUrl, useNaverQr, useAi
   bodyParts.push('');
   bodyParts.push(`${keyword}는 단순히 정보만 많이 나열한다고 읽히는 주제가 아닙니다.`);
   bodyParts.push(`처음에는 ${subject}의 핵심 기준을 잡고, 중간에는 실제 확인 방법과 주의사항을 배치한 뒤, 마지막에는 바로 실행할 수 있는 요약으로 닫는 구성이 안정적입니다.`);
-  bodyParts.push(useNaverQr ? `QR을 함께 넣는다면 도입 CTA 이후나 두 번째 섹션 뒤에 배치하는 흐름이 가장 자연스럽습니다.` : `CTA 링크가 있다면 도입부 직후와 마무리 직전에 한 번씩만 배치하는 편이 깔끔합니다.`);
+  bodyParts.push(useNaverQr ? `QR은 도입 CTA 이후나 두 번째 목차 뒤에 배치하고, 링크는 글별 CTA 컬럼값을 우선 사용합니다.` : `CTA 링크는 도입부 직후와 마무리 직전에 한 번씩만 배치하는 편이 깔끔합니다.`);
 
   let body = bodyParts.join('\n');
   let plainText = body.replace(/\[(?:대표이미지|이미지|보조 이미지)[^\]]+\]/g, '').replace(/^>\s*/gm, '').trim();
@@ -1766,7 +2058,7 @@ function buildRewriteDraft({ keyword, topic, platform, ctaUrl, useNaverQr, useAi
     reinforcementIndex += 1;
   }
   const images = useAiImages
-    ? Array.from({ length: Math.max(0, pattern.imageCount || 0) }, (_, index) => {
+    ? Array.from({ length: Math.max(0, requiredImageCount) }, (_, index) => {
         if (index === 0) return makeTemplateImage({ keyword, section: title, subtitle: '새 글 초안', index, platform });
         const section = sectionTitles[(index - 1) % Math.max(sectionTitles.length, 1)] || title;
         return makeTemplateImage({ keyword, section, subtitle: `${index}번째 핵심`, index, platform });
@@ -1782,6 +2074,7 @@ function buildRewriteDraft({ keyword, topic, platform, ctaUrl, useNaverQr, useAi
     imageCount: images.length,
     quoteCount: sectionTitles.length + 1,
     images,
+    publishSpec,
   };
 }
 
@@ -1853,7 +2146,7 @@ async function processRewriteJob(jobId) {
     "UPDATE rewrite_jobs SET status = '초안 생성중', pattern_json = $2, updated_at = NOW() WHERE id = $1",
     [jobId, JSON.stringify(pattern)]
   );
-  await addRewriteEvent(jobId, 'draft_started', '재각색 초안을 생성합니다', { pattern });
+    await addRewriteEvent(jobId, 'draft_started', '발행 생성 초안을 생성합니다', { pattern });
 
   const output = buildRewriteDraft({
     keyword: job.target_keyword,
@@ -1888,6 +2181,7 @@ async function processRewriteJob(jobId) {
          total_score = $13,
          similarity_risk = $14,
          images_json = $15,
+         publish_spec = $16,
          error_message = NULL,
          updated_at = NOW()
      WHERE id = $1
@@ -1908,10 +2202,11 @@ async function processRewriteJob(jobId) {
       scores.total,
       similarityRisk,
       JSON.stringify(output.images.map((url, index) => ({ index, type: 'template-svg', url }))),
+      JSON.stringify(output.publishSpec || buildPublishSpec(job.platform, settings)),
     ]
   );
 
-  await addRewriteEvent(jobId, 'completed', '재각색 작업이 완료되었습니다', { finalStatus, scores, similarityRisk });
+    await addRewriteEvent(jobId, 'completed', '발행 생성 작업이 완료되었습니다', { finalStatus, scores, similarityRisk });
   return rows[0];
 }
 
@@ -2265,12 +2560,14 @@ function parseRssItems(xml = '') {
     const block = match[1];
     const title = stripHtml(extractXmlTag(block, 'title'));
     const link = stripHtml(extractXmlTag(block, 'link'));
+    const guid = stripHtml(extractXmlTag(block, 'guid')) || link;
     const pubDate = stripHtml(extractXmlTag(block, 'pubDate'));
     const description = stripHtml(extractXmlTag(block, 'description'));
     const date = pubDate ? new Date(pubDate) : null;
     return {
       title,
       link,
+      guid,
       pubDate: date && !Number.isNaN(date.getTime()) ? date.toISOString() : null,
       description,
     };
@@ -2458,7 +2755,7 @@ async function createContentJobFromRewrite({ tenantId, rewriteJob, body = {} }) 
     ]
   );
   const images = await saveGeneratedImagesForContentJob({ tenantId, contentJobId: rows[0].id, rewriteJob });
-  await addJobEvent(rows[0].id, 'publish_queue_created', '재각색 작업을 발행 큐로 보냈습니다', {
+    await addJobEvent(rows[0].id, 'publish_queue_created', '발행 생성 작업을 발행 큐로 보냈습니다', {
     rewriteJobId: rewriteJob.id,
     imageCount: images.length,
     scheduledAt: input.scheduled_at,
@@ -3482,6 +3779,318 @@ router.post('/views/status/refresh', async (req, res) => {
   }
 });
 
+router.post('/keyword-research', async (req, res) => {
+  try {
+    const result = await researchKeywordsFromText({
+      title: req.body?.title || req.body?.topic || req.body?.keyword || '',
+      text: req.body?.text || req.body?.sourceText || req.body?.description || '',
+      sourceUrl: req.body?.sourceUrl || '',
+      platform: normalizePlatform(req.body?.platform || 'blog', req.body?.sourceUrl),
+      category: req.body?.category || 'general',
+      body: req.body,
+      limit: clampNumber(parseInt(req.body?.limit || '12', 10) || 12, 3, 30),
+    });
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/rss-sources', async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit || '60', 10), 200);
+    const { rows } = await pool.query(
+      `SELECT rs.*,
+              COUNT(rsi.id)::int AS item_count,
+              COUNT(*) FILTER (WHERE rsi.status IN ('감지됨', '키워드 검토'))::int AS review_count
+       FROM rss_sources rs
+       LEFT JOIN rss_source_items rsi ON rsi.rss_source_id = rs.id
+       GROUP BY rs.id
+       ORDER BY rs.updated_at DESC
+       LIMIT $1`,
+      [limit]
+    );
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/rss-sources', async (req, res) => {
+  try {
+    const rssUrl = normalizeRssUrl(req.body?.rssUrl || req.body?.rss_url);
+    if (!rssUrl) return res.status(400).json({ error: 'rssUrl is required' });
+    const platform = normalizePlatform(req.body?.platform || 'blog', rssUrl);
+    const category = req.body?.category || 'general';
+    const label = normalizeTitleValue(req.body?.label || req.body?.name || rssUrl);
+    const { rows } = await pool.query(
+      `INSERT INTO rss_sources (label, rss_url, platform, category, status)
+       VALUES ($1,$2,$3,$4,'대기중')
+       ON CONFLICT (rss_url) DO UPDATE SET
+         label = COALESCE(EXCLUDED.label, rss_sources.label),
+         platform = EXCLUDED.platform,
+         category = EXCLUDED.category,
+         updated_at = NOW()
+       RETURNING *`,
+      [label, rssUrl, platform, category]
+    );
+    res.json({ ok: true, source: rows[0] });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/rss-sources/:id/check', async (req, res) => {
+  try {
+    const sourceResult = await pool.query('SELECT * FROM rss_sources WHERE id = $1', [req.params.id]);
+    if (sourceResult.rows.length === 0) return res.status(404).json({ error: 'RSS source not found' });
+    const source = sourceResult.rows[0];
+    const response = await fetch(source.rss_url, {
+      headers: {
+        'User-Agent': 'NaviWrite/1.0 RSS monitor',
+        Accept: 'application/rss+xml, application/xml, text/xml, */*',
+      },
+    });
+    if (!response.ok) throw new Error(`RSS fetch failed (${response.status})`);
+    const items = parseRssItems(await response.text()).slice(0, clampNumber(parseInt(req.body?.limit || '20', 10) || 20, 1, 50));
+    const saved = [];
+    let latestPublishedAt = source.last_item_published_at;
+
+    for (const item of items) {
+      if (!item.link) continue;
+      const research = await researchKeywordsFromText({
+        title: item.title,
+        text: item.description,
+        sourceUrl: item.link,
+        platform: source.platform,
+        category: source.category,
+        body: req.body || {},
+        limit: 10,
+      });
+      const mainKeyword = research.mainKeyword || '';
+      const topCandidate = research.candidates[0] || {};
+      const volume = topCandidate.searchVolume ?? null;
+      const band = keywordVolumeBand(volume);
+      const publishedAt = item.pubDate ? new Date(item.pubDate).toISOString() : null;
+      if (publishedAt && (!latestPublishedAt || new Date(publishedAt) > new Date(latestPublishedAt))) {
+        latestPublishedAt = publishedAt;
+      }
+      const { rows } = await pool.query(
+        `INSERT INTO rss_source_items (
+           rss_source_id, guid, title, link, description, published_at,
+           platform, category, main_keyword, selected_keyword, keyword_candidates,
+           autocomplete_keywords, search_volume, volume_band, status
+         )
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'키워드 검토')
+         ON CONFLICT (link) DO UPDATE SET
+           title = EXCLUDED.title,
+           description = EXCLUDED.description,
+           published_at = EXCLUDED.published_at,
+            main_keyword = EXCLUDED.main_keyword,
+            selected_keyword = COALESCE(rss_source_items.selected_keyword, EXCLUDED.selected_keyword),
+           keyword_candidates = EXCLUDED.keyword_candidates,
+           autocomplete_keywords = EXCLUDED.autocomplete_keywords,
+           search_volume = EXCLUDED.search_volume,
+           volume_band = EXCLUDED.volume_band,
+           status = CASE
+             WHEN rss_source_items.rewrite_job_id IS NOT NULL THEN rss_source_items.status
+             ELSE '키워드 검토'
+           END,
+           updated_at = NOW()
+         RETURNING *`,
+        [
+          source.id,
+          item.guid || item.link,
+          item.title,
+          item.link,
+          item.description,
+          publishedAt,
+          source.platform,
+          source.category,
+          mainKeyword,
+          mainKeyword,
+          JSON.stringify(research.candidates),
+          JSON.stringify(research.autocompleteKeywords || []),
+          volume,
+          band.key,
+        ]
+      );
+      saved.push(rows[0]);
+    }
+
+    const updated = await pool.query(
+      `UPDATE rss_sources
+       SET status = '확인완료',
+           last_checked_at = NOW(),
+           last_item_published_at = COALESCE($2::timestamptz, last_item_published_at),
+           error_message = NULL,
+           updated_at = NOW()
+       WHERE id = $1
+       RETURNING *`,
+      [source.id, latestPublishedAt]
+    );
+
+    res.json({ ok: true, source: updated.rows[0], detected: saved.length, items: saved });
+  } catch (err) {
+    await pool.query(
+      `UPDATE rss_sources SET status = '오류', error_message = $2, updated_at = NOW() WHERE id = $1`,
+      [req.params.id, err.message]
+    ).catch(() => null);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/rss-items', async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit || '120', 10), 300);
+    const values = [];
+    const where = [];
+    if (req.query.volumeBand) {
+      values.push(req.query.volumeBand);
+      where.push(`rsi.volume_band = $${values.length}`);
+    }
+    if (req.query.status) {
+      values.push(req.query.status);
+      where.push(`rsi.status = $${values.length}`);
+    }
+    values.push(limit);
+    const { rows } = await pool.query(
+      `SELECT rsi.*, rs.label AS rss_label, rs.rss_url
+       FROM rss_source_items rsi
+       JOIN rss_sources rs ON rs.id = rsi.rss_source_id
+       ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+       ORDER BY rsi.published_at DESC NULLS LAST, rsi.detected_at DESC
+       LIMIT $${values.length}`,
+      values
+    );
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.patch('/rss-items/:id', async (req, res) => {
+  try {
+    const selectedKeyword = normalizeKeywordValue(req.body?.selectedKeyword || req.body?.selected_keyword || '');
+    const checkedForPublish = Boolean(req.body?.checkedForPublish ?? req.body?.checked_for_publish);
+    const { rows } = await pool.query(
+      `UPDATE rss_source_items
+       SET selected_keyword = COALESCE(NULLIF($2, ''), selected_keyword),
+           checked_for_publish = $3,
+           status = CASE WHEN $3 THEN '발행 생성 대기' ELSE status END,
+           updated_at = NOW()
+       WHERE id = $1
+       RETURNING *`,
+      [req.params.id, selectedKeyword, checkedForPublish]
+    );
+    if (rows.length === 0) return res.status(404).json({ error: 'RSS item not found' });
+    res.json({ ok: true, item: rows[0] });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/rss-items/:id/research', async (req, res) => {
+  try {
+    const itemResult = await pool.query('SELECT * FROM rss_source_items WHERE id = $1', [req.params.id]);
+    if (itemResult.rows.length === 0) return res.status(404).json({ error: 'RSS item not found' });
+    const item = itemResult.rows[0];
+    const research = await researchKeywordsFromText({
+      title: item.title,
+      text: item.description,
+      sourceUrl: item.link,
+      platform: item.platform,
+      category: item.category,
+      body: req.body || {},
+      limit: 12,
+    });
+    const topCandidate = research.candidates[0] || {};
+    const band = keywordVolumeBand(topCandidate.searchVolume);
+    const { rows } = await pool.query(
+      `UPDATE rss_source_items
+       SET main_keyword = $2,
+           selected_keyword = COALESCE(selected_keyword, $2),
+           keyword_candidates = $3,
+           autocomplete_keywords = $4,
+           search_volume = $5,
+           volume_band = $6,
+           status = '키워드 검토',
+           updated_at = NOW()
+       WHERE id = $1
+       RETURNING *`,
+      [
+        item.id,
+        research.mainKeyword,
+        JSON.stringify(research.candidates),
+        JSON.stringify(research.autocompleteKeywords || []),
+        topCandidate.searchVolume ?? null,
+        band.key,
+      ]
+    );
+    res.json({ ok: true, item: rows[0], research });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/rss-items/to-rewrite-jobs', async (req, res) => {
+  try {
+    const ids = normalizeIdList(req.body?.itemIds || req.body?.rssItemIds);
+    if (ids.length === 0) return res.status(400).json({ error: 'itemIds is required' });
+    const { rows: items } = await pool.query(
+      `SELECT *
+       FROM rss_source_items
+       WHERE id = ANY($1::int[])
+       ORDER BY array_position($1::int[], id)`,
+      [ids]
+    );
+    if (items.length === 0) return res.status(404).json({ error: 'RSS items not found' });
+
+    const settings = parseRewriteSettings(req.body?.rewriteSettings || {});
+    const inserted = [];
+    for (const item of items) {
+      const keyword = normalizeKeywordValue(item.selected_keyword || item.main_keyword);
+      if (!keyword) continue;
+      const { rows } = await pool.query(
+        `INSERT INTO rewrite_jobs (
+          target_keyword, target_topic, platform, category, cta_url,
+          use_naver_qr, use_ai_images, source_analysis_ids, settings_json,
+          custom_title, status, source_kind, source_item_id, publish_spec
+        )
+        VALUES ($1,$2,$3,$4,$5,$6,$7,'[]',$8,$9,'대기중','rss',$10,$11)
+        RETURNING *`,
+        [
+          keyword,
+          `${item.title || ''}\n${item.description || ''}`.trim(),
+          normalizePlatform(req.body?.platform || item.platform || 'blog', item.link),
+          req.body?.category || item.category || 'general',
+          req.body?.ctaUrl || req.body?.cta_url || null,
+          Boolean(req.body?.useNaverQr ?? true),
+          Boolean(req.body?.useAiImages ?? true),
+          JSON.stringify(settings),
+          normalizeTitleValue(req.body?.customTitle || ''),
+          item.id,
+          JSON.stringify(buildPublishSpec(normalizePlatform(req.body?.platform || item.platform || 'blog', item.link), settings)),
+        ]
+      );
+      const processed = await processRewriteJob(rows[0].id);
+      await pool.query(
+        `UPDATE rss_source_items
+         SET rewrite_job_id = $2,
+             status = $3,
+             checked_for_publish = TRUE,
+             updated_at = NOW()
+         WHERE id = $1`,
+        [item.id, processed.id, processed.status === '오류' ? '오류' : '발행 생성 완료']
+      );
+      inserted.push(processed);
+    }
+    res.json({ ok: true, created: inserted.length, jobs: inserted });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.get('/rewrite-settings/benchmark', async (req, res) => {
   try {
     const url = req.query.url || DEFAULT_REWRITE_SETTINGS.benchmarkUrl;
@@ -3655,6 +4264,11 @@ router.post('/keyword-recommendations', async (req, res) => {
     });
 
     candidates.sort((a, b) => b.score - a.score || (b.searchTotal || 0) - (a.searchTotal || 0));
+    const enriched = await enrichKeywordCandidates(candidates, {
+      body: req.body,
+      seedQuery: topic || title || candidates[0]?.keyword || '',
+      limit: clampNumber(parseInt(req.body?.limit || '10', 10) || 10, 3, 20),
+    });
 
     res.json({
       ok: true,
@@ -3663,7 +4277,10 @@ router.post('/keyword-recommendations', async (req, res) => {
       category,
       hasNaverSearch,
       naverWarning,
-      candidates: candidates.map((candidate) => ({
+      hasKeywordTool: enriched.hasKeywordTool,
+      keywordToolWarning: enriched.keywordToolWarning,
+      autocompleteKeywords: enriched.autocompleteKeywords,
+      candidates: enriched.candidates.map((candidate) => ({
         ...candidate,
         suggestedTitles: generateTitleCandidates({
           keyword: candidate.keyword,
@@ -3866,7 +4483,7 @@ router.post('/rewrite-jobs', async (req, res) => {
     if (!hasExplicitKeywords && sourceRows.length > 0) {
       keywords = sourceRows.map(effectiveMainKeyword).filter(Boolean);
     }
-    if (keywords.length === 0) return res.status(400).json({ error: '재각색할 키워드를 입력하거나 수집완료 링크를 선택해 주세요' });
+    if (keywords.length === 0) return res.status(400).json({ error: '발행 생성할 키워드를 입력하거나 수집완료 링크를 선택해 주세요' });
 
     const platform = normalizePlatform(req.body?.platform || 'blog');
     const category = req.body?.category || 'general';
@@ -3900,9 +4517,10 @@ router.post('/rewrite-jobs', async (req, res) => {
       const { rows } = await pool.query(
         `INSERT INTO rewrite_jobs (
           target_keyword, target_topic, platform, category, cta_url,
-          use_naver_qr, use_ai_images, source_analysis_ids, settings_json, custom_title, status
+          use_naver_qr, use_ai_images, source_analysis_ids, settings_json,
+          custom_title, status, source_kind, publish_spec
         )
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'대기중')
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'대기중',$11,$12)
         RETURNING *`,
         [
           spec.keyword,
@@ -3915,9 +4533,14 @@ router.post('/rewrite-jobs', async (req, res) => {
           JSON.stringify(spec.sourceAnalysisIds),
           JSON.stringify(rewriteSettings),
           rewriteSpecs.length === 1 ? customTitle : '',
+          sourceRowMode ? 'collected_row' : (resolvedSourceAnalysisIds.length ? 'collected_pattern' : 'direct_keyword'),
+          JSON.stringify(buildPublishSpec(spec.platform, rewriteSettings, {
+            qrOrLinkRequired: true,
+            ctaUrlRequiredPerRow: true,
+          })),
         ]
       );
-      await addRewriteEvent(rows[0].id, 'created', '재각색 작업이 등록되었습니다', {
+      await addRewriteEvent(rows[0].id, 'created', '발행 생성 작업이 등록되었습니다', {
         sourceAnalysisIds: spec.sourceAnalysisIds,
         rewriteSettings,
         sourceRowMode,
@@ -3939,7 +4562,7 @@ router.post('/rewrite-jobs', async (req, res) => {
            RETURNING *`,
           [job.id, err.message]
         );
-        await addRewriteEvent(job.id, 'error', '재각색 작업 중 오류가 발생했습니다', { error: err.message });
+        await addRewriteEvent(job.id, 'error', '발행 생성 작업 중 오류가 발생했습니다', { error: err.message });
         return failed.rows[0] || { ...job, status: '오류', error_message: err.message };
       }
     });

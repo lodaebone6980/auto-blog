@@ -282,6 +282,46 @@ export async function initDB() {
         created_at TIMESTAMPTZ DEFAULT NOW()
       );
 
+      -- RSS sources watched for newly published source posts.
+      CREATE TABLE IF NOT EXISTS rss_sources (
+        id SERIAL PRIMARY KEY,
+        label TEXT,
+        rss_url TEXT NOT NULL UNIQUE,
+        platform TEXT DEFAULT 'blog',
+        category TEXT DEFAULT 'general',
+        status TEXT DEFAULT '대기중',
+        last_checked_at TIMESTAMPTZ,
+        last_item_published_at TIMESTAMPTZ,
+        error_message TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );
+
+      -- RSS-detected articles with keyword validation results.
+      CREATE TABLE IF NOT EXISTS rss_source_items (
+        id SERIAL PRIMARY KEY,
+        rss_source_id INTEGER REFERENCES rss_sources(id) ON DELETE CASCADE,
+        guid TEXT,
+        title TEXT,
+        link TEXT NOT NULL UNIQUE,
+        description TEXT,
+        published_at TIMESTAMPTZ,
+        platform TEXT DEFAULT 'blog',
+        category TEXT DEFAULT 'general',
+        main_keyword TEXT,
+        selected_keyword TEXT,
+        keyword_candidates JSONB DEFAULT '[]',
+        autocomplete_keywords JSONB DEFAULT '[]',
+        search_volume INTEGER,
+        volume_band TEXT,
+        status TEXT DEFAULT '감지됨',
+        checked_for_publish BOOLEAN DEFAULT FALSE,
+        rewrite_job_id INTEGER REFERENCES rewrite_jobs(id) ON DELETE SET NULL,
+        content_job_id INTEGER,
+        detected_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );
+
       ALTER TABLE source_analyses ADD COLUMN IF NOT EXISTS source_link_id INTEGER;
       ALTER TABLE source_analyses ADD COLUMN IF NOT EXISTS keyword_candidates JSONB DEFAULT '[]';
       ALTER TABLE source_analyses ADD COLUMN IF NOT EXISTS main_keyword TEXT;
@@ -308,6 +348,9 @@ export async function initDB() {
       ALTER TABLE blog_view_snapshots ADD COLUMN IF NOT EXISTS daily_view_source TEXT;
       ALTER TABLE rewrite_jobs ADD COLUMN IF NOT EXISTS settings_json JSONB DEFAULT '{}';
       ALTER TABLE rewrite_jobs ADD COLUMN IF NOT EXISTS custom_title TEXT;
+      ALTER TABLE rewrite_jobs ADD COLUMN IF NOT EXISTS source_kind TEXT DEFAULT 'collected';
+      ALTER TABLE rewrite_jobs ADD COLUMN IF NOT EXISTS source_item_id INTEGER;
+      ALTER TABLE rewrite_jobs ADD COLUMN IF NOT EXISTS publish_spec JSONB DEFAULT '{}';
 
       -- Collapse previously duplicated blog rows before adding the one-blog constraint.
       WITH duplicate_blogs AS (
@@ -573,6 +616,10 @@ export async function initDB() {
       CREATE INDEX IF NOT EXISTS idx_rewrite_jobs_status ON rewrite_jobs(status);
       CREATE INDEX IF NOT EXISTS idx_rewrite_jobs_keyword ON rewrite_jobs(target_keyword);
       CREATE INDEX IF NOT EXISTS idx_rewrite_job_events_job_id ON rewrite_job_events(rewrite_job_id);
+      CREATE INDEX IF NOT EXISTS idx_rss_sources_status ON rss_sources(status);
+      CREATE INDEX IF NOT EXISTS idx_rss_source_items_source ON rss_source_items(rss_source_id);
+      CREATE INDEX IF NOT EXISTS idx_rss_source_items_status ON rss_source_items(status);
+      CREATE INDEX IF NOT EXISTS idx_rss_source_items_volume ON rss_source_items(search_volume DESC NULLS LAST);
       CREATE INDEX IF NOT EXISTS idx_generated_images_job ON generated_images(content_job_id);
       CREATE INDEX IF NOT EXISTS idx_generated_images_tenant ON generated_images(tenant_id);
       CREATE INDEX IF NOT EXISTS idx_published_post_metrics_job_date ON published_post_metrics(content_job_id, metric_date DESC);

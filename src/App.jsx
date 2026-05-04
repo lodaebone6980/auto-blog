@@ -45,6 +45,16 @@ const DEFAULT_REWRITE_SETTINGS = {
   benchmarkMedianImageCount: 12,
 };
 
+const VOLUME_BANDS = [
+  { key: 'all', label: '전체', color: '#eef2ff', textColor: '#3730a3' },
+  { key: '0-500', label: '500 이하', color: '#fee2e2', textColor: '#991b1b' },
+  { key: '501-1000', label: '501~1000', color: '#ffedd5', textColor: '#9a3412' },
+  { key: '1001-2000', label: '1001~2000', color: '#fef3c7', textColor: '#92400e' },
+  { key: '2001-5000', label: '2001~5000', color: '#dcfce7', textColor: '#166534' },
+  { key: '5000+', label: '5000 이상', color: '#dbeafe', textColor: '#1e40af' },
+  { key: 'unknown', label: '미확인', color: '#e5e7eb', textColor: '#6b7280' },
+];
+
 /* ────────────────────── Utility ────────────────────── */
 
 function formatDate(d) {
@@ -71,6 +81,21 @@ async function safeFetch(url, opts) {
     return await res.json();
   } catch {
     return null;
+  }
+}
+
+function volumeBandFor(key) {
+  return VOLUME_BANDS.find((band) => band.key === key) || VOLUME_BANDS[VOLUME_BANDS.length - 1];
+}
+
+function parseJsonList(value) {
+  if (Array.isArray(value)) return value;
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
   }
 }
 
@@ -1169,14 +1194,14 @@ function SourceCollectionPanel({ onOpenRewrite }) {
           </p>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 10 }}>
             <span style={{ fontSize: 11, color: COLORS.textSecondary, fontWeight: 800 }}>
-              재각색 후보 {selectedCount}개 선택
+              발행 생성 후보 {selectedCount}개 선택
             </span>
             <button
               type="button"
               disabled={selectedCount === 0}
               onClick={() => {
                 localStorage.setItem('naviwrite.rewrite.selectedSourceLinkIds', JSON.stringify(selectedLinks));
-                setMessage(`선택한 ${selectedCount}개 글을 재각색 메뉴로 넘겼습니다.`);
+                setMessage(`선택한 ${selectedCount}개 글을 발행 생성 메뉴로 넘겼습니다.`);
                 if (onOpenRewrite) onOpenRewrite();
               }}
               style={{
@@ -1191,7 +1216,7 @@ function SourceCollectionPanel({ onOpenRewrite }) {
                 cursor: selectedCount === 0 ? 'not-allowed' : 'pointer',
               }}
             >
-              선택 글 재각색 준비
+              선택 글 발행 생성 준비
             </button>
           </div>
         </div>
@@ -1226,7 +1251,7 @@ function SourceCollectionPanel({ onOpenRewrite }) {
                         type="checkbox"
                         checked={selectedLinks.includes(link.id)}
                         onChange={() => toggleLinkSelection(link.id)}
-                        aria-label="재각색 후보 선택"
+                        aria-label="발행 생성 후보 선택"
                       />
                     </td>
                     <td style={{ padding: '10px 12px' }}><StatusBadge value={link.status} /></td>
@@ -1333,6 +1358,12 @@ function SourceCollectionPanel({ onOpenRewrite }) {
 function RewritePanel() {
   const [links, setLinks] = useState([]);
   const [jobs, setJobs] = useState([]);
+  const [rssSources, setRssSources] = useState([]);
+  const [rssItems, setRssItems] = useState([]);
+  const [selectedRssItemIds, setSelectedRssItemIds] = useState([]);
+  const [rssForm, setRssForm] = useState({ label: '', rssUrl: '', platform: 'blog', category: 'IT/테크' });
+  const [rssVolumeFilter, setRssVolumeFilter] = useState('all');
+  const [checkingRssId, setCheckingRssId] = useState(null);
   const [selectedSourceLinkIds, setSelectedSourceLinkIds] = useState(() => {
     try {
       const saved = JSON.parse(localStorage.getItem('naviwrite.rewrite.selectedSourceLinkIds') || '[]');
@@ -1371,6 +1402,7 @@ function RewritePanel() {
   const [queueing, setQueueing] = useState(false);
   const [reanalyzingKeywords, setReanalyzingKeywords] = useState(false);
   const [benchmarking, setBenchmarking] = useState(false);
+  const [creatingRssJobs, setCreatingRssJobs] = useState(false);
   const [message, setMessage] = useState('');
 
   const parseArray = (value) => {
@@ -1386,13 +1418,17 @@ function RewritePanel() {
 
   const loadRewriteData = useCallback(async () => {
     setLoading(true);
-    const [linkRes, jobRes] = await Promise.all([
+    const [linkRes, jobRes, rssSourceRes, rssItemRes] = await Promise.all([
       safeFetch(`${API}/collections/links?limit=150`),
       safeFetch(`${API}/rewrite-jobs?limit=80`),
+      safeFetch(`${API}/rss-sources?limit=60`),
+      safeFetch(`${API}/rss-items?limit=160`),
     ]);
     setLoading(false);
     if (Array.isArray(linkRes)) setLinks(linkRes);
     if (Array.isArray(jobRes)) setJobs(jobRes);
+    if (Array.isArray(rssSourceRes)) setRssSources(rssSourceRes);
+    if (Array.isArray(rssItemRes)) setRssItems(rssItemRes);
   }, []);
 
   useEffect(() => {
@@ -1442,6 +1478,18 @@ function RewritePanel() {
     [selectedSources]
   );
 
+  const filteredRssItems = useMemo(
+    () => rssItems.filter((item) => rssVolumeFilter === 'all' || (item.volume_band || 'unknown') === rssVolumeFilter),
+    [rssItems, rssVolumeFilter]
+  );
+
+  const allRssItemsSelected = filteredRssItems.length > 0 && filteredRssItems.every((item) => selectedRssItemIds.includes(item.id));
+
+  const selectedRssItems = useMemo(
+    () => filteredRssItems.filter((item) => selectedRssItemIds.includes(item.id)),
+    [filteredRssItems, selectedRssItemIds]
+  );
+
   const derivedSourceKeywords = useMemo(
     () => [...new Set(selectedSources
       .map((link) => (link.corrected_main_keyword || link.main_keyword || '').trim())
@@ -1455,6 +1503,7 @@ function RewritePanel() {
     [effectiveKeywordsText]
   );
   const rewriteJobCount = keywordsText.trim() ? keywordCount : selectedSources.length;
+  const canCreateGenerationJobs = keywordCount > 0 || selectedSources.length > 0;
 
   const patternSummary = useMemo(() => {
     const avg = (field, fallback = 0) => {
@@ -1479,6 +1528,100 @@ function RewritePanel() {
 
   const toggleAllSources = () => {
     setSelectedSourceLinkIds(allSourcesSelected ? [] : collectedLinks.map((link) => link.id));
+  };
+
+  const toggleRssItem = (id) => {
+    setSelectedRssItemIds((prev) => (
+      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
+    ));
+  };
+
+  const toggleAllRssItems = () => {
+    setSelectedRssItemIds(allRssItemsSelected ? [] : filteredRssItems.map((item) => item.id));
+  };
+
+  const createRssSource = async () => {
+    if (!rssForm.rssUrl.trim()) {
+      setMessage('감지할 RSS URL이나 네이버 블로그 ID를 입력해 주세요.');
+      return;
+    }
+    const res = await safeFetch(`${API}/rss-sources`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(rssForm),
+    });
+    if (res?.ok) {
+      setRssForm({ label: '', rssUrl: '', platform: rssForm.platform, category: rssForm.category });
+      setMessage('RSS 감지 소스를 저장했습니다.');
+      await loadRewriteData();
+    } else {
+      setMessage(res?.error || 'RSS 소스 저장에 실패했습니다.');
+    }
+  };
+
+  const checkRssSource = async (source) => {
+    const opsSettings = loadOpsSettings();
+    setCheckingRssId(source.id);
+    setMessage(`${source.label || source.rss_url} RSS를 확인하고 키워드 후보를 검증 중입니다.`);
+    const res = await safeFetch(`${API}/rss-sources/${source.id}/check`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        naverClientId: opsSettings.naverClientId,
+        naverClientSecret: opsSettings.naverClientSecret,
+        limit: 20,
+      }),
+    });
+    setCheckingRssId(null);
+    if (res?.ok) {
+      setMessage(`RSS 감지 완료 · ${res.detected || 0}개 글 확인`);
+      await loadRewriteData();
+    } else {
+      setMessage(res?.error || 'RSS 감지에 실패했습니다.');
+    }
+  };
+
+  const updateRssItemKeyword = async (item, selectedKeyword, checkedForPublish = item.checked_for_publish) => {
+    const res = await safeFetch(`${API}/rss-items/${item.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ selectedKeyword, checkedForPublish }),
+    });
+    if (res?.ok) {
+      await loadRewriteData();
+    } else {
+      setMessage(res?.error || 'RSS 키워드 저장에 실패했습니다.');
+    }
+  };
+
+  const createJobsFromSelectedRssItems = async () => {
+    if (selectedRssItems.length === 0) {
+      setMessage('발행 생성할 RSS 감지 글을 체크해 주세요.');
+      return;
+    }
+    setCreatingRssJobs(true);
+    setMessage(`RSS 감지 글 ${selectedRssItems.length}개를 발행 생성 중입니다.`);
+    const res = await safeFetch(`${API}/rss-items/to-rewrite-jobs`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        itemIds: selectedRssItems.map((item) => item.id),
+        platform,
+        category,
+        ctaUrl,
+        useNaverQr,
+        useAiImages,
+        rewriteSettings,
+      }),
+    });
+    setCreatingRssJobs(false);
+    if (res?.ok) {
+      setMessage(`RSS 기반 발행 생성 완료 · ${res.created || 0}개`);
+      setSelectedRssItemIds([]);
+      await loadRewriteData();
+    } else {
+      setMessage(res?.error || 'RSS 기반 발행 생성에 실패했습니다.');
+    }
   };
 
   const saveCorrectedKeyword = async (link) => {
@@ -1568,7 +1711,7 @@ function RewritePanel() {
 
   const chooseRecommendedTitle = (title) => {
     setCustomTitle(title);
-    setMessage('추천 제목을 이번 재각색 작업 제목으로 선택했습니다.');
+    setMessage('추천 제목을 이번 발행 생성 작업 제목으로 선택했습니다.');
   };
 
   const recommendKeywords = async () => {
@@ -1609,21 +1752,21 @@ function RewritePanel() {
   const chooseRecommendedKeyword = (keyword) => {
     setKeywordsText(keyword);
     setKeywordRecommendations(null);
-    setMessage(`재각색 키워드를 '${keyword}'로 적용했습니다.`);
+    setMessage(`발행 생성 키워드를 '${keyword}'로 적용했습니다.`);
   };
 
   const createRewriteJobs = async () => {
     if (rewriteJobCount === 0) {
-      setMessage('재각색할 키워드를 입력하거나 메인키워드가 잡힌 수집완료 링크를 선택해 주세요.');
+      setMessage('발행 생성할 메인키워드를 입력하거나 메인키워드가 잡힌 수집완료 링크를 선택해 주세요.');
       return;
     }
-    if (selectedSourceLinkIds.length === 0) {
-      setMessage('패턴으로 삼을 수집완료 링크를 1개 이상 선택해 주세요.');
+    if (!keywordsText.trim() && selectedSourceLinkIds.length === 0) {
+      setMessage('수집글 기준 생성은 패턴으로 삼을 수집완료 링크를 1개 이상 선택해야 합니다.');
       return;
     }
 
     setCreating(true);
-    setMessage(`재각색 작업 ${rewriteJobCount}개를 병렬 처리 중입니다.`);
+    setMessage(`발행 생성 작업 ${rewriteJobCount}개를 병렬 처리 중입니다.`);
     const res = await safeFetch(`${API}/rewrite-jobs`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1645,11 +1788,11 @@ function RewritePanel() {
     setCreating(false);
 
     if (res?.ok) {
-      setMessage(`재각색 완료 · 생성 ${res.created}개 · 병렬 ${res.concurrency}개`);
+      setMessage(`발행 생성 완료 · 생성 ${res.created}개 · 병렬 ${res.concurrency}개`);
       setKeywordsText('');
       await loadRewriteData();
     } else {
-      setMessage(res?.error || '재각색 작업 생성에 실패했습니다.');
+      setMessage(res?.error || '발행 생성 작업 생성에 실패했습니다.');
     }
   };
 
@@ -1666,7 +1809,7 @@ function RewritePanel() {
 
   const reprocessSelectedJobs = async () => {
     if (selectedRewriteLinks.length === 0) {
-      setMessage('다시 생성할 재각색 완료 행을 체크해 주세요.');
+      setMessage('다시 생성할 발행 생성 완료 행을 체크해 주세요.');
       return;
     }
     setCreating(true);
@@ -1698,7 +1841,7 @@ function RewritePanel() {
 
   const sendRewriteIdsToPublishQueue = async (rewriteJobIds, { autoReady = false } = {}) => {
     if (!rewriteJobIds.length) {
-      setMessage('발행 큐로 보낼 재각색 완료 행을 체크해 주세요.');
+      setMessage('발행 큐로 보낼 발행 생성 완료 행을 체크해 주세요.');
       return null;
     }
     setQueueing(true);
@@ -1826,9 +1969,9 @@ function RewritePanel() {
       <section style={{ ...cardStyle, padding: 20 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16, flexWrap: 'wrap' }}>
           <div>
-            <h2 style={{ fontSize: 18, fontWeight: 850, color: COLORS.primary, marginBottom: 4 }}>재각색</h2>
+            <h2 style={{ fontSize: 18, fontWeight: 850, color: COLORS.primary, marginBottom: 4 }}>발행 생성</h2>
             <p style={{ fontSize: 12, color: COLORS.textSecondary, lineHeight: 1.6 }}>
-              수집완료 글의 구성, 글자수, 키워드 반복수, 이미지 수, 인용구 패턴만 참고해서 새 문장으로 초안을 만듭니다.
+              URL 수집 글, RSS 감지 글, 직접 입력한 메인키워드를 발행 가능한 초안으로 바로 생성합니다. 문장은 새로 쓰고 수치와 발행 규칙만 반영합니다.
             </p>
           </div>
           <button
@@ -1857,7 +2000,7 @@ function RewritePanel() {
             <textarea
               value={keywordsText}
               onChange={(e) => setKeywordsText(e.target.value)}
-              placeholder={`행마다 다른 키워드를 쓰려면 비워두세요.\n비워두면 패턴 소스 표의 수정 KW, 없으면 자동 메인키워드로 각 행이 따로 생성됩니다.`}
+              placeholder={`직접 새 글을 만들 메인키워드를 줄바꿈으로 입력하세요.\n비워두면 아래 수집 소스 표의 수정 KW, 없으면 자동 메인키워드로 각 행이 따로 생성됩니다.`}
               rows={4}
               style={{
                 width: '100%',
@@ -1890,7 +2033,7 @@ function RewritePanel() {
                 {recommendingKeywords ? '키워드 검증중' : 'AI 키워드 추천'}
               </button>
               <span style={{ fontSize: 11, color: COLORS.textMuted, fontWeight: 700 }}>
-                추천 버튼은 주제형 새 글을 만들 때만 쓰고, 수집 링크 재각색은 표의 행별 수정 KW가 우선입니다.
+                추천 버튼은 주제형 새 글을 만들 때 쓰고, 수집 글 기준 생성은 표의 행별 수정 KW가 우선입니다.
               </span>
             </div>
             {!keywordsText.trim() && derivedSourceKeywords.length > 0 && (
@@ -2003,7 +2146,7 @@ function RewritePanel() {
               {keywordRecommendations.candidates.slice(0, 6).map((item, index) => (
                 <div key={item.keyword} style={{
                   display: 'grid',
-                  gridTemplateColumns: '34px minmax(0, 1fr) 86px',
+                  gridTemplateColumns: '34px minmax(0, 1fr) 88px 86px',
                   gap: 10,
                   alignItems: 'center',
                   padding: 10,
@@ -2024,6 +2167,21 @@ function RewritePanel() {
                       {item.sources?.length ? ` · ${item.sources.slice(0, 3).join(', ')}` : ''}
                     </p>
                   </div>
+                  <span style={{
+                    justifySelf: 'start',
+                    height: 26,
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    padding: '0 8px',
+                    borderRadius: 999,
+                    background: item.volumeBandColor || volumeBandFor(item.volumeBand).color,
+                    color: item.volumeBandTextColor || volumeBandFor(item.volumeBand).textColor,
+                    fontSize: 10,
+                    fontWeight: 900,
+                    whiteSpace: 'nowrap',
+                  }}>
+                    {item.searchVolume != null ? Number(item.searchVolume).toLocaleString() : (item.volumeBandLabel || '미확인')}
+                  </span>
                   <button
                     type="button"
                     onClick={() => chooseRecommendedKeyword(item.keyword)}
@@ -2106,11 +2264,189 @@ function RewritePanel() {
           padding: 14,
           border: `1px solid ${COLORS.border}`,
           borderRadius: 10,
+          background: '#ffffff',
+        }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap', marginBottom: 12 }}>
+            <div>
+              <h3 style={{ fontSize: 14, fontWeight: 900, color: COLORS.primary, marginBottom: 4 }}>RSS 감지 키워드 검토</h3>
+              <p style={{ fontSize: 11, color: COLORS.textSecondary, lineHeight: 1.6 }}>
+                블로그/워드프레스 RSS 새 글을 감지한 뒤 메인키워드, 자동완성어, 검색량 밴드를 보고 사람이 체크한 글만 발행 생성으로 넘깁니다.
+              </p>
+            </div>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              {VOLUME_BANDS.map((band) => (
+                <button
+                  key={band.key}
+                  type="button"
+                  onClick={() => setRssVolumeFilter(band.key)}
+                  style={{
+                    height: 28,
+                    padding: '0 9px',
+                    borderRadius: 999,
+                    border: `1px solid ${rssVolumeFilter === band.key ? band.textColor : COLORS.border}`,
+                    background: band.color,
+                    color: band.textColor,
+                    fontSize: 10,
+                    fontWeight: 900,
+                    cursor: 'pointer',
+                  }}
+                >
+                  {band.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 8, marginBottom: 10 }}>
+            <input
+              value={rssForm.label}
+              onChange={(e) => setRssForm({ ...rssForm, label: e.target.value })}
+              placeholder="RSS 이름 예: 워드프레스 새 글"
+              style={{ ...inputStyle, marginBottom: 0 }}
+            />
+            <input
+              value={rssForm.rssUrl}
+              onChange={(e) => setRssForm({ ...rssForm, rssUrl: e.target.value })}
+              placeholder="RSS URL 또는 네이버 블로그 ID"
+              style={{ ...inputStyle, marginBottom: 0 }}
+            />
+            <select
+              value={rssForm.platform}
+              onChange={(e) => setRssForm({ ...rssForm, platform: e.target.value })}
+              style={{ ...inputStyle, marginBottom: 0 }}
+            >
+              <option value="blog">네이버 블로그</option>
+              <option value="cafe">네이버 카페</option>
+              <option value="web">워드프레스/웹</option>
+            </select>
+            <input
+              value={rssForm.category}
+              onChange={(e) => setRssForm({ ...rssForm, category: e.target.value })}
+              placeholder="카테고리"
+              style={{ ...inputStyle, marginBottom: 0 }}
+            />
+            <button type="button" onClick={createRssSource} style={{ ...primaryButtonStyle, marginBottom: 0 }}>RSS 추가</button>
+          </div>
+
+          {rssSources.length > 0 && (
+            <div style={{ display: 'flex', gap: 8, overflowX: 'auto', paddingBottom: 8, marginBottom: 8 }}>
+              {rssSources.map((source) => (
+                <div key={source.id} style={{ flex: '0 0 230px', padding: 10, borderRadius: 9, border: `1px solid ${COLORS.border}`, background: '#f8fafc' }}>
+                  <p style={{ fontSize: 12, fontWeight: 900, color: COLORS.textPrimary, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{source.label || source.rss_url}</p>
+                  <p style={{ marginTop: 3, fontSize: 10, color: COLORS.textMuted }}>{source.platform} · {source.category} · {source.item_count || 0}개</p>
+                  <button
+                    type="button"
+                    disabled={checkingRssId === source.id}
+                    onClick={() => checkRssSource(source)}
+                    style={{ ...smallButtonStyle, marginTop: 8, width: '100%', background: checkingRssId === source.id ? '#f3f4f6' : 'white' }}
+                  >
+                    {checkingRssId === source.id ? '감지 중' : 'RSS 감지'}
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11, fontWeight: 900, color: COLORS.textSecondary }}>
+              <input type="checkbox" checked={allRssItemsSelected} onChange={toggleAllRssItems} />
+              전체 선택/해제
+            </label>
+            <button
+              type="button"
+              onClick={createJobsFromSelectedRssItems}
+              disabled={selectedRssItems.length === 0 || creatingRssJobs}
+              style={{
+                height: 30,
+                padding: '0 12px',
+                borderRadius: 8,
+                border: 'none',
+                background: selectedRssItems.length === 0 || creatingRssJobs ? COLORS.textMuted : COLORS.success,
+                color: 'white',
+                fontSize: 11,
+                fontWeight: 850,
+                cursor: selectedRssItems.length === 0 || creatingRssJobs ? 'not-allowed' : 'pointer',
+              }}
+            >
+              {creatingRssJobs ? '발행 생성 중' : `체크 RSS 발행 생성 (${selectedRssItems.length})`}
+            </button>
+          </div>
+
+          <div style={{ overflowX: 'auto', maxHeight: 280 }}>
+            {filteredRssItems.length === 0 ? (
+              <div style={{ padding: 22, textAlign: 'center', color: COLORS.textMuted, fontSize: 12 }}>
+                아직 감지된 RSS 글이 없습니다.
+              </div>
+            ) : (
+              <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1040 }}>
+                <thead>
+                  <tr style={{ background: '#f8fafc', color: COLORS.textSecondary, fontSize: 11, textAlign: 'left' }}>
+                    {['선택', '검색량', '상태', '제목', '선택 KW', '후보/자동완성', '발행 생성'].map((head) => (
+                      <th key={head} style={{ padding: '9px 10px', borderBottom: `1px solid ${COLORS.border}` }}>{head}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredRssItems.map((item) => {
+                    const band = volumeBandFor(item.volume_band || 'unknown');
+                    const candidates = parseJsonList(item.keyword_candidates);
+                    const autocompletes = parseJsonList(item.autocomplete_keywords);
+                    return (
+                      <tr key={item.id} style={{ fontSize: 12, borderBottom: `1px solid ${COLORS.border}` }}>
+                        <td style={{ padding: '9px 10px' }}>
+                          <input
+                            type="checkbox"
+                            checked={selectedRssItemIds.includes(item.id)}
+                            onChange={() => toggleRssItem(item.id)}
+                          />
+                        </td>
+                        <td style={{ padding: '9px 10px' }}>
+                          <span style={{ display: 'inline-flex', alignItems: 'center', height: 24, padding: '0 8px', borderRadius: 999, background: band.color, color: band.textColor, fontSize: 10, fontWeight: 900 }}>
+                            {item.search_volume != null ? Number(item.search_volume).toLocaleString() : band.label}
+                          </span>
+                        </td>
+                        <td style={{ padding: '9px 10px' }}><StatusBadge value={item.status} /></td>
+                        <td style={{ padding: '9px 10px', maxWidth: 270 }}>
+                          <a href={item.link} target="_blank" rel="noreferrer" style={{ fontWeight: 850, color: COLORS.textPrimary, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', display: 'block' }}>{item.title || '-'}</a>
+                          <p style={{ marginTop: 2, fontSize: 10, color: COLORS.textMuted }}>{formatDateTime(item.published_at || item.detected_at)}</p>
+                        </td>
+                        <td style={{ padding: '9px 10px', minWidth: 150 }}>
+                          <input
+                            defaultValue={item.selected_keyword || item.main_keyword || ''}
+                            onBlur={(e) => updateRssItemKeyword(item, e.target.value, selectedRssItemIds.includes(item.id))}
+                            style={{ width: 138, height: 30, border: `1px solid ${COLORS.border}`, borderRadius: 7, padding: '0 8px', fontSize: 11, fontWeight: 850 }}
+                          />
+                        </td>
+                        <td style={{ padding: '9px 10px', maxWidth: 260, color: COLORS.textSecondary }}>
+                          <p style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                            후보 {candidates.slice(0, 3).map((candidate) => candidate.keyword).filter(Boolean).join(', ') || '-'}
+                          </p>
+                          <p style={{ marginTop: 2, fontSize: 10, color: COLORS.textMuted, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                            자동완성 {autocompletes.slice(0, 4).join(', ') || '-'}
+                          </p>
+                        </td>
+                        <td style={{ padding: '9px 10px', color: COLORS.textSecondary }}>
+                          {item.rewrite_job_id ? `#${item.rewrite_job_id}` : '-'}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </div>
+
+        <div style={{
+          marginTop: 14,
+          padding: 14,
+          border: `1px solid ${COLORS.border}`,
+          borderRadius: 10,
           background: '#f8fafc',
         }}>
           <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', marginBottom: 12 }}>
             <div>
-              <h3 style={{ fontSize: 14, fontWeight: 900, color: COLORS.primary, marginBottom: 4 }}>재각색 기준값</h3>
+              <h3 style={{ fontSize: 14, fontWeight: 900, color: COLORS.primary, marginBottom: 4 }}>발행 생성 기준값</h3>
               <p style={{ fontSize: 11, color: COLORS.textSecondary, lineHeight: 1.6 }}>
                 openmind200 최근 20개 자동 중앙값은 1,940자 · 7섹션 · 섹션당 약 280자 · KW 19회 · 이미지 12장입니다.
                 운영 기본값은 2,200자 · KW 15회로 보정했습니다.
@@ -2212,20 +2548,20 @@ function RewritePanel() {
           <button
             type="button"
             onClick={createRewriteJobs}
-            disabled={creating || rewriteJobCount === 0 || selectedSourceLinkIds.length === 0}
+            disabled={creating || !canCreateGenerationJobs}
             style={{
               height: 40,
               padding: '0 18px',
               borderRadius: 9,
               border: 'none',
-              background: creating || rewriteJobCount === 0 || selectedSourceLinkIds.length === 0 ? COLORS.textMuted : COLORS.primary,
+              background: creating || !canCreateGenerationJobs ? COLORS.textMuted : COLORS.primary,
               color: 'white',
               fontSize: 13,
               fontWeight: 850,
-              cursor: creating || rewriteJobCount === 0 || selectedSourceLinkIds.length === 0 ? 'not-allowed' : 'pointer',
+              cursor: creating || !canCreateGenerationJobs ? 'not-allowed' : 'pointer',
             }}
           >
-            {creating ? '재각색 생성 중...' : `재각색 작업 만들기 (${rewriteJobCount})`}
+            {creating ? '발행 생성 중...' : `발행 생성 작업 만들기 (${rewriteJobCount})`}
           </button>
           {message && <span style={{ fontSize: 12, color: message.includes('완료') || message.includes('복사') ? COLORS.success : COLORS.warning, fontWeight: 800 }}>{message}</span>}
         </div>
@@ -2248,9 +2584,9 @@ function RewritePanel() {
       <section style={sectionStyle}>
         <div style={{ padding: '14px 18px', borderBottom: `1px solid ${COLORS.border}`, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
           <div style={{ marginRight: 'auto' }}>
-            <h3 style={{ fontSize: 15, fontWeight: 850, color: COLORS.primary }}>패턴 소스 선택</h3>
+            <h3 style={{ fontSize: 15, fontWeight: 850, color: COLORS.primary }}>수집 글 기준 발행 생성</h3>
             <p style={{ marginTop: 4, fontSize: 11, color: COLORS.textSecondary }}>
-              수집완료 링크만 재각색 패턴으로 사용할 수 있습니다. 예시 문장은 저장하지 않고 수치와 구조만 반영합니다.
+              수집완료 링크는 메인키워드, 구성 수치, 글자수/KW/이미지/인용구 패턴만 참고합니다. 예시 문장은 재사용하지 않습니다.
             </p>
           </div>
           <button
@@ -2331,20 +2667,20 @@ function RewritePanel() {
             </div>
           ) : collectedLinks.length === 0 ? (
             <div style={{ padding: 36, textAlign: 'center', color: COLORS.textMuted, fontSize: 13 }}>
-              아직 재각색에 쓸 수집완료 링크가 없습니다.
+              아직 발행 생성에 쓸 수집완료 링크가 없습니다.
             </div>
           ) : (
             <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1810 }}>
               <thead>
                 <tr style={{ background: '#f8fafc', color: COLORS.textSecondary, fontSize: 11, textAlign: 'left' }}>
-                  {['선택', '발행 상태', '재각색 상태', '작업', '수집일', '블로그/출처', '플랫폼', '메인키워드', '수정 KW', '카테고리', '글자/KW/이미지', '인용구/반복어', 'URL'].map((head) => (
+                  {['선택', '발행 상태', '생성 상태', '작업', '수집일', '블로그/출처', '플랫폼', '메인키워드', '수정 KW', '카테고리', '글자/KW/이미지', '인용구/반복어', 'URL'].map((head) => (
                     <th key={head} style={{ padding: '10px 12px', borderBottom: `1px solid ${COLORS.border}` }}>
                       {head === '선택' ? (
                         <input
                           type="checkbox"
                           checked={allSourcesSelected}
                           onChange={toggleAllSources}
-                          aria-label="패턴 소스 전체 선택 또는 해제"
+                          aria-label="수집 글 전체 선택 또는 해제"
                         />
                       ) : head}
                     </th>
@@ -2359,7 +2695,7 @@ function RewritePanel() {
                         type="checkbox"
                         checked={selectedSourceLinkIds.includes(link.id)}
                         onChange={() => toggleSource(link.id)}
-                        aria-label="패턴 소스 선택"
+                        aria-label="수집 글 기준 발행 생성 선택"
                       />
                     </td>
                     <td style={{ padding: '10px 12px', minWidth: 125 }}>
@@ -2472,7 +2808,7 @@ function RewritePanel() {
 
       <section style={sectionStyle}>
         <div style={{ padding: '14px 18px', borderBottom: `1px solid ${COLORS.border}` }}>
-          <h3 style={{ fontSize: 15, fontWeight: 850, color: COLORS.primary }}>재각색 작업 목록</h3>
+          <h3 style={{ fontSize: 15, fontWeight: 850, color: COLORS.primary }}>발행 생성 작업 목록</h3>
           <p style={{ marginTop: 4, fontSize: 11, color: COLORS.textSecondary }}>
             완료된 작업은 본문, 점수, 이미지 초안을 함께 저장합니다. 발행 전에 유사도와 사실 검수 단계를 거치는 흐름으로 운영합니다.
           </p>
@@ -2480,7 +2816,7 @@ function RewritePanel() {
         <div style={{ display: 'grid', gap: 12, padding: 14 }}>
           {jobs.length === 0 ? (
             <div style={{ padding: 24, textAlign: 'center', color: COLORS.textMuted, fontSize: 13 }}>
-              아직 생성된 재각색 작업이 없습니다.
+              아직 생성된 발행 생성 작업이 없습니다.
             </div>
           ) : jobs.map((job) => {
             const images = parseArray(job.images_json);
@@ -4068,7 +4404,7 @@ function PublishQueuePanel() {
           <div>
             <h2 style={{ fontSize: 18, fontWeight: 850, color: COLORS.primary, marginBottom: 4 }}>발행 큐</h2>
             <p style={{ fontSize: 12, color: COLORS.textSecondary, lineHeight: 1.6 }}>
-              재각색 결과를 실제 발행 단위로 관리합니다. 즉시/예약 발행, 계정 슬롯, 행동 딜레이, RSS 확인, 옵시디언 내보내기를 여기에서 확정합니다.
+              발행 생성 결과를 실제 발행 단위로 관리합니다. 즉시/예약 발행, 계정 슬롯, 행동 딜레이, RSS 확인, 옵시디언 내보내기를 여기에서 확정합니다.
             </p>
           </div>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -4113,7 +4449,7 @@ function PublishQueuePanel() {
             </div>
           ) : jobs.length === 0 ? (
             <div style={{ padding: 36, textAlign: 'center', color: COLORS.textMuted, fontSize: 13 }}>
-              아직 발행 큐에 들어온 글이 없습니다. 재각색 목록에서 `발행 큐로 보내기`를 눌러주세요.
+              아직 발행 큐에 들어온 글이 없습니다. 발행 생성 목록에서 `발행 큐로 보내기`를 눌러주세요.
             </div>
           ) : (
             <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1380 }}>
@@ -4437,7 +4773,7 @@ export default function App() {
           {[
             ['dashboard', '대시보드'],
             ['collect', '수집 링크'],
-            ['rewrite', '재각색'],
+            ['rewrite', '발행 생성'],
             ['publish', '발행 큐'],
             ['views', '조회수 근황'],
             ['settings', '운영 설정'],
