@@ -4123,6 +4123,13 @@ router.get('/rss-items', async (req, res) => {
       values.push(req.query.status);
       where.push(`rsi.status = $${values.length}`);
     }
+    if (req.query.rssSourceId || req.query.sourceId) {
+      const sourceId = parseInt(req.query.rssSourceId || req.query.sourceId, 10);
+      if (Number.isFinite(sourceId)) {
+        values.push(sourceId);
+        where.push(`rsi.rss_source_id = $${values.length}`);
+      }
+    }
     if (req.query.days) {
       values.push(clampNumber(parseInt(req.query.days, 10) || 7, 1, 365));
       where.push(`${dateExpr} >= NOW() - ($${values.length}::int * INTERVAL '1 day')`);

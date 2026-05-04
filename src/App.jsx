@@ -108,6 +108,41 @@ function parseJsonList(value) {
   }
 }
 
+function formatSearchVolume(value) {
+  if (value === null || value === undefined || value === '') return '미확인';
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric.toLocaleString() : '미확인';
+}
+
+function keywordCandidateVolume(candidate) {
+  if (!candidate || typeof candidate !== 'object') return null;
+  return candidate.searchVolume
+    ?? candidate.search_volume
+    ?? candidate.monthlySearchVolume
+    ?? candidate.monthly_search_volume
+    ?? candidate.monthlyTotal
+    ?? candidate.monthly_total
+    ?? candidate.searchTotal
+    ?? candidate.search_total
+    ?? null;
+}
+
+function rssDateBadgeStyle(value) {
+  const date = value ? new Date(value) : null;
+  if (!date || Number.isNaN(date.getTime())) {
+    return { background: '#f1f5f9', color: '#475569', label: '날짜 없음' };
+  }
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const target = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const diffDays = Math.max(0, Math.floor((today - target) / 86400000));
+  if (diffDays === 0) return { background: '#dbeafe', color: '#1e40af', label: '오늘' };
+  if (diffDays <= 3) return { background: '#dcfce7', color: '#166534', label: `${diffDays}일 전` };
+  if (diffDays <= 7) return { background: '#fce7f3', color: '#9d174d', label: `${diffDays}일 전` };
+  if (diffDays <= 14) return { background: '#fef3c7', color: '#92400e', label: `${diffDays}일 전` };
+  return { background: '#e5e7eb', color: '#4b5563', label: `${diffDays}일 전` };
+}
+
 /* ────────────────────── Skeleton ────────────────────── */
 
 function Skeleton({ width = '100%', height = 20, radius = 6, style = {} }) {
@@ -1376,6 +1411,7 @@ function RssDetectionPanel({ onOpenRewrite }) {
     }
   });
   const [rssForm, setRssForm] = useState({ label: '', rssUrl: '', platform: 'blog', category: 'IT/테크' });
+  const [rssSourceFilter, setRssSourceFilter] = useState('all');
   const [rssVolumeFilter, setRssVolumeFilter] = useState('all');
   const [rssPeriod, setRssPeriod] = useState('7d');
   const [customDateFrom, setCustomDateFrom] = useState('');
@@ -1388,6 +1424,7 @@ function RssDetectionPanel({ onOpenRewrite }) {
   const loadRssData = useCallback(async () => {
     const selectedPeriod = RSS_PERIODS.find((item) => item.key === rssPeriod) || RSS_PERIODS[2];
     const itemParams = new URLSearchParams({ limit: '200' });
+    if (rssSourceFilter !== 'all') itemParams.set('rssSourceId', rssSourceFilter);
     if (rssVolumeFilter !== 'all') itemParams.set('volumeBand', rssVolumeFilter);
     if (rssPeriod === 'custom') {
       if (customDateFrom) itemParams.set('dateFrom', customDateFrom);
@@ -1401,7 +1438,7 @@ function RssDetectionPanel({ onOpenRewrite }) {
     ]);
     if (Array.isArray(sourceRes)) setRssSources(sourceRes);
     if (Array.isArray(itemRes)) setRssItems(itemRes);
-  }, [customDateFrom, customDateTo, rssPeriod, rssVolumeFilter]);
+  }, [customDateFrom, customDateTo, rssPeriod, rssSourceFilter, rssVolumeFilter]);
 
   useEffect(() => {
     loadRssData();
@@ -1576,6 +1613,31 @@ function RssDetectionPanel({ onOpenRewrite }) {
 
       <div style={{ display: 'grid', gap: 8, marginBottom: 10 }}>
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+          <span style={{ fontSize: 11, color: COLORS.textSecondary, fontWeight: 900 }}>블로그</span>
+          <select
+            value={rssSourceFilter}
+            onChange={(e) => setRssSourceFilter(e.target.value)}
+            style={{
+              height: 30,
+              minWidth: 220,
+              border: `1px solid ${COLORS.border}`,
+              borderRadius: 8,
+              padding: '0 9px',
+              fontSize: 11,
+              fontWeight: 800,
+              color: COLORS.textPrimary,
+              background: 'white',
+            }}
+          >
+            <option value="all">전체 RSS/블로그</option>
+            {rssSources.map((source) => (
+              <option key={source.id} value={source.id}>
+                {source.label || source.rss_url} · {source.category || 'general'}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
           <span style={{ fontSize: 11, color: COLORS.textSecondary, fontWeight: 900 }}>기간</span>
           {RSS_PERIODS.map((period) => (
             <button
@@ -1711,6 +1773,15 @@ function RssDetectionPanel({ onOpenRewrite }) {
                 const band = volumeBandFor(item.volume_band || 'unknown');
                 const candidates = parseJsonList(item.keyword_candidates);
                 const autocompletes = parseJsonList(item.autocomplete_keywords);
+                const dateBadge = rssDateBadgeStyle(item.published_at || item.detected_at);
+                const candidateChips = candidates.slice(0, 3).map((candidate, index) => {
+                  const keyword = typeof candidate === 'string' ? candidate : (candidate.keyword || candidate.term || '');
+                  return keyword ? {
+                    key: `${keyword}-${index}`,
+                    keyword,
+                    volume: keywordCandidateVolume(candidate),
+                  } : null;
+                }).filter(Boolean);
                 return (
                   <tr key={item.id} style={{ fontSize: 12, borderBottom: `1px solid ${COLORS.border}` }}>
                     <td style={{ padding: '9px 10px' }}>
@@ -1724,7 +1795,22 @@ function RssDetectionPanel({ onOpenRewrite }) {
                     <td style={{ padding: '9px 10px' }}><StatusBadge value={item.status} /></td>
                     <td style={{ padding: '9px 10px', maxWidth: 270 }}>
                       <a href={item.link} target="_blank" rel="noreferrer" style={{ fontWeight: 850, color: COLORS.textPrimary, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', display: 'block' }}>{item.title || '-'}</a>
-                      <p style={{ marginTop: 2, fontSize: 10, color: COLORS.textMuted }}>{formatDateTime(item.published_at || item.detected_at)}</p>
+                      <div style={{ marginTop: 4, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                        <span style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          height: 20,
+                          padding: '0 7px',
+                          borderRadius: 999,
+                          background: dateBadge.background,
+                          color: dateBadge.color,
+                          fontSize: 10,
+                          fontWeight: 900,
+                        }}>
+                          {dateBadge.label}
+                        </span>
+                        <span style={{ fontSize: 10, color: COLORS.textMuted }}>{formatDateTime(item.published_at || item.detected_at)}</span>
+                      </div>
                     </td>
                     <td style={{ padding: '9px 10px', minWidth: 150 }}>
                       <input
@@ -1732,9 +1818,31 @@ function RssDetectionPanel({ onOpenRewrite }) {
                         onBlur={(e) => updateRssItemKeyword(item, e.target.value, item.checked_for_publish)}
                         style={{ width: 138, height: 30, border: `1px solid ${COLORS.border}`, borderRadius: 7, padding: '0 8px', fontSize: 11, fontWeight: 850 }}
                       />
+                      <p style={{ marginTop: 4, fontSize: 10, color: COLORS.textMuted }}>
+                        검색량 {formatSearchVolume(item.search_volume)}
+                      </p>
                     </td>
                     <td style={{ padding: '9px 10px', maxWidth: 260, color: COLORS.textSecondary }}>
-                      <p style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>후보 {candidates.slice(0, 3).map((candidate) => candidate.keyword).filter(Boolean).join(', ') || '-'}</p>
+                      <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                        {candidateChips.length ? candidateChips.map((candidate) => (
+                          <span key={candidate.key} style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 4,
+                            minHeight: 22,
+                            padding: '2px 7px',
+                            borderRadius: 999,
+                            background: '#f8fafc',
+                            border: `1px solid ${COLORS.border}`,
+                            color: COLORS.textPrimary,
+                            fontSize: 10,
+                            fontWeight: 850,
+                          }}>
+                            <span>{candidate.keyword}</span>
+                            <span style={{ color: COLORS.textMuted }}>{formatSearchVolume(candidate.volume)}</span>
+                          </span>
+                        )) : <span style={{ fontSize: 11, color: COLORS.textMuted }}>후보 없음</span>}
+                      </div>
                       <p style={{ marginTop: 2, fontSize: 10, color: COLORS.textMuted, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>자동완성 {autocompletes.slice(0, 4).join(', ') || '-'}</p>
                     </td>
                     <td style={{ padding: '9px 10px', color: COLORS.textSecondary }}>
@@ -2663,6 +2771,7 @@ function RewritePanel() {
                 <tbody>
                   {readyRssItems.map((item) => {
                     const band = volumeBandFor(item.volume_band || 'unknown');
+                    const dateBadge = rssDateBadgeStyle(item.published_at || item.detected_at);
                     return (
                       <tr key={item.id} style={{ fontSize: 12, borderBottom: `1px solid ${COLORS.border}` }}>
                         <td style={{ padding: '9px 10px' }}>
@@ -2676,10 +2785,28 @@ function RewritePanel() {
                         <td style={{ padding: '9px 10px' }}><StatusBadge value={item.status} /></td>
                         <td style={{ padding: '9px 10px', maxWidth: 320 }}>
                           <a href={item.link} target="_blank" rel="noreferrer" style={{ fontWeight: 850, color: COLORS.textPrimary, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', display: 'block' }}>{item.title || '-'}</a>
-                          <p style={{ marginTop: 2, fontSize: 10, color: COLORS.textMuted }}>{formatDateTime(item.published_at || item.detected_at)}</p>
+                          <div style={{ marginTop: 4, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                            <span style={{
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              height: 20,
+                              padding: '0 7px',
+                              borderRadius: 999,
+                              background: dateBadge.background,
+                              color: dateBadge.color,
+                              fontSize: 10,
+                              fontWeight: 900,
+                            }}>
+                              {dateBadge.label}
+                            </span>
+                            <span style={{ fontSize: 10, color: COLORS.textMuted }}>{formatDateTime(item.published_at || item.detected_at)}</span>
+                          </div>
                         </td>
                         <td style={{ padding: '9px 10px', color: COLORS.textSecondary }}>{platformLabel[item.platform] || item.platform || '-'}</td>
-                        <td style={{ padding: '9px 10px', fontWeight: 850, color: COLORS.primary }}>{item.selected_keyword || item.main_keyword || '-'}</td>
+                        <td style={{ padding: '9px 10px' }}>
+                          <p style={{ margin: 0, fontWeight: 850, color: COLORS.primary }}>{item.selected_keyword || item.main_keyword || '-'}</p>
+                          <p style={{ marginTop: 3, fontSize: 10, color: COLORS.textMuted }}>검색량 {formatSearchVolume(item.search_volume)}</p>
+                        </td>
                         <td style={{ padding: '9px 10px', color: COLORS.textSecondary }}>{item.rewrite_job_id ? `#${item.rewrite_job_id}` : '-'}</td>
                       </tr>
                     );
