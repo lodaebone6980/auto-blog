@@ -55,6 +55,15 @@ const VOLUME_BANDS = [
   { key: 'unknown', label: '미확인', color: '#e5e7eb', textColor: '#6b7280' },
 ];
 
+const RSS_PERIODS = [
+  { key: '1d', label: '1일', days: 1 },
+  { key: '3d', label: '3일', days: 3 },
+  { key: '7d', label: '7일', days: 7 },
+  { key: '1m', label: '1달', days: 30 },
+  { key: '3m', label: '3달', days: 90 },
+  { key: 'custom', label: '사용자 지정' },
+];
+
 /* ────────────────────── Utility ────────────────────── */
 
 function formatDate(d) {
@@ -1045,9 +1054,9 @@ function SourceCollectionPanel({ onOpenRewrite }) {
       <section style={{ ...cardStyle, padding: 20 }}>
         <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16, marginBottom: 14 }}>
           <div>
-            <h2 style={{ fontSize: 18, fontWeight: 850, color: COLORS.primary, marginBottom: 4 }}>수집/감지</h2>
+            <h2 style={{ fontSize: 18, fontWeight: 850, color: COLORS.primary, marginBottom: 4 }}>수집 링크</h2>
             <p style={{ fontSize: 12, color: COLORS.textSecondary }}>
-              URL 수집과 RSS 감지를 여기에서 처리하고, 검토한 글만 발행 생성 메뉴로 넘깁니다.
+              URL을 줄바꿈으로 넣으면 공개 페이지를 가져와 본문, 이미지 수, 키워드 반복수, 글 구조를 분석합니다.
             </p>
           </div>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
@@ -1162,8 +1171,6 @@ function SourceCollectionPanel({ onOpenRewrite }) {
           </div>
         ))}
       </div>
-
-      <RssDetectionPanel onOpenRewrite={onOpenRewrite} />
 
       {stats.pending > 0 && (
         <section style={{ ...cardStyle, padding: 16, background: '#fff7ed', borderColor: '#fed7aa' }}>
@@ -1370,26 +1377,39 @@ function RssDetectionPanel({ onOpenRewrite }) {
   });
   const [rssForm, setRssForm] = useState({ label: '', rssUrl: '', platform: 'blog', category: 'IT/테크' });
   const [rssVolumeFilter, setRssVolumeFilter] = useState('all');
+  const [rssPeriod, setRssPeriod] = useState('7d');
+  const [customDateFrom, setCustomDateFrom] = useState('');
+  const [customDateTo, setCustomDateTo] = useState('');
   const [checkingRssId, setCheckingRssId] = useState(null);
+  const [importingBlogs, setImportingBlogs] = useState(false);
   const [preparing, setPreparing] = useState(false);
   const [message, setMessage] = useState('');
 
   const loadRssData = useCallback(async () => {
+    const selectedPeriod = RSS_PERIODS.find((item) => item.key === rssPeriod) || RSS_PERIODS[2];
+    const itemParams = new URLSearchParams({ limit: '200' });
+    if (rssVolumeFilter !== 'all') itemParams.set('volumeBand', rssVolumeFilter);
+    if (rssPeriod === 'custom') {
+      if (customDateFrom) itemParams.set('dateFrom', customDateFrom);
+      if (customDateTo) itemParams.set('dateTo', customDateTo);
+    } else {
+      itemParams.set('days', String(selectedPeriod.days || 7));
+    }
     const [sourceRes, itemRes] = await Promise.all([
       safeFetch(`${API}/rss-sources?limit=60`),
-      safeFetch(`${API}/rss-items?limit=160`),
+      safeFetch(`${API}/rss-items?${itemParams.toString()}`),
     ]);
     if (Array.isArray(sourceRes)) setRssSources(sourceRes);
     if (Array.isArray(itemRes)) setRssItems(itemRes);
-  }, []);
+  }, [customDateFrom, customDateTo, rssPeriod, rssVolumeFilter]);
 
   useEffect(() => {
     loadRssData();
   }, [loadRssData]);
 
   const filteredRssItems = useMemo(
-    () => rssItems.filter((item) => rssVolumeFilter === 'all' || (item.volume_band || 'unknown') === rssVolumeFilter),
-    [rssItems, rssVolumeFilter]
+    () => rssItems,
+    [rssItems]
   );
   const allRssItemsSelected = filteredRssItems.length > 0 && filteredRssItems.every((item) => selectedRssItemIds.includes(item.id));
   const selectedRssItems = useMemo(
@@ -1412,7 +1432,7 @@ function RssDetectionPanel({ onOpenRewrite }) {
   };
 
   const toggleAllRssItems = () => {
-    setSelectedRssItemIds(allRssItemsSelected ? [] : readyRssItems.map((item) => item.id));
+    setSelectedRssItemIds(allRssItemsSelected ? [] : filteredRssItems.map((item) => item.id));
   };
 
   const createRssSource = async () => {
@@ -1431,6 +1451,41 @@ function RssDetectionPanel({ onOpenRewrite }) {
       await loadRssData();
     } else {
       setMessage(res?.error || 'RSS 소스 저장에 실패했습니다.');
+    }
+  };
+
+  const importCollectedBlogRss = async () => {
+    setImportingBlogs(true);
+    setMessage('수집된 블로그를 RSS 소스로 동기화 중입니다.');
+    const res = await safeFetch(`${API}/rss-sources/import-collected-blogs`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ limit: 300 }),
+    });
+    setImportingBlogs(false);
+    if (res?.ok) {
+      setMessage(`수집 블로그 RSS 동기화 완료 · ${res.imported || 0}개`);
+      await loadRssData();
+    } else {
+      setMessage(res?.error || '수집 블로그 RSS 동기화에 실패했습니다.');
+    }
+  };
+
+  const toggleRssSourceMonitor = async (source) => {
+    const nextEnabled = !source.continuous_monitor;
+    const res = await safeFetch(`${API}/rss-sources/${source.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        continuousMonitor: nextEnabled,
+        status: nextEnabled && source.status === '중지' ? '대기중' : source.status,
+      }),
+    });
+    if (res?.ok) {
+      setMessage(nextEnabled ? 'RSS 지속 감지를 켰습니다.' : '이 RSS의 지속 감지를 껐습니다.');
+      await loadRssData();
+    } else {
+      setMessage(res?.error || 'RSS 지속 감지 설정 변경에 실패했습니다.');
     }
   };
 
@@ -1496,10 +1551,62 @@ function RssDetectionPanel({ onOpenRewrite }) {
         <div>
           <h3 style={{ fontSize: 15, fontWeight: 850, color: COLORS.primary, marginBottom: 4 }}>RSS 감지 키워드 검토</h3>
           <p style={{ fontSize: 11, color: COLORS.textSecondary, lineHeight: 1.6 }}>
-            블로그/워드프레스 RSS 새 글을 감지하고 메인키워드, 자동완성어, 검색량 밴드를 검토합니다. 선택한 글만 발행 생성 대기로 넘깁니다.
+            블로그/워드프레스 RSS 새 글을 감지하고 기간별 글, 메인키워드, 자동완성어, 검색량 밴드를 검토합니다.
           </p>
         </div>
-        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+        <button
+          type="button"
+          onClick={importCollectedBlogRss}
+          disabled={importingBlogs}
+          style={{
+            height: 32,
+            padding: '0 12px',
+            borderRadius: 8,
+            border: 'none',
+            background: importingBlogs ? COLORS.textMuted : COLORS.primary,
+            color: 'white',
+            fontSize: 11,
+            fontWeight: 850,
+            cursor: importingBlogs ? 'wait' : 'pointer',
+          }}
+        >
+          {importingBlogs ? '동기화 중' : '수집 블로그 RSS 가져오기'}
+        </button>
+      </div>
+
+      <div style={{ display: 'grid', gap: 8, marginBottom: 10 }}>
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+          <span style={{ fontSize: 11, color: COLORS.textSecondary, fontWeight: 900 }}>기간</span>
+          {RSS_PERIODS.map((period) => (
+            <button
+              key={period.key}
+              type="button"
+              onClick={() => setRssPeriod(period.key)}
+              style={{
+                height: 28,
+                padding: '0 9px',
+                borderRadius: 999,
+                border: `1px solid ${rssPeriod === period.key ? COLORS.primary : COLORS.border}`,
+                background: rssPeriod === period.key ? COLORS.primary : 'white',
+                color: rssPeriod === period.key ? 'white' : COLORS.textSecondary,
+                fontSize: 10,
+                fontWeight: 900,
+                cursor: 'pointer',
+              }}
+            >
+              {period.label}
+            </button>
+          ))}
+          {rssPeriod === 'custom' && (
+            <>
+              <input type="date" value={customDateFrom} onChange={(e) => setCustomDateFrom(e.target.value)} style={{ height: 28, border: `1px solid ${COLORS.border}`, borderRadius: 7, padding: '0 8px', fontSize: 11 }} />
+              <span style={{ fontSize: 11, color: COLORS.textMuted }}>~</span>
+              <input type="date" value={customDateTo} onChange={(e) => setCustomDateTo(e.target.value)} style={{ height: 28, border: `1px solid ${COLORS.border}`, borderRadius: 7, padding: '0 8px', fontSize: 11 }} />
+            </>
+          )}
+        </div>
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+          <span style={{ fontSize: 11, color: COLORS.textSecondary, fontWeight: 900 }}>검색량</span>
           {VOLUME_BANDS.map((band) => (
             <button
               key={band.key}
@@ -1540,7 +1647,7 @@ function RssDetectionPanel({ onOpenRewrite }) {
           {rssSources.map((source) => (
             <div key={source.id} style={{ flex: '0 0 230px', padding: 10, borderRadius: 9, border: `1px solid ${COLORS.border}`, background: '#f8fafc' }}>
               <p style={{ fontSize: 12, fontWeight: 900, color: COLORS.textPrimary, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{source.label || source.rss_url}</p>
-              <p style={{ marginTop: 3, fontSize: 10, color: COLORS.textMuted }}>{source.platform} · {source.category} · {source.item_count || 0}개</p>
+              <p style={{ marginTop: 3, fontSize: 10, color: COLORS.textMuted }}>{source.platform} · {source.category} · {source.item_count || 0}개 · {source.continuous_monitor === false ? '지속감지 끔' : '지속감지 켬'}</p>
               <button
                 type="button"
                 disabled={checkingRssId === source.id}
@@ -1548,6 +1655,13 @@ function RssDetectionPanel({ onOpenRewrite }) {
                 style={{ ...smallButtonStyle, marginTop: 8, width: '100%', background: checkingRssId === source.id ? '#f3f4f6' : 'white' }}
               >
                 {checkingRssId === source.id ? '감지 중' : 'RSS 감지'}
+              </button>
+              <button
+                type="button"
+                onClick={() => toggleRssSourceMonitor(source)}
+                style={{ ...smallButtonStyle, marginTop: 6, width: '100%', background: source.continuous_monitor === false ? '#fff7ed' : 'white' }}
+              >
+                {source.continuous_monitor === false ? '지속 감지 켜기' : '지속 감지 끄기'}
               </button>
             </div>
           ))}
@@ -1634,6 +1748,126 @@ function RssDetectionPanel({ onOpenRewrite }) {
         )}
       </div>
     </section>
+  );
+}
+
+function BenchmarkSettingsPanel() {
+  const [settings, setSettings] = useState({ rssContinuousEnabled: true, rssDefaultPeriod: '7d' });
+  const [loading, setLoading] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [message, setMessage] = useState('');
+
+  const loadSettings = useCallback(async () => {
+    setLoading(true);
+    const res = await safeFetch(`${API}/benchmark-settings`);
+    setLoading(false);
+    if (res) setSettings({
+      rssContinuousEnabled: res.rssContinuousEnabled !== false,
+      rssDefaultPeriod: res.rssDefaultPeriod || '7d',
+    });
+  }, []);
+
+  useEffect(() => {
+    loadSettings();
+  }, [loadSettings]);
+
+  const saveSettings = async (next) => {
+    setSettings(next);
+    const res = await safeFetch(`${API}/benchmark-settings`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(next),
+    });
+    if (res?.ok) {
+      setMessage('벤치마킹 설정을 저장했습니다.');
+    } else {
+      setMessage('벤치마킹 설정 저장에 실패했습니다.');
+      await loadSettings();
+    }
+  };
+
+  const syncCollectedBlogs = async () => {
+    setSyncing(true);
+    setMessage('수집된 블로그를 RSS 소스로 동기화 중입니다.');
+    const res = await safeFetch(`${API}/rss-sources/import-collected-blogs`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ limit: 300 }),
+    });
+    setSyncing(false);
+    if (res?.ok) {
+      setMessage(`수집 블로그 RSS 동기화 완료 · ${res.imported || 0}개`);
+    } else {
+      setMessage(res?.error || '수집 블로그 RSS 동기화에 실패했습니다.');
+    }
+  };
+
+  return (
+    <div style={{ display: 'grid', gap: 18 }}>
+      <section style={{ ...cardStyle, padding: 20 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16, flexWrap: 'wrap' }}>
+          <div>
+            <h2 style={{ fontSize: 18, fontWeight: 850, color: COLORS.primary, marginBottom: 4 }}>벤치마킹 설정</h2>
+            <p style={{ fontSize: 12, color: COLORS.textSecondary, lineHeight: 1.6 }}>
+              RSS 기반 벤치마킹을 계속 감지할지 정하고, 수집한 네이버 블로그를 RSS 소스로 등록합니다.
+            </p>
+          </div>
+          <button type="button" onClick={loadSettings} disabled={loading} style={{ ...smallButtonStyle, height: 34 }}>
+            {loading ? '확인 중' : '새로고침'}
+          </button>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 12, marginTop: 16 }}>
+          <div style={{ padding: 14, border: `1px solid ${COLORS.border}`, borderRadius: 10, background: '#f8fafc' }}>
+            <p style={{ fontSize: 13, fontWeight: 900, color: COLORS.textPrimary, marginBottom: 6 }}>RSS 지속 감지</p>
+            <p style={{ fontSize: 11, color: COLORS.textSecondary, lineHeight: 1.55, marginBottom: 12 }}>
+              켜두면 Railway 서버가 주기적으로 RSS를 확인합니다. 꺼두면 수동 RSS 감지만 작동합니다.
+            </p>
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 12, fontWeight: 900, color: COLORS.primary }}>
+              <input
+                type="checkbox"
+                checked={settings.rssContinuousEnabled}
+                onChange={(e) => saveSettings({ ...settings, rssContinuousEnabled: e.target.checked })}
+              />
+              {settings.rssContinuousEnabled ? '지속 감지 사용 중' : '지속 감지 꺼짐'}
+            </label>
+          </div>
+
+          <div style={{ padding: 14, border: `1px solid ${COLORS.border}`, borderRadius: 10, background: '#ffffff' }}>
+            <p style={{ fontSize: 13, fontWeight: 900, color: COLORS.textPrimary, marginBottom: 6 }}>기본 RSS 조회 기간</p>
+            <p style={{ fontSize: 11, color: COLORS.textSecondary, lineHeight: 1.55, marginBottom: 10 }}>
+              RSS 메뉴의 기본 검토 기간은 7일입니다.
+            </p>
+            <select
+              value={settings.rssDefaultPeriod || '7d'}
+              onChange={(e) => saveSettings({ ...settings, rssDefaultPeriod: e.target.value })}
+              style={{ ...inputStyle, marginBottom: 0 }}
+            >
+              {RSS_PERIODS.map((period) => (
+                <option key={period.key} value={period.key}>{period.label}</option>
+              ))}
+            </select>
+          </div>
+
+          <div style={{ padding: 14, border: `1px solid ${COLORS.border}`, borderRadius: 10, background: '#ffffff' }}>
+            <p style={{ fontSize: 13, fontWeight: 900, color: COLORS.textPrimary, marginBottom: 6 }}>수집 블로그 RSS 동기화</p>
+            <p style={{ fontSize: 11, color: COLORS.textSecondary, lineHeight: 1.55, marginBottom: 12 }}>
+              지금까지 수집된 네이버 블로그를 RSS 소스로 등록합니다. 이미 등록된 RSS는 중복 없이 갱신됩니다.
+            </p>
+            <button
+              type="button"
+              onClick={syncCollectedBlogs}
+              disabled={syncing}
+              style={{ ...primaryButtonStyle, marginBottom: 0 }}
+            >
+              {syncing ? '동기화 중' : '수집 블로그 RSS 넣기'}
+            </button>
+          </div>
+        </div>
+
+        {message && <p style={{ marginTop: 12, fontSize: 12, color: message.includes('완료') || message.includes('저장') ? COLORS.success : COLORS.warning, fontWeight: 800 }}>{message}</p>}
+      </section>
+    </div>
   );
 }
 
@@ -2379,7 +2613,7 @@ function RewritePanel() {
             <div>
               <h3 style={{ fontSize: 14, fontWeight: 900, color: COLORS.primary, marginBottom: 4 }}>RSS 검토 완료 글 기준 발행 생성</h3>
               <p style={{ fontSize: 11, color: COLORS.textSecondary, lineHeight: 1.6 }}>
-                수집/감지 메뉴에서 키워드를 검토하고 넘긴 RSS 글만 표시됩니다. 플랫폼과 카테고리는 각 RSS 행의 값을 우선 사용합니다.
+                RSS 감지 메뉴에서 키워드를 검토하고 넘긴 RSS 글만 표시됩니다. 플랫폼과 카테고리는 각 RSS 행의 값을 우선 사용합니다.
               </p>
             </div>
             <button
@@ -2415,7 +2649,7 @@ function RewritePanel() {
           <div style={{ overflowX: 'auto', maxHeight: 220 }}>
             {readyRssItems.length === 0 ? (
               <div style={{ padding: 22, textAlign: 'center', color: COLORS.textMuted, fontSize: 12 }}>
-                아직 발행 생성 대기로 넘어온 RSS 글이 없습니다. 수집/감지 메뉴에서 RSS 글을 선택해 넘겨주세요.
+                아직 발행 생성 대기로 넘어온 RSS 글이 없습니다. RSS 감지 메뉴에서 RSS 글을 선택해 넘겨주세요.
               </div>
             ) : (
               <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 860 }}>
@@ -4739,10 +4973,12 @@ export default function App() {
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 18 }}>
           {[
             ['dashboard', '대시보드'],
-            ['collect', '수집/감지'],
+            ['collect', '수집 링크'],
+            ['rss', 'RSS 감지'],
             ['rewrite', '발행 생성'],
             ['publish', '발행 큐'],
             ['views', '조회수 근황'],
+            ['benchmark', '벤치마킹 설정'],
             ['settings', '운영 설정'],
           ].map(([view, label]) => (
             <button
@@ -4769,12 +5005,16 @@ export default function App() {
 
         {activeView === 'collect' ? (
           <SourceCollectionPanel onOpenRewrite={() => setActiveView('rewrite')} />
+        ) : activeView === 'rss' ? (
+          <RssDetectionPanel onOpenRewrite={() => setActiveView('rewrite')} />
         ) : activeView === 'rewrite' ? (
           <RewritePanel />
         ) : activeView === 'publish' ? (
           <PublishQueuePanel />
         ) : activeView === 'views' ? (
           <ViewStatusPanel />
+        ) : activeView === 'benchmark' ? (
+          <BenchmarkSettingsPanel />
         ) : activeView === 'settings' ? (
           <OperationsSettingsPanel />
         ) : (

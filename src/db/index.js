@@ -282,6 +282,13 @@ export async function initDB() {
         created_at TIMESTAMPTZ DEFAULT NOW()
       );
 
+      -- Simple server-side feature settings used by schedulers and dashboard screens.
+      CREATE TABLE IF NOT EXISTS app_settings (
+        key TEXT PRIMARY KEY,
+        value JSONB DEFAULT '{}',
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );
+
       -- RSS sources watched for newly published source posts.
       CREATE TABLE IF NOT EXISTS rss_sources (
         id SERIAL PRIMARY KEY,
@@ -289,6 +296,8 @@ export async function initDB() {
         rss_url TEXT NOT NULL UNIQUE,
         platform TEXT DEFAULT 'blog',
         category TEXT DEFAULT 'general',
+        collected_blog_id INTEGER REFERENCES collected_blogs(id) ON DELETE SET NULL,
+        continuous_monitor BOOLEAN DEFAULT TRUE,
         status TEXT DEFAULT '대기중',
         last_checked_at TIMESTAMPTZ,
         last_item_published_at TIMESTAMPTZ,
@@ -351,6 +360,8 @@ export async function initDB() {
       ALTER TABLE rewrite_jobs ADD COLUMN IF NOT EXISTS source_kind TEXT DEFAULT 'collected';
       ALTER TABLE rewrite_jobs ADD COLUMN IF NOT EXISTS source_item_id INTEGER;
       ALTER TABLE rewrite_jobs ADD COLUMN IF NOT EXISTS publish_spec JSONB DEFAULT '{}';
+      ALTER TABLE rss_sources ADD COLUMN IF NOT EXISTS collected_blog_id INTEGER REFERENCES collected_blogs(id) ON DELETE SET NULL;
+      ALTER TABLE rss_sources ADD COLUMN IF NOT EXISTS continuous_monitor BOOLEAN DEFAULT TRUE;
 
       -- Collapse previously duplicated blog rows before adding the one-blog constraint.
       WITH duplicate_blogs AS (

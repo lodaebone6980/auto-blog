@@ -2426,6 +2426,31 @@ function normalizeRssUrl(value = '') {
   return blogId ? `https://rss.blog.naver.com/${blogId}.xml` : null;
 }
 
+function rssUrlFromCollectedBlog(blog = {}) {
+  const blogId = String(blog.blog_id || '').trim();
+  if (blogId) return `https://rss.blog.naver.com/${blogId}.xml`;
+  const home = String(blog.home_url || '').trim();
+  const match = home.match(/blog\.naver\.com\/([^/?#]+)/i);
+  return match?.[1] ? `https://rss.blog.naver.com/${match[1]}.xml` : null;
+}
+
+async function getAppSetting(key, fallback = {}) {
+  const { rows } = await pool.query('SELECT value FROM app_settings WHERE key = $1', [key]);
+  if (!rows[0]) return fallback;
+  return rows[0].value && typeof rows[0].value === 'object' ? rows[0].value : fallback;
+}
+
+async function setAppSetting(key, value = {}) {
+  const { rows } = await pool.query(
+    `INSERT INTO app_settings (key, value, updated_at)
+     VALUES ($1,$2,NOW())
+     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
+     RETURNING *`,
+    [key, JSON.stringify(value || {})]
+  );
+  return rows[0]?.value || value || {};
+}
+
 function normalizeJobInput(body = {}) {
   const scores = body.scores || {};
   const qrStatus = body.qr_status || body.qrStatus || 'QR 생성 필요';
@@ -3796,6 +3821,38 @@ router.post('/keyword-research', async (req, res) => {
   }
 });
 
+router.get('/benchmark-settings', async (req, res) => {
+  try {
+    const settings = await getAppSetting('benchmark_settings', {
+      rssContinuousEnabled: true,
+      rssDefaultPeriod: '7d',
+    });
+    res.json({
+      rssContinuousEnabled: settings.rssContinuousEnabled !== false,
+      rssDefaultPeriod: settings.rssDefaultPeriod || '7d',
+      updatedAt: settings.updatedAt || null,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.patch('/benchmark-settings', async (req, res) => {
+  try {
+    const current = await getAppSetting('benchmark_settings', {});
+    const next = {
+      ...current,
+      rssContinuousEnabled: req.body?.rssContinuousEnabled ?? req.body?.rss_continuous_enabled ?? current.rssContinuousEnabled ?? true,
+      rssDefaultPeriod: req.body?.rssDefaultPeriod || req.body?.rss_default_period || current.rssDefaultPeriod || '7d',
+      updatedAt: new Date().toISOString(),
+    };
+    const saved = await setAppSetting('benchmark_settings', next);
+    res.json({ ok: true, settings: saved });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.get('/rss-sources', async (req, res) => {
   try {
     const limit = Math.min(parseInt(req.query.limit || '60', 10), 200);
@@ -3811,6 +3868,51 @@ router.get('/rss-sources', async (req, res) => {
       [limit]
     );
     res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/rss-sources/import-collected-blogs', async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.body?.limit || req.query.limit || '300', 10), 500);
+    const category = req.body?.category || req.query.category || null;
+    const values = [];
+    const where = ["cb.platform = 'blog'", 'cb.blog_id IS NOT NULL'];
+    if (category) {
+      values.push(category);
+      where.push(`cb.category = $${values.length}`);
+    }
+    values.push(limit);
+    const { rows: blogs } = await pool.query(
+      `SELECT cb.*
+       FROM collected_blogs cb
+       WHERE ${where.join(' AND ')}
+       ORDER BY cb.updated_at DESC
+       LIMIT $${values.length}`,
+      values
+    );
+    const imported = [];
+    for (const blog of blogs) {
+      const rssUrl = rssUrlFromCollectedBlog(blog);
+      if (!rssUrl) continue;
+      const label = blog.blog_nickname || blog.blog_title || blog.blog_name || blog.blog_id || rssUrl;
+      const { rows } = await pool.query(
+        `INSERT INTO rss_sources (label, rss_url, platform, category, collected_blog_id, continuous_monitor, status)
+         VALUES ($1,$2,'blog',$3,$4,TRUE,'대기중')
+         ON CONFLICT (rss_url) DO UPDATE SET
+           label = COALESCE(EXCLUDED.label, rss_sources.label),
+           category = EXCLUDED.category,
+           collected_blog_id = EXCLUDED.collected_blog_id,
+           continuous_monitor = TRUE,
+           status = CASE WHEN rss_sources.status = '중지' THEN '대기중' ELSE rss_sources.status END,
+           updated_at = NOW()
+         RETURNING *`,
+        [label, rssUrl, blog.category || 'general', blog.id]
+      );
+      imported.push(rows[0]);
+    }
+    res.json({ ok: true, sourceCount: blogs.length, imported: imported.length, sources: imported });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -3834,6 +3936,26 @@ router.post('/rss-sources', async (req, res) => {
        RETURNING *`,
       [label, rssUrl, platform, category]
     );
+    res.json({ ok: true, source: rows[0] });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.patch('/rss-sources/:id', async (req, res) => {
+  try {
+    const status = req.body?.status || null;
+    const continuousMonitor = req.body?.continuousMonitor ?? req.body?.continuous_monitor ?? null;
+    const { rows } = await pool.query(
+      `UPDATE rss_sources
+       SET status = COALESCE($2, status),
+           continuous_monitor = COALESCE($3::boolean, continuous_monitor),
+           updated_at = NOW()
+       WHERE id = $1
+       RETURNING *`,
+      [req.params.id, status, continuousMonitor]
+    );
+    if (rows.length === 0) return res.status(404).json({ error: 'RSS source not found' });
     res.json({ ok: true, source: rows[0] });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -3948,11 +4070,14 @@ async function checkRssSourceById(sourceId, options = {}) {
 }
 
 async function checkDueRssSources({ maxSources = 12, limit = 20 } = {}) {
+  const settings = await getAppSetting('benchmark_settings', { rssContinuousEnabled: true });
+  if (settings.rssContinuousEnabled === false) return [];
   const intervalMinutes = clampNumber(parseInt(process.env.RSS_CHECK_INTERVAL_MINUTES || '30', 10) || 30, 5, 1440);
   const { rows: sources } = await pool.query(
     `SELECT *
      FROM rss_sources
      WHERE status <> '중지'
+       AND COALESCE(continuous_monitor, TRUE) = TRUE
        AND (
          last_checked_at IS NULL
          OR last_checked_at < NOW() - ($1::int * INTERVAL '1 minute')
@@ -3989,6 +4114,7 @@ router.get('/rss-items', async (req, res) => {
     const limit = Math.min(parseInt(req.query.limit || '120', 10), 300);
     const values = [];
     const where = [];
+    const dateExpr = 'COALESCE(rsi.published_at, rsi.detected_at)';
     if (req.query.volumeBand) {
       values.push(req.query.volumeBand);
       where.push(`rsi.volume_band = $${values.length}`);
@@ -3996,6 +4122,18 @@ router.get('/rss-items', async (req, res) => {
     if (req.query.status) {
       values.push(req.query.status);
       where.push(`rsi.status = $${values.length}`);
+    }
+    if (req.query.days) {
+      values.push(clampNumber(parseInt(req.query.days, 10) || 7, 1, 365));
+      where.push(`${dateExpr} >= NOW() - ($${values.length}::int * INTERVAL '1 day')`);
+    }
+    if (req.query.dateFrom) {
+      values.push(req.query.dateFrom);
+      where.push(`${dateExpr} >= $${values.length}::timestamptz`);
+    }
+    if (req.query.dateTo) {
+      values.push(req.query.dateTo);
+      where.push(`${dateExpr} < ($${values.length}::date + INTERVAL '1 day')`);
     }
     values.push(limit);
     const { rows } = await pool.query(
