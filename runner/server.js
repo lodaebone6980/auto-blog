@@ -12,8 +12,10 @@ const __dirname = path.dirname(__filename);
 const PORT = Number(process.env.NAVIWRITE_RUNNER_PORT || 39271);
 const DATA_DIR = process.env.NAVIWRITE_RUNNER_DATA || path.join(os.homedir(), 'NaviWriteRunner');
 const PROFILE_DIR = path.join(DATA_DIR, 'profiles');
+const PUBLISH_JOB_DIR = path.join(DATA_DIR, 'publish-jobs');
 const STORE_FILE = path.join(DATA_DIR, 'profiles.json');
 const PUBLISH_QUEUE_FILE = path.join(DATA_DIR, 'publish-queue.json');
+const ACTIVE_PUBLISH_FILE = path.join(DATA_DIR, 'active-publish-job.json');
 const LOGIN_CHECK_INTERVAL_MS = Number(process.env.NAVIWRITE_LOGIN_CHECK_MS || 6 * 60 * 60 * 1000);
 const INACTIVITY_RECHECK_MS = Number(process.env.NAVIWRITE_INACTIVITY_RECHECK_MS || 2 * 60 * 60 * 1000);
 
@@ -31,6 +33,7 @@ function credentialFileFor(id) {
 
 async function ensureStore() {
   await fs.mkdir(PROFILE_DIR, { recursive: true });
+  await fs.mkdir(PUBLISH_JOB_DIR, { recursive: true });
   if (!existsSync(STORE_FILE)) {
     await fs.writeFile(STORE_FILE, JSON.stringify({ profiles: [] }, null, 2), 'utf8');
   }
@@ -94,7 +97,25 @@ function findBrowserExecutable() {
 function loginUrlFor(profile) {
   if (profile.loginUrl) return profile.loginUrl;
   if (profile.platform === 'brunch') return 'https://brunch.co.kr/signin';
+  if (profile.platform === 'wordpress') return profile.targetUrl || '';
   return 'https://nid.naver.com/nidlogin.login';
+}
+
+function normalizeUrl(value = '') {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  return /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+}
+
+function editorUrlFor(profile = {}, job = {}) {
+  const target = normalizeUrl(profile.targetUrl || '');
+  if (target) return target;
+  const platform = job.platform || profile.platform;
+  if (platform === 'wordpress') return '';
+  if (platform === 'brunch') return 'https://brunch.co.kr/write';
+  if (platform === 'premium') return 'https://contents.premium.naver.com';
+  if (platform === 'cafe') return 'https://cafe.naver.com';
+  return 'https://blog.naver.com/PostWriteForm.naver';
 }
 
 function sessionStatus(profile) {
@@ -256,6 +277,38 @@ async function verifyEncryptedSecret(encryptedSecret) {
   });
 }
 
+async function decryptSecretLocal(encryptedSecret) {
+  if (process.platform !== 'win32') {
+    throw new Error('Local credential decryption currently requires Windows DPAPI.');
+  }
+  return runPowerShell(`
+    $s=ConvertTo-SecureString $env:NAVIWRITE_SECRET
+    $b=[Runtime.InteropServices.Marshal]::SecureStringToBSTR($s)
+    try { [Runtime.InteropServices.Marshal]::PtrToStringBSTR($b) } finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($b) }
+  `, {
+    NAVIWRITE_SECRET: encryptedSecret,
+  });
+}
+
+async function plainCredentialFor(id) {
+  const file = credentialFileFor(id);
+  if (!existsSync(file)) throw new Error('credential not found');
+  const raw = JSON.parse(await fs.readFile(file, 'utf8'));
+  if (!raw.username || !raw.encryptedPassword) throw new Error('credential is incomplete');
+  return {
+    username: raw.username,
+    password: await decryptSecretLocal(raw.encryptedPassword),
+  };
+}
+
+async function setClipboardText(text) {
+  if (process.platform !== 'win32') return false;
+  await runPowerShell('Set-Clipboard -Value $env:NAVIWRITE_CLIPBOARD_TEXT', {
+    NAVIWRITE_CLIPBOARD_TEXT: text || '',
+  });
+  return true;
+}
+
 function vpnPlan({ provider = 'nordvpn', target = '', execute = false }) {
   if (provider === 'nordvpn') {
     return {
@@ -303,6 +356,81 @@ function delayPlanForJob(job = {}) {
     actionDelayMs: actionDelaySeconds * 1000,
     betweenPostsMinutes,
     betweenPostsMs: betweenPostsMinutes * 60 * 1000,
+  };
+}
+
+function publishTextForJob(job = {}) {
+  const title = job.title || job.keyword || '';
+  const body = job.plain_text || job.plainText || job.body || '';
+  return [title, '', body].filter((part) => part !== '').join('\n');
+}
+
+async function savePreparedPublishJob({ profile = {}, job = {}, editorUrl = '' }) {
+  const id = job.id || `manual_${Date.now()}`;
+  const baseName = `job-${safeId(id)}`;
+  const text = publishTextForJob(job);
+  const payload = {
+    job,
+    profile: {
+      id: profile.id,
+      label: profile.label,
+      platform: profile.platform,
+      targetUrl: profile.targetUrl,
+    },
+    editorUrl,
+    delayPlan: delayPlanForJob(job),
+    textFile: path.join(PUBLISH_JOB_DIR, `${baseName}.txt`),
+    jsonFile: path.join(PUBLISH_JOB_DIR, `${baseName}.json`),
+    preparedAt: nowIso(),
+  };
+  await fs.writeFile(payload.textFile, text, 'utf8');
+  await fs.writeFile(payload.jsonFile, JSON.stringify(payload, null, 2), 'utf8');
+  await fs.writeFile(ACTIVE_PUBLISH_FILE, JSON.stringify(payload, null, 2), 'utf8');
+  const clipboardReady = await setClipboardText(text).catch(() => false);
+  return { ...payload, clipboardReady };
+}
+
+function wordpressStatusFor(job = {}, requested = '') {
+  if (requested) return requested;
+  if (job.publish_mode === 'immediate') return 'publish';
+  if (job.publish_mode === 'scheduled') {
+    const date = job.scheduled_at ? new Date(job.scheduled_at) : null;
+    return date && date.getTime() > Date.now() ? 'future' : 'publish';
+  }
+  return 'draft';
+}
+
+async function publishWordPressPost({ profile = {}, job = {}, status = '' }) {
+  const siteUrl = normalizeUrl(profile.targetUrl || '');
+  if (!siteUrl) throw new Error('WordPress site URL is required in account memo/targetUrl');
+  const credential = await plainCredentialFor(profile.id);
+  const wpStatus = wordpressStatusFor(job, status);
+  const endpoint = `${siteUrl.replace(/\/$/, '')}/wp-json/wp/v2/posts`;
+  const payload = {
+    title: job.title || job.keyword || 'NaviWrite draft',
+    content: job.body || job.plain_text || job.plainText || '',
+    status: wpStatus,
+  };
+  if (wpStatus === 'future' && job.scheduled_at) payload.date = job.scheduled_at;
+
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Basic ${Buffer.from(`${credential.username}:${credential.password}`).toString('base64')}`,
+    },
+    body: JSON.stringify(payload),
+  });
+  const data = await response.json().catch(async () => ({ raw: await response.text().catch(() => '') }));
+  if (!response.ok) {
+    throw new Error(data.message || `WordPress publish failed (${response.status})`);
+  }
+  return {
+    ok: true,
+    wordpressStatus: wpStatus,
+    wordpressId: data.id,
+    link: data.link || data.guid?.rendered || '',
+    raw: data,
   };
 }
 
@@ -359,6 +487,34 @@ async function router(req, res) {
       return send(res, 200, { ok: true, batch, queue: next });
     }
 
+    if (req.method === 'GET' && requestUrl.pathname === '/publish/active') {
+      if (!existsSync(ACTIVE_PUBLISH_FILE)) return send(res, 200, { ok: true, active: null });
+      const active = JSON.parse(await fs.readFile(ACTIVE_PUBLISH_FILE, 'utf8'));
+      return send(res, 200, { ok: true, active });
+    }
+
+    if (req.method === 'POST' && requestUrl.pathname === '/publish/open-editor') {
+      const body = await readBody(req);
+      const job = body.job || {};
+      const profileId = safeId(body.profileId || job.publish_account_id || '');
+      const profile = profileId ? await readProfile(profileId) : null;
+      if (!profile) return send(res, 404, { error: 'profile not found' });
+      const editorUrl = body.editorUrl || editorUrlFor(profile, job);
+      if (!editorUrl) return send(res, 400, { error: 'editor URL is required' });
+      const prepared = await savePreparedPublishJob({ profile, job, editorUrl });
+      const browser = findBrowserExecutable();
+      if (!browser) return send(res, 500, { error: 'Chrome or Edge executable was not found.' });
+      const child = spawn(browser, [
+        `--user-data-dir=${profile.profilePath}`,
+        '--no-first-run',
+        '--disable-default-apps',
+        editorUrl,
+      ], { detached: true, stdio: 'ignore', windowsHide: false });
+      child.unref();
+      await updateProfile(profile.id, { lastActivityAt: nowIso() });
+      return send(res, 200, { ok: true, openedUrl: editorUrl, prepared });
+    }
+
     if (req.method === 'POST' && requestUrl.pathname === '/publish/claim-next') {
       const body = await readBody(req);
       const apiBase = String(body.apiBase || '').replace(/\/$/, '');
@@ -381,6 +537,40 @@ async function router(req, res) {
         ...payload,
         delayPlan: payload.job ? delayPlanForJob(payload.job) : null,
       });
+    }
+
+    if (req.method === 'POST' && requestUrl.pathname === '/publish/wordpress-job') {
+      const body = await readBody(req);
+      const job = body.job || {};
+      const profileId = safeId(body.profileId || job.publish_account_id || '');
+      const profile = profileId ? await readProfile(profileId) : null;
+      if (!profile) return send(res, 404, { error: 'profile not found' });
+      const prepared = await savePreparedPublishJob({ profile, job, editorUrl: editorUrlFor(profile, job) });
+      if (!body.execute) {
+        return send(res, 200, { ok: true, dryRun: true, prepared, delayPlan: delayPlanForJob(job) });
+      }
+      const published = await publishWordPressPost({ profile, job, status: body.wordpressStatus || body.status || '' });
+      const apiBase = String(body.apiBase || '').replace(/\/$/, '');
+      if (apiBase && job.id) {
+        const publishStatus = published.wordpressStatus === 'publish'
+          ? '발행완료'
+          : published.wordpressStatus === 'future'
+            ? '예약대기'
+            : '초안대기';
+        await fetch(`${apiBase}/publish-queue/${job.id}`, {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(body.tenantId ? { 'x-naviwrite-tenant': body.tenantId } : {}),
+          },
+          body: JSON.stringify({
+            publishedUrl: published.link,
+            publishStatus,
+            publishedAt: published.wordpressStatus === 'publish' ? nowIso() : null,
+          }),
+        }).catch(() => null);
+      }
+      return send(res, 200, { ok: true, prepared, published });
     }
 
     if (req.method === 'GET' && requestUrl.pathname === '/profiles') {

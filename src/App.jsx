@@ -1750,11 +1750,13 @@ function RewritePanel() {
     );
     if (!res?.ok) return;
     const jobIds = (res.jobs || []).map((job) => job.id);
+    const apiBase = new URL(API, window.location.origin).toString().replace(/\/$/, '');
     localStorage.setItem('naviwrite.autoPublish.pendingJobIds', JSON.stringify(jobIds));
     window.postMessage({
       type: 'NAVIWRITE_AUTO_PUBLISH_WAIT',
       jobIds,
       runnerUrl,
+      apiBase,
       spacingMinutes: Number(publishSpacingMinutes) || 120,
       actionDelayMinutes: Number(publishActionDelayMinutes) || 1,
     }, '*');
@@ -1762,7 +1764,7 @@ function RewritePanel() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        apiBase: API,
+        apiBase,
         jobIds,
         spacingMinutes: Number(publishSpacingMinutes) || 120,
         actionDelayMinutes: Number(publishActionDelayMinutes) || 1,
@@ -3560,15 +3562,17 @@ function OperationsSettingsPanel() {
               <option value="cafe">네이버 카페</option>
               <option value="premium">네프콘</option>
               <option value="brunch">브런치</option>
+              <option value="wordpress">워드프레스</option>
             </select>
             <input value={accountForm.label} onChange={(e) => setAccountForm({ ...accountForm, label: e.target.value })} placeholder="예: 네이버 블로그 계정 1" style={inputStyle} />
           </div>
           <input value={accountForm.usernameHint} onChange={(e) => setAccountForm({ ...accountForm, usernameHint: e.target.value })} placeholder="로그인 ID" style={inputStyle} />
           <input type="password" value={accountForm.password} onChange={(e) => setAccountForm({ ...accountForm, password: e.target.value })} placeholder="비밀번호, Runner PC에만 암호화 저장" style={inputStyle} />
-          <input value={accountForm.memo} onChange={(e) => setAccountForm({ ...accountForm, memo: e.target.value })} placeholder="발행 채널 URL 또는 메모" style={inputStyle} />
+          <input value={accountForm.memo} onChange={(e) => setAccountForm({ ...accountForm, memo: e.target.value })} placeholder="발행 채널 URL 또는 워드프레스 사이트 URL" style={inputStyle} />
           <button type="button" onClick={addAccount} style={primaryButtonStyle}>계정 저장 + ID/PW 로컬 저장</button>
           <p style={{ marginTop: 6, fontSize: 10, color: COLORS.textMuted, lineHeight: 1.5 }}>
-            ID/PW 저장은 로그인 완료가 아닙니다. 저장 후 인증 창을 열어 네이버 보안 확인을 끝내고, 인증 완료 저장까지 눌러야 발행 준비 상태가 됩니다.
+            네이버 계열 ID/PW 저장은 로그인 완료가 아닙니다. 저장 후 인증 창을 열어 보안 확인을 끝내고 인증 완료 저장까지 눌러야 합니다.
+            워드프레스는 사이트 URL, 관리자 ID, Application Password를 저장하면 발행 큐에서 API 발행을 실행할 수 있습니다.
           </p>
           <AccountSlotListV2
             items={settings.accounts}
@@ -3658,6 +3662,7 @@ function AccountSlotListV2({
     cafe: '네이버 카페',
     premium: '네프콘',
     brunch: '브런치',
+    wordpress: '워드프레스',
   };
 
   return (
@@ -3813,11 +3818,16 @@ function toDatetimeLocal(value) {
 }
 
 function loadLocalOpsAccounts() {
+  const settings = loadLocalOpsSettings();
+  return Array.isArray(settings.accounts) ? settings.accounts : [];
+}
+
+function loadLocalOpsSettings() {
   try {
     const saved = JSON.parse(localStorage.getItem('naviwrite.opsSettings') || '{}') || {};
-    return Array.isArray(saved.accounts) ? saved.accounts : [];
+    return saved;
   } catch {
-    return [];
+    return {};
   }
 }
 
@@ -3865,6 +3875,27 @@ function PublishQueuePanel() {
     setDrafts((prev) => ({ ...prev, [id]: { ...(prev[id] || {}), ...patch } }));
   };
 
+  const accountForJob = (job) => {
+    const draft = drafts[job.id] || {};
+    return accounts.find((item) => item.id === draft.publishAccountId);
+  };
+
+  const runnerBaseUrl = () => (loadLocalOpsSettings().runnerUrl || 'http://127.0.0.1:39271').replace(/\/$/, '');
+
+  const absoluteApiBase = () => new URL(API, window.location.origin).toString().replace(/\/$/, '');
+
+  const runnerJobPayload = (job, draft, account) => ({
+    ...job,
+    publish_mode: draft.publishMode || job.publish_mode,
+    scheduled_at: draft.scheduledAt ? new Date(draft.scheduledAt).toISOString() : job.scheduled_at,
+    publish_account_id: account?.runnerProfileId || account?.id || draft.publishAccountId || job.publish_account_id,
+    publish_account_label: account?.label || draft.publishAccountLabel || job.publish_account_label,
+    publish_account_platform: account?.platform || draft.publishAccountPlatform || job.publish_account_platform || job.platform,
+    action_delay_min_seconds: (Number(draft.actionDelayMinutes) || 1) * 60,
+    action_delay_max_seconds: (Number(draft.actionDelayMinutes) || 1) * 60,
+    between_posts_delay_minutes: Number(draft.betweenPostsDelayMinutes) || 120,
+  });
+
   const saveQueueSettings = async (job) => {
     const draft = drafts[job.id] || {};
     const account = accounts.find((item) => item.id === draft.publishAccountId);
@@ -3892,6 +3923,70 @@ function PublishQueuePanel() {
       await loadQueue();
     } else {
       setMessage(res?.error || '발행 설정 저장에 실패했습니다.');
+    }
+  };
+
+  const openEditorWithRunner = async (job) => {
+    const draft = drafts[job.id] || {};
+    const account = accountForJob(job);
+    if (!account) {
+      setMessage('작성창을 열 계정을 먼저 선택해 주세요.');
+      return;
+    }
+    const profileId = account.runnerProfileId || account.id;
+    setWorkingId(job.id);
+    const res = await safeFetch(`${runnerBaseUrl()}/publish/open-editor`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        apiBase: absoluteApiBase(),
+        profileId,
+        job: runnerJobPayload(job, draft, account),
+      }),
+    });
+    setWorkingId(null);
+    if (res?.ok) {
+      setMessage(`#${job.id} 작성창을 열고 제목/본문을 Runner에 준비했습니다${res.prepared?.clipboardReady ? ' · 클립보드 준비됨' : ''}.`);
+    } else {
+      setMessage(res?.error || 'Runner 작성창 열기에 실패했습니다.');
+    }
+  };
+
+  const publishWordPressWithRunner = async (job) => {
+    const draft = drafts[job.id] || {};
+    const account = accountForJob(job);
+    if (!account) {
+      setMessage('워드프레스 계정을 먼저 선택해 주세요.');
+      return;
+    }
+    if (account.platform !== 'wordpress') {
+      setMessage('워드프레스 API 발행은 워드프레스 계정 슬롯에서만 실행할 수 있습니다.');
+      return;
+    }
+    const profileId = account.runnerProfileId || account.id;
+    const wordpressStatus = draft.publishMode === 'immediate'
+      ? 'publish'
+      : draft.publishMode === 'scheduled'
+        ? 'future'
+        : 'draft';
+    setWorkingId(job.id);
+    const res = await safeFetch(`${runnerBaseUrl()}/publish/wordpress-job`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        apiBase: absoluteApiBase(),
+        profileId,
+        execute: true,
+        wordpressStatus,
+        job: runnerJobPayload({ ...job, platform: 'wordpress' }, draft, account),
+      }),
+    });
+    setWorkingId(null);
+    if (res?.ok) {
+      setMessage(`#${job.id} 워드프레스 ${wordpressStatus === 'publish' ? '발행' : wordpressStatus === 'future' ? '예약' : '초안 저장'} 완료`);
+      await loadQueue();
+    } else {
+      setMessage(res?.error || '워드프레스 API 발행에 실패했습니다.');
     }
   };
 
@@ -4033,6 +4128,8 @@ function PublishQueuePanel() {
                 {jobs.map((job) => {
                   const draft = drafts[job.id] || {};
                   const busy = workingId === job.id;
+                  const selectedAccount = accountForJob(job);
+                  const canPublishWordPress = selectedAccount?.platform === 'wordpress';
                   return (
                     <tr key={job.id} style={{ fontSize: 12, borderBottom: `1px solid ${COLORS.border}`, verticalAlign: 'top' }}>
                       <td style={{ padding: '12px' }}>
@@ -4081,9 +4178,24 @@ function PublishQueuePanel() {
                         <input value={draft.publishedUrl || ''} onChange={(e) => updateDraft(job.id, { publishedUrl: e.target.value })} placeholder="발행 완료 URL" style={{ ...inputStyle, height: 32, marginBottom: 0 }} />
                         {job.published_url && <a href={job.published_url} target="_blank" rel="noreferrer" style={{ display: 'block', marginTop: 5, fontSize: 10 }}>열기</a>}
                       </td>
-                      <td style={{ padding: '12px', minWidth: 220 }}>
+                      <td style={{ padding: '12px', minWidth: 260 }}>
                         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
                           <button type="button" disabled={busy} onClick={() => saveQueueSettings(job)} style={smallButtonStyle}>저장</button>
+                          <button type="button" disabled={busy} onClick={() => openEditorWithRunner(job)} style={{ ...smallButtonStyle, background: COLORS.accent, color: 'white', borderColor: COLORS.accent }}>작성창</button>
+                          <button
+                            type="button"
+                            disabled={busy || !canPublishWordPress}
+                            onClick={() => publishWordPressWithRunner(job)}
+                            style={{
+                              ...smallButtonStyle,
+                              opacity: canPublishWordPress ? 1 : 0.45,
+                              background: canPublishWordPress ? COLORS.success : 'white',
+                              color: canPublishWordPress ? 'white' : COLORS.textMuted,
+                              borderColor: canPublishWordPress ? COLORS.success : COLORS.border,
+                            }}
+                          >
+                            WP 발행
+                          </button>
                           <button type="button" disabled={busy} onClick={() => markPublished(job)} style={smallButtonStyle}>발행완료</button>
                           <button type="button" disabled={busy} onClick={() => checkRss(job)} style={smallButtonStyle}>RSS 확인</button>
                           <button type="button" disabled={busy} onClick={() => exportObsidian(job)} style={{ ...smallButtonStyle, background: COLORS.primary, color: 'white', borderColor: COLORS.primary }}>Obsidian</button>
