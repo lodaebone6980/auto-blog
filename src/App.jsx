@@ -53,6 +53,13 @@ function formatDate(d) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 }
 
+function formatDateTime(d) {
+  if (!d) return '-';
+  const date = new Date(d);
+  if (Number.isNaN(date.getTime())) return '-';
+  return `${formatDate(date)} ${date.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })}`;
+}
+
 function formatTime(d) {
   return d.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
@@ -975,6 +982,10 @@ function SourceCollectionPanel({ onOpenRewrite }) {
   }), [links]);
 
   const selectedCount = selectedLinks.length;
+  const allLinksSelected = links.length > 0 && links.every((link) => selectedLinks.includes(link.id));
+  const toggleAllLinks = () => {
+    setSelectedLinks(allLinksSelected ? [] : links.map((link) => link.id));
+  };
   const toggleLinkSelection = (id) => {
     setSelectedLinks((prev) => (
       prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
@@ -1190,11 +1201,20 @@ function SourceCollectionPanel({ onOpenRewrite }) {
               아직 등록된 수집 링크가 없습니다.
             </div>
           ) : (
-            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1420 }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1510 }}>
               <thead>
                 <tr style={{ background: '#f8fafc', color: COLORS.textSecondary, fontSize: 11, textAlign: 'left' }}>
-                  {['선택', '상태', '블로그', '플랫폼', '메인키워드', '수정 KW', '카테고리', '글자/KW/이미지', '인용구/반복어', 'URL', '오류'].map((head) => (
-                    <th key={head} style={{ padding: '10px 12px', borderBottom: `1px solid ${COLORS.border}` }}>{head}</th>
+                  {['선택', '상태', '수집일', '블로그', '플랫폼', '메인키워드', '수정 KW', '카테고리', '글자/KW/이미지', '인용구/반복어', 'URL', '오류'].map((head) => (
+                    <th key={head} style={{ padding: '10px 12px', borderBottom: `1px solid ${COLORS.border}` }}>
+                      {head === '선택' ? (
+                        <input
+                          type="checkbox"
+                          checked={allLinksSelected}
+                          onChange={toggleAllLinks}
+                          aria-label="수집 링크 전체 선택 또는 해제"
+                        />
+                      ) : head}
+                    </th>
                   ))}
                 </tr>
               </thead>
@@ -1210,6 +1230,9 @@ function SourceCollectionPanel({ onOpenRewrite }) {
                       />
                     </td>
                     <td style={{ padding: '10px 12px' }}><StatusBadge value={link.status} /></td>
+                    <td style={{ padding: '10px 12px', color: COLORS.textSecondary, whiteSpace: 'nowrap', fontSize: 11 }}>
+                      {formatDateTime(link.collected_at || link.created_at)}
+                    </td>
                     <td style={{ padding: '10px 12px', color: COLORS.textSecondary, maxWidth: 160 }}>
                       <p style={{ fontWeight: 800, color: COLORS.textPrimary, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{link.blog_nickname || link.blog_name || '-'}</p>
                       <p style={{ marginTop: 2, fontSize: 10, color: COLORS.textMuted, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
@@ -1412,6 +1435,8 @@ function RewritePanel() {
     [collectedLinks, selectedSourceLinkIds]
   );
 
+  const allSourcesSelected = collectedLinks.length > 0 && collectedLinks.every((link) => selectedSourceLinkIds.includes(link.id));
+
   const selectedRewriteLinks = useMemo(
     () => selectedSources.filter((link) => link.rewrite_job_id),
     [selectedSources]
@@ -1450,6 +1475,10 @@ function RewritePanel() {
     setSelectedSourceLinkIds((prev) => (
       prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
     ));
+  };
+
+  const toggleAllSources = () => {
+    setSelectedSourceLinkIds(allSourcesSelected ? [] : collectedLinks.map((link) => link.id));
   };
 
   const saveCorrectedKeyword = async (link) => {
@@ -2303,11 +2332,20 @@ function RewritePanel() {
               아직 재각색에 쓸 수집완료 링크가 없습니다.
             </div>
           ) : (
-            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1720 }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1810 }}>
               <thead>
                 <tr style={{ background: '#f8fafc', color: COLORS.textSecondary, fontSize: 11, textAlign: 'left' }}>
-                  {['선택', '발행 상태', '재각색 상태', '작업', '블로그/출처', '플랫폼', '메인키워드', '수정 KW', '카테고리', '글자/KW/이미지', '인용구/반복어', 'URL'].map((head) => (
-                    <th key={head} style={{ padding: '10px 12px', borderBottom: `1px solid ${COLORS.border}` }}>{head}</th>
+                  {['선택', '발행 상태', '재각색 상태', '작업', '수집일', '블로그/출처', '플랫폼', '메인키워드', '수정 KW', '카테고리', '글자/KW/이미지', '인용구/반복어', 'URL'].map((head) => (
+                    <th key={head} style={{ padding: '10px 12px', borderBottom: `1px solid ${COLORS.border}` }}>
+                      {head === '선택' ? (
+                        <input
+                          type="checkbox"
+                          checked={allSourcesSelected}
+                          onChange={toggleAllSources}
+                          aria-label="패턴 소스 전체 선택 또는 해제"
+                        />
+                      ) : head}
+                    </th>
                   ))}
                 </tr>
               </thead>
@@ -2366,6 +2404,9 @@ function RewritePanel() {
                       ) : (
                         <span style={{ fontSize: 10, color: COLORS.textMuted, fontWeight: 800 }}>체크 후 생성</span>
                       )}
+                    </td>
+                    <td style={{ padding: '10px 12px', color: COLORS.textSecondary, whiteSpace: 'nowrap', fontSize: 11 }}>
+                      {formatDateTime(link.collected_at || link.created_at)}
                     </td>
                     <td style={{ padding: '10px 12px', maxWidth: 180 }}>
                       <p style={{ fontWeight: 850, color: COLORS.textPrimary, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{link.blog_nickname || link.blog_name || '-'}</p>
