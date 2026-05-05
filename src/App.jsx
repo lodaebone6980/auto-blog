@@ -847,6 +847,7 @@ function StatusPill({ value }) {
   const colors = {
     '대기중': COLORS.textMuted,
     '본문 생성 완료': COLORS.accent,
+    '글생성 완료': COLORS.success,
     'QR 생성 필요': COLORS.warning,
     'QR 생성 완료': COLORS.success,
     '에디터 삽입 완료': COLORS.primary,
@@ -1179,6 +1180,16 @@ function GuideModal({ onClose }) {
 }
 
 function StatusBadge({ value }) {
+  const displayLabels = {
+    완료: '글생성 완료',
+    발행완료: '발행 완료',
+    자동발행대기: '자동발행 대기',
+    발행대기: '발행 대기',
+    예약대기: '예약 대기',
+    RSS확인완료: 'RSS 확인 완료',
+    성과추적중: '성과 추적중',
+  };
+  const label = displayLabels[value] || value || '대기중';
   const colors = {
     대기중: COLORS.warning,
     수집중: COLORS.accent,
@@ -1187,6 +1198,16 @@ function StatusBadge({ value }) {
     '초안 생성중': COLORS.accent,
     '이미지 생성중': COLORS.accent,
     완료: COLORS.success,
+    '글생성 완료': COLORS.success,
+    발행완료: COLORS.success,
+    '발행 완료': COLORS.success,
+    자동발행대기: COLORS.warning,
+    '자동발행 대기': COLORS.warning,
+    발행대기: COLORS.accent,
+    예약대기: COLORS.warning,
+    발행중: COLORS.accent,
+    RSS확인완료: COLORS.success,
+    성과추적중: COLORS.accent,
     '검수 필요': COLORS.warning,
     'ID/PW 미저장': COLORS.textMuted,
     'ID/PW 저장 중': COLORS.warning,
@@ -1196,7 +1217,7 @@ function StatusBadge({ value }) {
     '로그인 재확인 필요': COLORS.warning,
     오류: COLORS.danger,
   };
-  const color = colors[value] || COLORS.textSecondary;
+  const color = colors[value] || colors[label] || COLORS.textSecondary;
   return (
     <span style={{
       display: 'inline-flex',
@@ -1210,7 +1231,7 @@ function StatusBadge({ value }) {
       color,
       whiteSpace: 'nowrap',
     }}>
-      {value || '대기중'}
+      {label}
     </span>
   );
 }
@@ -1656,6 +1677,7 @@ function SourceCollectionPanel({ onOpenRewrite }) {
           ))}
         </div>
       </section>
+
     </div>
   );
 }
@@ -2783,7 +2805,7 @@ function RewritePanel() {
 
   const sendRewriteIdsToPublishQueue = async (rewriteJobIds) => {
     if (!rewriteJobIds.length) {
-      setMessage('발행 큐로 보낼 발행 생성 완료 행을 체크해 주세요.');
+      setMessage('자동발행 대기로 보낼 글생성 완료 행을 체크해 주세요.');
       return null;
     }
     setQueueing(true);
@@ -2806,7 +2828,7 @@ function RewritePanel() {
       await loadRewriteData();
       return res;
     } else {
-      setMessage(res?.error || '발행 큐 저장에 실패했습니다.');
+      setMessage(res?.error || '자동발행 대기 저장에 실패했습니다.');
       return null;
     }
   };
@@ -3445,7 +3467,7 @@ function RewritePanel() {
                       />
                     </td>
                     <td style={{ padding: '10px 12px', minWidth: 125 }}>
-                      <StatusBadge value={link.publish_status || (link.content_job_id ? '발행 큐' : '-')} />
+                      <StatusBadge value={link.publish_status || (link.content_job_id ? '자동발행대기' : '-')} />
                       {link.published_url && (
                         <a href={link.published_url} target="_blank" rel="noreferrer" style={{ display: 'block', marginTop: 5, maxWidth: 120, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', fontSize: 10 }}>
                           발행 URL
@@ -3837,6 +3859,8 @@ function RewritePanel() {
           )}
         </div>
       </section>
+
+      <PublishQueuePanel embedded />
     </div>
   );
 }
@@ -4008,7 +4032,7 @@ function ViewStatusPanel() {
             <div>
               <h3 style={{ fontSize: 15, fontWeight: 850, color: COLORS.primary }}>오늘 블로그별 발행 수</h3>
               <p style={{ marginTop: 4, fontSize: 11, color: COLORS.textSecondary }}>
-                발행완료/RSS확인완료로 저장된 글을 계정 슬롯 기준으로 집계합니다.
+                발행 완료/RSS 확인 완료로 저장된 글을 계정 슬롯 기준으로 집계합니다.
               </p>
             </div>
             <span style={{ fontSize: 12, fontWeight: 900, color: COLORS.warning }}>
@@ -4017,7 +4041,7 @@ function ViewStatusPanel() {
           </div>
           {dailyPublishByBlog.length === 0 ? (
             <div style={{ padding: 14, border: `1px dashed ${COLORS.border}`, borderRadius: 10, color: COLORS.textMuted, fontSize: 12, textAlign: 'center' }}>
-              오늘 발행완료로 기록된 블로그 글이 아직 없습니다.
+              오늘 발행 완료로 기록된 블로그 글이 아직 없습니다.
             </div>
           ) : (
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -5111,7 +5135,7 @@ function OperationsSettingsPanel() {
             처음 등록할 때는 위 입력칸을 채운 뒤 새 계정 슬롯 만들기를 누릅니다. 아래 계정 카드의 ID/PW 변경 저장은 이미 만든 슬롯의 비밀번호를 바꿀 때만 사용합니다.
             네이버 계열 ID/PW 저장은 로그인 완료가 아닙니다. 저장 후 확장프로그램에서 로그인 상태를 확인하고, 필요하면 네이버 로그인 탭에서 보안 확인을 완료합니다.
             IP 보안이나 2차 인증 설정 변경은 자동으로 끄지 않고, 열린 네이버 화면에서 사용자가 직접 결정합니다.
-            워드프레스는 사이트 URL, 관리자 ID, Application Password를 저장하면 발행 큐에서 API 발행을 실행할 수 있습니다.
+            워드프레스는 사이트 URL, 관리자 ID, Application Password를 저장하면 발행 생성의 자동발행 진행 상태에서 API 발행을 실행할 수 있습니다.
           </p>
           <AccountSlotListV2
             items={settings.accounts}
@@ -5365,7 +5389,7 @@ function loadLocalOpsSettings() {
   }
 }
 
-function PublishQueuePanel() {
+function PublishQueuePanel({ embedded = false } = {}) {
   const [jobs, setJobs] = useState([]);
   const [drafts, setDrafts] = useState({});
   const [accounts, setAccounts] = useState(() => loadLocalOpsAccounts());
@@ -5547,10 +5571,10 @@ function PublishQueuePanel() {
     });
     setWorkingId(null);
     if (res?.job) {
-      setMessage(`#${job.id} 발행완료로 저장했습니다.`);
+      setMessage(`#${job.id} 발행 완료로 저장했습니다.`);
       await loadQueue();
     } else {
-      setMessage(res?.error || '발행완료 저장에 실패했습니다.');
+      setMessage(res?.error || '발행 완료 저장에 실패했습니다.');
     }
   };
 
@@ -5609,9 +5633,11 @@ function PublishQueuePanel() {
       <section style={{ ...cardStyle, padding: 20 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap' }}>
           <div>
-            <h2 style={{ fontSize: 18, fontWeight: 850, color: COLORS.primary, marginBottom: 4 }}>발행 큐</h2>
+            <h2 style={{ fontSize: 18, fontWeight: 850, color: COLORS.primary, marginBottom: 4 }}>
+              {embedded ? '자동발행 진행 상태' : '자동발행 작업'}
+            </h2>
             <p style={{ fontSize: 12, color: COLORS.textSecondary, lineHeight: 1.6 }}>
-              발행 생성 결과를 실제 발행 단위로 관리합니다. 확장프로그램이 업로드할 계정의 최근 발행 시간을 확인해 즉시/예약 계획을 저장하고, 완료 후 URL과 상태를 다시 기록합니다.
+              발행 생성에서 자동발행 대기로 넘긴 글을 관리합니다. 확장프로그램이 업로드할 계정의 최근 발행 시간을 확인해 즉시/예약 계획을 저장하고, 완료 후 URL과 상태를 다시 기록합니다.
             </p>
           </div>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -5630,7 +5656,7 @@ function PublishQueuePanel() {
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12 }}>
         {[
-          ['전체 큐', summary.total, COLORS.primary],
+          ['전체 작업', summary.total, COLORS.primary],
           ['발행 대기', summary.waiting, COLORS.warning],
           ['발행 완료', summary.done, COLORS.success],
           ['RSS 확인', summary.rss, COLORS.accent],
@@ -5656,7 +5682,7 @@ function PublishQueuePanel() {
             </div>
           ) : jobs.length === 0 ? (
             <div style={{ padding: 36, textAlign: 'center', color: COLORS.textMuted, fontSize: 13 }}>
-              아직 발행 큐에 들어온 글이 없습니다. 발행 생성 목록에서 `자동발행 대기`를 눌러주세요.
+              아직 자동발행 대기 글이 없습니다. 위 발행 생성 작업 목록에서 `자동발행 대기`를 눌러주세요.
             </div>
           ) : (
             <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1380 }}>
@@ -5739,7 +5765,7 @@ function PublishQueuePanel() {
                           >
                             WP 발행
                           </button>
-                          <button type="button" disabled={busy} onClick={() => markPublished(job)} style={smallButtonStyle}>발행완료</button>
+                          <button type="button" disabled={busy} onClick={() => markPublished(job)} style={smallButtonStyle}>발행 완료</button>
                           <button type="button" disabled={busy} onClick={() => checkRss(job)} style={smallButtonStyle}>RSS 확인</button>
                           <button type="button" disabled={busy} onClick={() => exportObsidian(job)} style={{ ...smallButtonStyle, background: COLORS.primary, color: 'white', borderColor: COLORS.primary }}>Obsidian</button>
                         </div>
@@ -5940,7 +5966,6 @@ export default function App() {
         { key: 'benchmark', view: 'benchmark', label: '벤치마킹 기준', caption: '패턴 소스 · 작성 규격' },
         { key: 'rss', view: 'rss', label: 'RSS 관리', caption: '소스 지속감지 · 검색량 · 키워드' },
         { key: 'rewrite', view: 'rewrite', label: '발행 생성', caption: 'SEO · AEO · GEO · 이미지', badge: navBadge(contentJobs.length) },
-        { key: 'publish', view: 'publish', label: '발행 큐', caption: '예약 · 계정 · 자동발행', badge: navBadge(stats?.publishQueuePending || stats?.queuedPublishJobs) },
         { key: 'views', view: 'views', label: '성과', caption: '조회수 · 댓글 · 공감', badge: navBadge(posts.length) },
       ],
     },
@@ -6086,8 +6111,6 @@ export default function App() {
           <RssDetectionPanel onOpenRewrite={() => setActiveView('rewrite')} />
         ) : activeView === 'rewrite' ? (
           <RewritePanel />
-        ) : activeView === 'publish' ? (
-          <PublishQueuePanel />
         ) : activeView === 'views' ? (
           <ViewStatusPanel />
         ) : activeView === 'benchmark' ? (

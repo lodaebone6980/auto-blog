@@ -7,6 +7,7 @@ const router = Router();
 const JOB_STATUSES = new Set([
   '대기중',
   '본문 생성 완료',
+  '글생성 완료',
   'QR 생성 필요',
   'QR 미사용',
   'QR 생성 완료',
@@ -2906,7 +2907,7 @@ async function processRewriteJob(jobId, options = {}) {
 
   const scores = scoreRewriteOutput(output, pattern);
   const similarityRisk = estimateRewriteSimilarityRisk(output, pattern);
-  const finalStatus = similarityRisk >= 45 ? '검수 필요' : '완료';
+  const finalStatus = similarityRisk >= 45 ? '검수 필요' : '글생성 완료';
   const { rows } = await pool.query(
     `UPDATE rewrite_jobs
      SET status = $2,
@@ -3832,7 +3833,7 @@ async function createContentJobFromRewrite({ tenantId, rewriteJob, body = {} }) 
       total: rewriteJob.total_score,
     },
     qrStatus: rewriteJob.use_naver_qr ? 'QR 생성 필요' : 'QR 미사용',
-    generationStatus: '본문 생성 완료',
+    generationStatus: '글생성 완료',
     publishMode: body.publishMode || body.publish_mode || 'scheduled',
     publishStatus: body.publishStatus || body.publish_status || '예약대기',
     rssUrl: body.rssUrl || body.rss_url || null,
@@ -3863,7 +3864,7 @@ async function createContentJobFromRewrite({ tenantId, rewriteJob, body = {} }) 
     ]
   );
   const images = await saveGeneratedImagesForContentJob({ tenantId, contentJobId: rows[0].id, rewriteJob });
-    await addJobEvent(rows[0].id, 'publish_queue_created', '발행 생성 작업을 발행 큐로 보냈습니다', {
+    await addJobEvent(rows[0].id, 'publish_queue_created', '발행 생성 작업을 자동발행 대기로 보냈습니다', {
     rewriteJobId: rewriteJob.id,
     imageCount: images.length,
     scheduledAt: input.scheduled_at,
@@ -6801,7 +6802,7 @@ router.post('/content-jobs', async (req, res) => {
     }
 
     const qrName = job.naver_qr_name || makeNaverQrName(job.keyword, job.campaign_name);
-    const generationStatus = job.title || job.body ? '본문 생성 완료' : job.generation_status;
+    const generationStatus = job.title || job.body ? '글생성 완료' : job.generation_status;
 
     const { rows } = await pool.query(
       `INSERT INTO content_jobs (
