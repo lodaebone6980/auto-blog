@@ -1172,6 +1172,104 @@ function countKeywordInText(text = '', keyword = '') {
   return (String(text || '').match(new RegExp(escapeRegExp(safeKeyword), 'gi')) || []).length;
 }
 
+function articlePlainText(body = '') {
+  return String(body || '')
+    .replace(/\[(?:대표이미지|이미지|보조 이미지|네이버 QR|링크 삽입 위치)[^\]]+\]/g, '')
+    .replace(/^>\s*/gm, '')
+    .trim();
+}
+
+function articleMetrics(body = '', keyword = '') {
+  const plainText = articlePlainText(body);
+  return {
+    plainText,
+    charCount: plainText.replace(/\s/g, '').length,
+    kwCount: countKeywordInText(plainText, keyword),
+  };
+}
+
+function metricTargetRange(settingsInput = {}) {
+  const settings = parseRewriteSettings(settingsInput);
+  return {
+    targetCharCount: settings.targetCharCount,
+    minCharCount: Math.round(settings.targetCharCount * 0.95),
+    maxCharCount: Math.round(settings.targetCharCount * 1.12),
+    sectionCharCount: settings.sectionCharCount,
+    sectionCount: settings.sectionCount,
+    targetKwCount: settings.targetKwCount,
+    minKwCount: settings.targetKwCount,
+    maxKwCount: settings.targetKwCount + 4,
+  };
+}
+
+function metricSupplementParagraph({ keyword = '', topic = '', category = '', index = 0, includeKeyword = true } = {}) {
+  const keyPhrase = includeKeyword ? normalizeKeywordValue(keyword) : (isPolicySupportKeyword(`${keyword} ${topic} ${category}`) ? '해당 지원 정보' : '이 주제');
+  const subject = normalizeKeywordValue(topic) || keyPhrase;
+  const isPolicy = isPolicySupportKeyword(`${keyword} ${topic} ${category}`);
+  const policy = [
+    `${keyPhrase}를 확인할 때는 먼저 공고명이 같은지, 신청 기간이 현재 열려 있는지, 주민등록상 주소지 기준이 맞는지를 차례대로 보는 편이 안전합니다. 비슷한 안내가 여러 곳에 올라와도 실제 적용 기준은 지자체 공고와 접수처 안내가 우선이기 때문에 마지막 단계에서 공식 페이지를 다시 확인해야 합니다.`,
+    `${keyPhrase} 신청 과정에서는 대상 조건과 제출 서류를 따로 적어두면 누락을 줄일 수 있습니다. 특히 온라인 접수와 방문 접수 중 어떤 방식이 가능한지, 대리 신청이 되는지, 지급 방식이 지역화폐인지 카드 포인트인지에 따라 준비해야 할 내용이 달라질 수 있습니다.`,
+    `${keyPhrase} 일정은 시작일보다 마감일을 놓치는 경우가 더 많습니다. 그래서 신청 가능 기간, 결과 확인일, 실제 지급 예정일을 한 번에 묶어두고, 변경 공지가 있는지 확인하는 흐름으로 보면 검색자가 바로 행동으로 옮기기 쉽습니다.`,
+    `${keyPhrase} 대상 여부가 애매하다면 소득 기준만 보지 말고 거주 기준일, 연령, 기존 지원 수령 여부, 중복 제한 항목까지 함께 확인해야 합니다. 이 부분을 분리해서 설명하면 단순 홍보글보다 실제로 도움이 되는 정보형 글에 가까워집니다.`,
+  ];
+  const general = [
+    `${keyPhrase}를 볼 때는 정보의 양보다 확인 순서가 더 중요합니다. 먼저 ${subject}의 핵심 조건을 잡고, 그다음 실제 이용 방법과 주의사항을 나누면 독자가 필요한 부분만 빠르게 찾아볼 수 있습니다.`,
+    `${keyPhrase} 관련 글은 제목만 보고 들어온 사람이 많기 때문에 본문 중간에도 기준, 방법, 일정처럼 바로 확인할 수 있는 표현을 자연스럽게 배치하는 것이 좋습니다. 이렇게 쓰면 검색 의도와 본문 흐름이 어긋날 가능성이 줄어듭니다.`,
+    `${keyPhrase}는 비슷한 표현이 반복되기 쉬운 주제라서 같은 문장을 늘리는 방식보다 확인 항목을 바꿔가며 설명해야 합니다. 조건, 절차, 예외, 마무리 요약을 분리하면 글자수도 안정적으로 맞고 유사도 위험도 낮아집니다.`,
+    `${keyPhrase}를 처음 접한 사람이라면 마지막에 다시 확인해야 할 기준이 필요합니다. 그래서 본문 후반에는 핵심 조건과 실제 확인 경로를 한 번 더 정리해두면 읽고 나서 바로 다음 행동을 정하기 쉬워집니다.`,
+  ];
+  return (isPolicy ? policy : general)[Math.abs(index) % (isPolicy ? policy : general).length];
+}
+
+function replaceGeneratedTitleLine(body = '', rawTitle = '', cleanTitle = '') {
+  const lines = String(body || '').split(/\r?\n/);
+  const rawCompact = normalizeTitleValue(rawTitle).replace(/\s/g, '');
+  for (let i = 0; i < Math.min(lines.length, 4); i += 1) {
+    const lineCompact = normalizeTitleValue(lines[i]).replace(/\s/g, '');
+    if (!lineCompact) continue;
+    if (rawCompact && lineCompact === rawCompact) {
+      lines[i] = cleanTitle;
+      return lines.join('\n').trim();
+    }
+    if (cleanTitle && !lineCompact.includes(cleanTitle.replace(/\s/g, '')) && lineCompact.length <= 80) {
+      lines.splice(i, 0, cleanTitle);
+      return lines.join('\n').trim();
+    }
+    break;
+  }
+  return cleanTitle && !String(body || '').includes(cleanTitle)
+    ? `${cleanTitle}\n\n${body}`.trim()
+    : String(body || '').trim();
+}
+
+function enforceArticleMetricTargets({ body = '', title = '', keyword = '', topic = '', category = '', settings = {} } = {}) {
+  const range = metricTargetRange(settings);
+  let nextBody = String(body || '').trim();
+  let metrics = articleMetrics(nextBody, keyword);
+  const supplements = [];
+  let index = 0;
+  while ((metrics.charCount < range.minCharCount || metrics.kwCount < range.minKwCount) && index < 10) {
+    const paragraph = metricSupplementParagraph({
+      keyword,
+      topic,
+      category,
+      index,
+      includeKeyword: metrics.kwCount < range.minKwCount || metrics.kwCount < range.maxKwCount,
+    });
+    supplements.push(paragraph);
+    nextBody = `${nextBody}\n\n${paragraph}`.trim();
+    metrics = articleMetrics(nextBody, keyword);
+    index += 1;
+  }
+  return {
+    body: nextBody,
+    ...metrics,
+    targetRange: range,
+    metricAdjusted: supplements.length > 0,
+    metricSupplementCount: supplements.length,
+  };
+}
+
 function averageNumber(values = [], fallback = 0) {
   const numbers = values.map(Number).filter(Number.isFinite);
   if (numbers.length === 0) return fallback;
@@ -1295,6 +1393,7 @@ function buildPublishSpec(platform = 'blog', settingsInput = {}, overrides = {})
   const contentSkill = contentSkillFor(settings.contentSkillKey);
   const normalizedPlatform = normalizePlatform(platform);
   const sectionCount = settings.sectionCount;
+  const range = metricTargetRange(settings);
   const base = {
     mechanism: 'publish_generation',
     contentSkillKey: contentSkill.key,
@@ -1302,9 +1401,13 @@ function buildPublishSpec(platform = 'blog', settingsInput = {}, overrides = {})
     platform: normalizedPlatform,
     structureMutation: '원문 구성 순서와 소제목 표현은 그대로 쓰지 않고 의도만 재배열',
     targetCharCount: settings.targetCharCount,
+    minCharCount: range.minCharCount,
+    maxCharCount: range.maxCharCount,
     sectionCharCount: settings.sectionCharCount,
     sectionCount,
     keywordRepeatCount: settings.targetKwCount + 1,
+    minKeywordRepeatCount: range.minKwCount,
+    maxKeywordRepeatCount: range.maxKwCount,
     thumbnailCount: 1,
     sectionImageCount: sectionCount,
     imageSize: '500x500',
@@ -2490,6 +2593,7 @@ function buildOpenAiRewritePrompt({ job, analyses = [], pattern = {}, settings =
   const sectionCount = pattern.sectionCount || settings.sectionCount || DEFAULT_REWRITE_SETTINGS.sectionCount;
   const targetCharCount = pattern.targetCharCount || settings.targetCharCount || DEFAULT_REWRITE_SETTINGS.targetCharCount;
   const targetKwCount = pattern.targetKwCount || settings.targetKwCount || DEFAULT_REWRITE_SETTINGS.targetKwCount;
+  const range = metricTargetRange({ ...settings, targetCharCount, targetKwCount, sectionCount });
   const cta = job.cta_url || '[글별 CTA 링크 입력 필요]';
   const qrInstruction = job.use_naver_qr
     ? '도입 CTA 직후 또는 두 번째 섹션 뒤에 [네이버 QR 삽입: CTA 링크] 표기를 넣어라.'
@@ -2511,9 +2615,14 @@ function buildOpenAiRewritePrompt({ job, analyses = [], pattern = {}, settings =
       variantIndex,
       target: {
         charCount: targetCharCount,
+        charCountUnit: '공백 제외 한국어 글자수',
+        charCountMin: range.minCharCount,
+        charCountMax: range.maxCharCount,
         sectionCount,
         sectionCharCount: settings.sectionCharCount || DEFAULT_REWRITE_SETTINGS.sectionCharCount,
         keywordRepeatCount: targetKwCount,
+        keywordRepeatMin: range.minKwCount,
+        keywordRepeatMax: range.maxKwCount,
         imageCount,
         quoteHeadingPerSection: true,
         imageSize: '500x500 center aligned',
@@ -2524,6 +2633,9 @@ function buildOpenAiRewritePrompt({ job, analyses = [], pattern = {}, settings =
         'title에는 랜딩페이지식 CTA를 쓰지 않는다. 금지: 홈페이지에서 쉽게 시작하세요, 지금 바로, 클릭하세요, 확인하세요, 알아보세요, 시작하세요, 놓치지 마세요.',
         '정책/여행/신청 글 제목은 명사형으로 쓴다. 예: 메인키워드 신청 방법 일정 안내, 메인키워드 대상 기준 신청 기간.',
         '오타를 만들지 않는다. 특히 반값여행을 반갑여행으로 쓰지 않는다.',
+        `본문 글자수는 공백 제외 ${range.minCharCount}~${range.maxCharCount}자 범위에 맞춘다. 목표는 ${targetCharCount}자다.`,
+        `메인키워드 '${keyword}'는 본문 전체에 ${range.minKwCount}~${range.maxKwCount}회만 자연스럽게 넣는다.`,
+        `소제목은 ${sectionCount}개 기준으로 만들고 각 본문 섹션은 약 ${settings.sectionCharCount || DEFAULT_REWRITE_SETTINGS.sectionCharCount}자 분량으로 쓴다.`,
         'body 첫 줄에는 title을 한 번 넣고, 이후 도입부 3문단을 쓴다.',
         `도입 CTA에는 ${cta}를 넣는다.`,
         qrInstruction,
@@ -2579,7 +2691,7 @@ async function buildOpenAiRewriteDraft({ tenantId, job, analyses, pattern, setti
     fallback: fallbackTitle,
   });
   let body = String(parsed.body || '').trim();
-  if (!body.includes(title)) body = `${title}\n\n${body}`;
+  body = replaceGeneratedTitleLine(body, parsed.title || fallbackTitle, title);
   const sectionTitles = Array.isArray(parsed.sectionTitles) && parsed.sectionTitles.length
     ? parsed.sectionTitles.map((item) => String(item || '').replace(/^>\s*/, '').trim()).filter(Boolean)
     : makeSectionTitles(job.target_keyword, job.target_topic, Math.max(1, (pattern.sectionCount || settings.sectionCount || 7) - 1), variantIndex);
@@ -2588,12 +2700,18 @@ async function buildOpenAiRewriteDraft({ tenantId, job, analyses, pattern, setti
       body += `\n\n[이미지 ${index + 1} 500x500 중앙정렬: ${section}]`;
     }
   });
-  const plainText = body
-    .replace(/\[(?:대표이미지|이미지|보조 이미지|네이버 QR)[^\]]+\]/g, '')
-    .replace(/^>\s*/gm, '')
-    .trim();
-  const charCount = plainText.replace(/\s/g, '').length;
-  const kwCount = (plainText.match(new RegExp(escapeRegExp(job.target_keyword), 'gi')) || []).length;
+  const enforced = enforceArticleMetricTargets({
+    body,
+    title,
+    keyword: job.target_keyword,
+    topic: job.target_topic,
+    category: job.category,
+    settings: { ...settings, targetCharCount: pattern.targetCharCount || settings.targetCharCount, targetKwCount: pattern.targetKwCount || settings.targetKwCount },
+  });
+  body = enforced.body;
+  const plainText = enforced.plainText;
+  const charCount = enforced.charCount;
+  const kwCount = enforced.kwCount;
   const requiredImageCount = Math.max(
     pattern.imageCount || settings.imageCount || 0,
     1 + sectionTitles.length
@@ -2631,7 +2749,13 @@ async function buildOpenAiRewriteDraft({ tenantId, job, analyses, pattern, setti
       keyword: job.target_keyword,
       platform: job.platform,
       targetCharCount: settings.targetCharCount,
+      targetCharMin: enforced.targetRange.minCharCount,
+      targetCharMax: enforced.targetRange.maxCharCount,
       actualCharCount: charCount,
+      targetKwCount: enforced.targetRange.targetKwCount,
+      actualKwCount: kwCount,
+      metricAdjusted: enforced.metricAdjusted,
+      metricSupplementCount: enforced.metricSupplementCount,
       sourceAnalysisCount: analyses.length,
     },
   });
