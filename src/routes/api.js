@@ -3137,9 +3137,7 @@ const OPENAI_PRICING_USD_PER_1M = {
   'gpt-4.1-mini': { input: 0.40, output: 1.60, label: 'GPT-4.1 mini' },
   'gpt-4.1': { input: 2.00, output: 8.00, label: 'GPT-4.1' },
   'gpt-5-mini': { input: 0.25, output: 2.00, label: 'GPT-5 mini' },
-  'gpt-5.4-mini': { input: 0.75, output: 4.50, label: 'GPT-5.4 mini' },
   'gpt-5.4': { input: 2.50, output: 15.00, label: 'GPT-5.4' },
-  'gpt-5.5': { input: 5.00, output: 30.00, label: 'GPT-5.5' },
 };
 
 function normalizeOpenAiModel(model = '') {
