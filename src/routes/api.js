@@ -1149,6 +1149,7 @@ function normalizeKeywordValue(value = '') {
     .replace(/\s+/g, ' ')
     .replace(/민생회복\s+지원금/g, '민생회복지원금')
     .replace(/민생\s+회복지원금/g, '민생회복지원금')
+    .replace(/반갑\s*여행/g, '반값여행')
     .trim()
     .slice(0, 60);
 }
@@ -1555,7 +1556,7 @@ function makeRewriteTitle(keyword, topic = '', platform = 'blog', pattern = {}) 
   const tail = keywordPhrases[0]
     ? `${keywordPhrases[0]} 정리`
     : titleIntentTail(cleanKeyword, cleanTopic, actionTerms);
-  const title = compactTitleCandidate(`${subject} ${tail}`);
+  const title = cleanGeneratedTitle(`${subject} ${tail}`, { keyword: cleanKeyword, fallback: `${subject} ${titleIntentTail(cleanKeyword, cleanTopic, actionTerms)}` });
   if (platform === 'cafe') return `${title} 실제 확인 후기`.slice(0, 76);
   return title.slice(0, 70);
 }
@@ -1925,6 +1926,16 @@ function keywordVariantSeeds(seed = '') {
 
 function compactTitleCandidate(value = '') {
   let title = normalizeTitleValue(value)
+    .replace(/반갑\s*여행/g, '반값여행')
+    .replace(/\s*[–—-]\s*(홈페이지|공식\s*홈페이지|바로|쉽게|지금|클릭|시작|확인).*$/i, '')
+    .replace(/홈페이지에서\s*/g, '')
+    .replace(/쉽게\s*시작하세요/g, '')
+    .replace(/지금\s*바로\s*/g, '')
+    .replace(/클릭하세요|확인하세요|알아보세요|시작하세요/g, '')
+    .replace(/신청방법/g, '신청 방법')
+    .replace(/일정안내/g, '일정 안내')
+    .replace(/신청\s*방법과\s*일정\s*안내/g, '신청 방법 일정 안내')
+    .replace(/대상과\s*신청\s*방법/g, '대상 신청 방법')
     .replace(/\s+(정리|확인|방법|알아보기)\s+\1/g, ' $1')
     .replace(/\s+/g, ' ')
     .trim();
@@ -1932,6 +1943,18 @@ function compactTitleCandidate(value = '') {
     title = title.replace(/(^|\s)([^\s]+)\s+\2(?=\s|$)/g, '$1$2');
   }
   return title;
+}
+
+function cleanGeneratedTitle(value = '', { keyword = '', fallback = '' } = {}) {
+  let title = compactTitleCandidate(value);
+  const cleanKeyword = normalizeKeywordValue(keyword);
+  if (!title || (cleanKeyword && !title.includes(cleanKeyword))) {
+    title = compactTitleCandidate(fallback || `${cleanKeyword} 신청 방법 일정 안내`);
+  }
+  if (/신청/.test(title) && /일정/.test(title) && !/안내|정리|확인|방법/.test(title)) {
+    title = compactTitleCandidate(`${title} 안내`);
+  }
+  return title.slice(0, 70);
 }
 
 function buildTitleKeywordPhrases({ keyword = '', keywordSignals = [], actions = [] }) {
@@ -2022,7 +2045,10 @@ function generateTitleCandidates({ keyword, topic = '', platform = 'blog', categ
     ...sourceTitles.slice(0, 4).map((title) => `${cleanKeyword} ${titleRecommendationActions(title).slice(0, 3).join(' ')} 정리`),
   ];
 
-  return [...new Set(candidates.map(compactTitleCandidate).filter((title) => {
+  return [...new Set(candidates.map((title) => cleanGeneratedTitle(title, {
+    keyword: cleanKeyword,
+    fallback: `${cleanKeyword} ${titleIntentTail(cleanKeyword, cleanTopic, actions)}`,
+  })).filter((title) => {
     if (!title || !title.includes(cleanKeyword)) return false;
     if (policyIntent && /예매|티켓팅|티켓|유형|결과|가격/.test(title)) return false;
     if (policyIntent && (title.match(/신청(?!기간)/g) || []).length > 1) return false;
@@ -2494,7 +2520,10 @@ function buildOpenAiRewritePrompt({ job, analyses = [], pattern = {}, settings =
         similarityRisk: 'very_low',
       },
       structureRules: [
-        'title은 SEO/AEO/GEO 기준으로 메인키워드와 행동유도 보조어를 자연스럽게 포함한다.',
+        'title은 SEO/AEO/GEO 기준으로 메인키워드와 검색 의도 보조어를 자연스럽게 포함한다.',
+        'title에는 랜딩페이지식 CTA를 쓰지 않는다. 금지: 홈페이지에서 쉽게 시작하세요, 지금 바로, 클릭하세요, 확인하세요, 알아보세요, 시작하세요, 놓치지 마세요.',
+        '정책/여행/신청 글 제목은 명사형으로 쓴다. 예: 메인키워드 신청 방법 일정 안내, 메인키워드 대상 기준 신청 기간.',
+        '오타를 만들지 않는다. 특히 반값여행을 반갑여행으로 쓰지 않는다.',
         'body 첫 줄에는 title을 한 번 넣고, 이후 도입부 3문단을 쓴다.',
         `도입 CTA에는 ${cta}를 넣는다.`,
         qrInstruction,
@@ -2545,7 +2574,10 @@ async function buildOpenAiRewriteDraft({ tenantId, job, analyses, pattern, setti
   const content = data.choices?.[0]?.message?.content || '';
   const parsed = safeJsonFromModelText(content);
   const fallbackTitle = normalizeTitleValue(job.custom_title) || makeRewriteTitle(job.target_keyword, job.target_topic, job.platform, pattern);
-  const title = normalizeTitleValue(parsed.title || fallbackTitle);
+  const title = cleanGeneratedTitle(parsed.title || fallbackTitle, {
+    keyword: job.target_keyword,
+    fallback: fallbackTitle,
+  });
   let body = String(parsed.body || '').trim();
   if (!body.includes(title)) body = `${title}\n\n${body}`;
   const sectionTitles = Array.isArray(parsed.sectionTitles) && parsed.sectionTitles.length
