@@ -1812,7 +1812,13 @@ function generateTitleCandidates({ keyword, topic = '', platform = 'blog', categ
   ].join(' ');
   const actions = titleRecommendationActions(sourceText);
   const tail = titleIntentTail(cleanKeyword, cleanTopic, actions);
-  const subject = cleanTopic && !cleanTopic.includes(cleanKeyword) ? `${cleanKeyword} ${cleanTopic}` : cleanKeyword;
+  const cleanTopicCompact = cleanTopic.replace(/\s/g, '').toLowerCase();
+  const subject = cleanTopic
+    && cleanTopicCompact !== cleanKeywordCompact
+    && !cleanTopicCompact.includes(cleanKeywordCompact)
+    && !cleanKeywordCompact.includes(cleanTopicCompact)
+    ? `${cleanKeyword} ${cleanTopic}`
+    : cleanKeyword;
   const signalActionTerms = cleanSignals
     .flatMap((signal) => TITLE_RECOMMENDATION_ACTIONS.filter((term) => signal.includes(term)))
     .filter((term) => !cleanKeyword.includes(term));
