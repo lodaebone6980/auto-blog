@@ -4167,7 +4167,8 @@ function OperationsSettingsPanel() {
         if (!res.ok) throw new Error(data.error || `API error (${res.status})`);
         if (cancelled || !Array.isArray(data.accounts)) return;
         setSettings((prev) => {
-          const next = { ...prev, accounts: data.accounts };
+          const nextAccounts = data.accounts.length > 0 ? data.accounts : (Array.isArray(prev.accounts) ? prev.accounts : []);
+          const next = { ...prev, accounts: nextAccounts };
           localStorage.setItem('naviwrite.opsSettings', JSON.stringify(next));
           return next;
         });
