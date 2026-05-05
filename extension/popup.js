@@ -19,6 +19,8 @@ const state = {
   activeJob: null,
   images: [],
   batchRunning: false,
+  abortRequested: false,
+  currentTabId: null,
   batchDelaySeconds: 60,
   loggedIn: false,
   steps: {},
@@ -131,6 +133,19 @@ function renderSteps() {
     const note = step.note || desc;
     return `<li class="${klass}"><span class="dot">${mark}</span><span><strong>${title}</strong><br><span class="muted">${note}</span></span></li>`;
   }).join('');
+}
+
+function setBatchStatus(text) {
+  setText('batchStatus', text);
+}
+
+function setBatchControls(running) {
+  const start = $('startSelectedJobs');
+  const run = $('runSelectedJobs');
+  const stop = $('stopBatch');
+  if (start) start.disabled = running;
+  if (run) run.disabled = running;
+  if (stop) stop.disabled = !running;
 }
 
 function selectTab(name) {
@@ -463,6 +478,10 @@ async function fetchJobImages(jobId) {
   return imagesFromRewriteJob(job);
 }
 
+function ensureBatchNotStopped() {
+  if (state.abortRequested) throw new Error('사용자가 작업을 중지했습니다.');
+}
+
 function publishWaitingJobs() {
   const doneStatuses = ['발행 완료', '발행완료', 'RSS확인완료', '성과추적중'];
   return state.jobs.filter((job) => {
@@ -573,45 +592,65 @@ async function startSelectedJobs() {
   if (!account) throw new Error('계정 슬롯이 없습니다.');
   await saveBatchDelaySeconds();
   state.batchRunning = true;
-  $('startSelectedJobs').disabled = true;
-  $('runSelectedJobs').disabled = true;
+  state.abortRequested = false;
+  state.currentTabId = null;
+  setBatchControls(true);
+  setBatchStatus(`선택 작업 ${state.selectedJobIds.length}개를 준비합니다.`);
 
   const plannedIds = [...state.selectedJobIds];
   let completed = 0;
   try {
     for (let index = 0; index < plannedIds.length; index += 1) {
+      ensureBatchNotStopped();
       const jobId = plannedIds[index];
       setStep('claim', 'active', `선택 작업 ${plannedIds.length}개 중 ${index + 1}번째 작업을 준비합니다.`);
+      setBatchStatus(`${index + 1}/${plannedIds.length} 작업 준비 중입니다.`);
       const job = await claimSelectedJob(jobId);
       if (!job) throw new Error(`#${jobId} 작업을 준비하지 못했습니다.`);
 
       setStep('images', 'active', `#${job.id} 이미지 초안을 자동으로 불러오는 중입니다.`);
       const images = await fetchJobImages(job.id);
-      state.selectedJobIds = state.selectedJobIds.filter((id) => id !== job.id);
       await setActiveJob(job, images);
       setStep('claim', 'done', `#${job.id} 작업 준비 완료`);
       setStep('images', 'done', `${images.length}장 자동 확인`);
 
+      ensureBatchNotStopped();
+      setBatchStatus(`${index + 1}/${plannedIds.length} 작성창을 열고 있습니다: ${job.title || job.keyword || `#${job.id}`}`);
       const tab = await openEditorForJob();
+      state.currentTabId = tab?.id || null;
       await delay(2500);
+      ensureBatchNotStopped();
+      setBatchStatus(`${index + 1}/${plannedIds.length} 제목/본문을 타이핑 중입니다: ${job.title || job.keyword || `#${job.id}`}`);
       const insertResult = await insertIntoTab(tab?.id, { retryMs: 25000 });
       if (!insertResult?.ok) throw new Error(insertResult?.error || `#${job.id} 작성창 삽입에 실패했습니다.`);
       setStep('insert', 'done', `#${job.id} 제목/본문/이미지/CTA 삽입 완료`);
+      state.selectedJobIds = state.selectedJobIds.filter((id) => Number(id) !== Number(job.id));
+      await chromePromise((done) => chrome.storage.local.set({ selectedJobIds: state.selectedJobIds }, done));
+      setBatchStatus(`${index + 1}/${plannedIds.length} 작성 완료: ${job.title || job.keyword || `#${job.id}`}`);
       completed += 1;
 
       if (index < plannedIds.length - 1) {
         const waitSeconds = actionDelaySeconds(job);
         setStep('publish', 'active', `다음 작업까지 ${waitSeconds}초 대기합니다. 실제 발행 후 URL 저장은 발행 완료 저장으로 처리합니다.`);
-        await delay(waitSeconds * 1000);
+        for (let left = waitSeconds; left > 0; left -= 1) {
+          ensureBatchNotStopped();
+          setBatchStatus(`다음 작업까지 ${left}초 대기 중입니다. 중지할 수 있습니다.`);
+          await delay(1000);
+        }
       }
     }
     await chromePromise((done) => chrome.storage.local.set({ selectedJobIds: state.selectedJobIds }, done));
     await loadPublishJobs().catch(() => {});
     setStep('publish', 'done', `${completed}개 작업을 작성창에 순서대로 넣었습니다.`);
+    setBatchStatus(`${completed}개 작업 작성이 끝났습니다.`);
+  } catch (err) {
+    setStep('insert', state.abortRequested ? 'error' : 'error', err.message);
+    setBatchStatus(state.abortRequested ? `중지됨: ${completed}개 완료` : `오류: ${err.message}`);
+    throw err;
   } finally {
     state.batchRunning = false;
-    $('startSelectedJobs').disabled = false;
-    $('runSelectedJobs').disabled = false;
+    state.currentTabId = null;
+    setBatchControls(false);
     renderJobList();
   }
 }
@@ -663,6 +702,7 @@ async function sendFillMessageToFrame(tabId, frameId) {
     type: 'NAVIWRITE_FILL_JOB',
     job: normalizeEditorJob(state.activeJob),
     images: state.images,
+    mode: 'type',
   }, { frameId }, done)).catch((err) => ({ ok: false, error: err.message }));
 }
 
@@ -726,6 +766,21 @@ async function clearJob() {
   resetSteps();
 }
 
+async function sendStopToTab(tabId) {
+  if (!tabId) return;
+  const frames = await chromePromise((done) => chrome.webNavigation.getAllFrames({ tabId }, done))
+    .catch(() => [{ frameId: 0 }]);
+  await Promise.all((frames || [{ frameId: 0 }]).map((frame) =>
+    chrome.tabs.sendMessage(tabId, { type: 'NAVIWRITE_STOP_TYPING' }, { frameId: frame.frameId }).catch(() => null)
+  ));
+}
+
+async function stopBatch() {
+  state.abortRequested = true;
+  setBatchStatus('중지 요청을 보냈습니다. 현재 타이핑을 멈추는 중입니다.');
+  await sendStopToTab(state.currentTabId);
+}
+
 async function openJobTabAndStart() {
   selectTab('job');
   await loadPublishJobs();
@@ -768,9 +823,9 @@ async function init() {
   $('clearSelectedJobs').addEventListener('click', () => clearSelectedJobs().catch((err) => setText('loginText', err.message)));
   $('batchDelaySeconds').addEventListener('change', () => saveBatchDelaySeconds().catch((err) => setText('loginText', err.message)));
   $('startSelectedJobs').addEventListener('click', () => startSelectedJobs().catch((err) => setText('loginText', err.message)));
+  $('stopBatch').addEventListener('click', () => stopBatch().catch((err) => setText('loginText', err.message)));
   $('loadImages').addEventListener('click', () => loadJobImages().catch((err) => setText('loginText', err.message)));
   $('copyJob').addEventListener('click', () => copyJob().catch((err) => setText('loginText', err.message)));
-  $('openEditor').addEventListener('click', () => openEditorForJob().catch((err) => setText('loginText', err.message)));
   $('insertJob').addEventListener('click', () => insertIntoActiveTab().catch((err) => setText('loginText', err.message)));
   $('markPublished').addEventListener('click', () => markPublished().catch((err) => setText('loginText', err.message)));
   $('clearJob').addEventListener('click', () => clearJob().catch((err) => setText('loginText', err.message)));

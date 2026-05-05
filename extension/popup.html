@@ -34,7 +34,6 @@
         <button id="checkLogin">로그인 확인</button>
         <button id="detectChannel" class="secondary">채널/카테고리 찾기</button>
         <button id="runSelectedJobs">작업 시작</button>
-        <button id="openEditor">작성창 열기</button>
         <button id="insertJob" class="secondary">현재 작업 다시 삽입</button>
       </div>
 
@@ -65,7 +64,11 @@
         <input id="batchDelaySeconds" type="number" min="5" max="600" value="60" />
       </label>
       <div id="jobList" class="job-list muted">발행 생성 작업 목록을 불러오세요.</div>
-      <button id="startSelectedJobs">선택 작업 일괄 시작</button>
+      <div class="row">
+        <button id="startSelectedJobs">선택 작업 일괄 시작</button>
+        <button id="stopBatch" class="danger" disabled>진행 중지</button>
+      </div>
+      <p id="batchStatus" class="muted">진행 전입니다.</p>
 
       <div class="row spread">
         <strong>현재 작업</strong>

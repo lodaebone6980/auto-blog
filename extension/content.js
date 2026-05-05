@@ -1,3 +1,5 @@
+let typingStopRequested = false;
+
 function emitInput(node) {
   node.dispatchEvent(new Event('input', { bubbles: true }));
   node.dispatchEvent(new Event('change', { bubbles: true }));
@@ -15,8 +17,9 @@ function findTitleTarget() {
     'input[placeholder*="제목"]',
     '[contenteditable="true"][aria-label*="제목"]',
     '[contenteditable="true"][data-placeholder*="제목"]',
+    '.se-title [contenteditable="true"]',
     '.se-title-text [contenteditable="true"]',
-    '.se-placeholder.__se_placeholder',
+    '.se-title .se-placeholder.__se_placeholder',
   ];
   for (const selector of selectors) {
     const node = Array.from(document.querySelectorAll(selector)).find(visible);
@@ -130,6 +133,141 @@ function setRichText(node, html, fallbackText) {
   emitInput(node);
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function randomDelay(min = 8, max = 24) {
+  return Math.floor(min + Math.random() * (max - min));
+}
+
+function ensureTypingNotStopped() {
+  if (typingStopRequested) throw new Error('사용자가 타이핑을 중지했습니다.');
+}
+
+function editableRoot(node) {
+  if (!node) return null;
+  if ('value' in node || node.isContentEditable) return node;
+  return node.closest?.('[contenteditable="true"]') || node;
+}
+
+function placeCaretAtEnd(node) {
+  node.focus();
+  if ('value' in node) {
+    const end = node.value.length;
+    node.setSelectionRange?.(end, end);
+    return;
+  }
+  const selection = window.getSelection();
+  const range = document.createRange();
+  range.selectNodeContents(node);
+  range.collapse(false);
+  selection.removeAllRanges();
+  selection.addRange(range);
+}
+
+function clearEditable(node) {
+  node.focus();
+  if ('value' in node) {
+    node.value = '';
+    emitInput(node);
+    return;
+  }
+  const selection = window.getSelection();
+  const range = document.createRange();
+  range.selectNodeContents(node);
+  selection.removeAllRanges();
+  selection.addRange(range);
+  document.execCommand?.('delete', false);
+  if ((node.textContent || '').trim()) node.innerHTML = '';
+  emitInput(node);
+}
+
+async function typeTextLikeHuman(node, text, options = {}) {
+  const target = editableRoot(node);
+  const chunkSize = options.chunkSize || 3;
+  const minDelay = options.minDelay ?? 8;
+  const maxDelay = options.maxDelay ?? 24;
+  placeCaretAtEnd(target);
+  for (let index = 0; index < text.length; index += chunkSize) {
+    ensureTypingNotStopped();
+    const chunk = text.slice(index, index + chunkSize);
+    target.dispatchEvent(new KeyboardEvent('keydown', { key: chunk, bubbles: true }));
+    if ('value' in target) {
+      const start = target.selectionStart ?? target.value.length;
+      const end = target.selectionEnd ?? start;
+      target.value = `${target.value.slice(0, start)}${chunk}${target.value.slice(end)}`;
+      target.setSelectionRange?.(start + chunk.length, start + chunk.length);
+    } else {
+      const before = target.textContent || '';
+      const inserted = document.execCommand?.('insertText', false, chunk);
+      if (!inserted && (target.textContent || '') === before) {
+        const selection = window.getSelection();
+        const range = selection.rangeCount ? selection.getRangeAt(0) : document.createRange();
+        range.deleteContents();
+        range.insertNode(document.createTextNode(chunk));
+        range.collapse(false);
+        selection.removeAllRanges();
+        selection.addRange(range);
+      }
+    }
+    emitInput(target);
+    target.dispatchEvent(new KeyboardEvent('keyup', { key: chunk, bubbles: true }));
+    await sleep(randomDelay(minDelay, maxDelay));
+  }
+}
+
+async function pressEnter(node, count = 1) {
+  const target = editableRoot(node);
+  placeCaretAtEnd(target);
+  for (let i = 0; i < count; i += 1) {
+    ensureTypingNotStopped();
+    if ('value' in target) {
+      await typeTextLikeHuman(target, '\n', { chunkSize: 1, minDelay: 5, maxDelay: 10 });
+    } else {
+      target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true }));
+      document.execCommand?.('insertParagraph', false);
+      emitInput(target);
+      target.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', bubbles: true }));
+      await sleep(randomDelay(40, 90));
+    }
+  }
+}
+
+function applyFormatBlock(tagName) {
+  try {
+    return document.execCommand?.('formatBlock', false, tagName);
+  } catch {
+    return false;
+  }
+}
+
+function pasteHtmlAtCaret(html, fallbackText = '') {
+  try {
+    const data = new DataTransfer();
+    data.setData('text/html', html);
+    data.setData('text/plain', fallbackText);
+    const event = new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true });
+    const handled = !document.activeElement?.dispatchEvent(event);
+    if (handled) return true;
+  } catch {}
+  return Boolean(document.execCommand?.('insertHTML', false, html));
+}
+
+async function insertImageAtCaret(node, image, index) {
+  const url = imageUrl(image);
+  if (!url) return false;
+  ensureTypingNotStopped();
+  placeCaretAtEnd(editableRoot(node));
+  const label = imageLabel(image, index);
+  const html = `<p style="text-align:center;margin:16px 0;"><img src="${escapeHtml(url)}" alt="${escapeHtml(label)}" style="display:block;width:500px;max-width:100%;height:auto;margin:0 auto;" /></p>`;
+  const inserted = pasteHtmlAtCaret(html, `[${label}]`);
+  emitInput(editableRoot(node));
+  await sleep(180);
+  await pressEnter(node, 1);
+  return inserted;
+}
+
 function plainBody(job) {
   return job.body || job.plain_text || job.plainText || '';
 }
@@ -225,6 +363,176 @@ function buildRichBody(job, images = []) {
   }
 
   return blocks.join('');
+}
+
+function isImagePlaceholder(line) {
+  return /^\[이미지\s*\d*/.test(line) || /^\[이미지\]/.test(line);
+}
+
+function isQrPlaceholder(line) {
+  return /^\[네이버\s*QR\s*삽입/.test(line);
+}
+
+function isQuoteLine(line) {
+  return /^>|^인용구[:：]/.test(line);
+}
+
+function cleanQuoteLine(line) {
+  return line.replace(/^>\s*/, '').replace(/^인용구[:：]\s*/, '').trim();
+}
+
+function isHeadingLine(line, index) {
+  if (index === 0) return false;
+  if (line.length > 38) return false;
+  if (/[.?!。]$/.test(line)) return false;
+  if (/https?:\/\//i.test(line)) return false;
+  return /[가-힣A-Za-z0-9]/.test(line);
+}
+
+function cleanBodyLines(job) {
+  const title = String(job.title || job.keyword || '').trim();
+  return plainBody(job)
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line, index) => !(index === 0 && title && line === title))
+    .filter((line) => !isImagePlaceholder(line));
+}
+
+function buildTypingSegments(job, images = []) {
+  const lines = cleanBodyLines(job);
+  const segments = [];
+  let imageIndex = 0;
+  let introImageInserted = false;
+  let pendingSectionImage = false;
+  let paragraphSinceImage = 0;
+  const link = ctaUrl(job);
+
+  lines.forEach((line, index) => {
+    if (isQrPlaceholder(line)) {
+      if (link) segments.push({ type: 'cta', text: `바로 확인하기\n${link}` });
+      return;
+    }
+    if (isQuoteLine(line)) {
+      if (!introImageInserted && segments.length && images[imageIndex]) {
+        segments.push({ type: 'image', image: images[imageIndex], index: imageIndex });
+        imageIndex += 1;
+        introImageInserted = true;
+      }
+      segments.push({ type: 'quote', text: cleanQuoteLine(line) });
+      pendingSectionImage = true;
+      paragraphSinceImage = 0;
+      return;
+    }
+    if (isHeadingLine(line, index)) {
+      segments.push({ type: 'heading', text: line });
+      pendingSectionImage = true;
+      paragraphSinceImage = 0;
+      return;
+    }
+    segments.push({ type: 'paragraph', text: line });
+    paragraphSinceImage += 1;
+    if (pendingSectionImage && images[imageIndex]) {
+      segments.push({ type: 'image', image: images[imageIndex], index: imageIndex });
+      imageIndex += 1;
+      pendingSectionImage = false;
+      paragraphSinceImage = 0;
+    } else if (!pendingSectionImage && paragraphSinceImage >= 3 && images[imageIndex]) {
+      segments.push({ type: 'image', image: images[imageIndex], index: imageIndex });
+      imageIndex += 1;
+      paragraphSinceImage = 0;
+    }
+  });
+
+  if (link && !segments.some((segment) => segment.type === 'cta')) {
+    segments.push({ type: 'cta', text: `바로 확인하기\n${link}` });
+  }
+  return segments;
+}
+
+async function typeBodySegments(node, job, images = []) {
+  const target = editableRoot(node);
+  clearEditable(target);
+  const segments = buildTypingSegments(job, images);
+  let imageCount = 0;
+  let quoteCount = 0;
+  let typedSegments = 0;
+
+  for (const segment of segments) {
+    ensureTypingNotStopped();
+    if (segment.type === 'image') {
+      const inserted = await insertImageAtCaret(target, segment.image, segment.index);
+      if (inserted) imageCount += 1;
+      continue;
+    }
+    if (segment.type === 'quote') {
+      applyFormatBlock('blockquote');
+      await typeTextLikeHuman(target, segment.text, { chunkSize: 3, minDelay: 9, maxDelay: 23 });
+      quoteCount += 1;
+      await pressEnter(target, 1);
+      applyFormatBlock('p');
+      typedSegments += 1;
+      continue;
+    }
+    if (segment.type === 'heading') {
+      applyFormatBlock('h3');
+      await typeTextLikeHuman(target, segment.text, { chunkSize: 3, minDelay: 9, maxDelay: 22 });
+      await pressEnter(target, 1);
+      applyFormatBlock('p');
+      typedSegments += 1;
+      continue;
+    }
+    if (segment.type === 'cta') {
+      applyFormatBlock('p');
+      await typeTextLikeHuman(target, segment.text, { chunkSize: 3, minDelay: 9, maxDelay: 22 });
+      await pressEnter(target, 2);
+      typedSegments += 1;
+      continue;
+    }
+    applyFormatBlock('p');
+    await typeTextLikeHuman(target, segment.text, { chunkSize: 3, minDelay: 8, maxDelay: 20 });
+    await pressEnter(target, 2);
+    typedSegments += 1;
+  }
+  return { typedSegments, imageCount, quoteCount };
+}
+
+async function fillJobLikeTyping(job, images = []) {
+  typingStopRequested = false;
+  const title = job.title || job.keyword || '';
+  const body = plainBody(job);
+  const titleTarget = editableRoot(findTitleTarget());
+  let bodyTarget = editableRoot(findBodyTarget());
+  if (!bodyTarget && body) {
+    activateBodyArea();
+    await sleep(250);
+    bodyTarget = editableRoot(findBodyTarget());
+  }
+
+  if (!titleTarget && !bodyTarget) {
+    throw new Error('현재 프레임에서 제목/본문 입력 영역을 찾지 못했습니다. 작성창을 클릭한 뒤 다시 시도하세요.');
+  }
+  if (body && !bodyTarget) {
+    throw new Error('제목 영역은 찾았지만 본문 입력 영역을 찾지 못했습니다. 본문 영역을 한 번 클릭한 뒤 다시 삽입하세요.');
+  }
+
+  const categorySelected = selectCategoryByName(job.category || job.category_guess || job.target_category || '');
+  if (titleTarget && title) {
+    clearEditable(titleTarget);
+    await typeTextLikeHuman(titleTarget, title, { chunkSize: 4, minDelay: 12, maxDelay: 28 });
+    await sleep(180);
+  }
+  if (bodyTarget && body) {
+    bodyTarget.scrollIntoView?.({ block: 'center', inline: 'center' });
+    bodyTarget.click?.();
+    placeCaretAtEnd(bodyTarget);
+    const result = await typeBodySegments(bodyTarget, job, images);
+    return {
+      ok: true,
+      note: `제목/본문 타이핑 완료 · 인용구 ${result.quoteCount}개 · 이미지 ${result.imageCount}장${categorySelected ? ' · 카테고리 선택 시도 완료' : ''}`,
+    };
+  }
+  return { ok: true, note: `제목 타이핑 완료${categorySelected ? ' · 카테고리 선택 시도 완료' : ''}` };
 }
 
 function currentBlogUrl() {
@@ -353,6 +661,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message?.type === 'NAVIWRITE_STOP_TYPING') {
+    typingStopRequested = true;
+    sendResponse({ ok: true, note: '타이핑 중지 요청을 받았습니다.' });
+    return true;
+  }
+
   if (message?.type === 'NAVIWRITE_ACTIVE_JOB') {
     const job = message.job || {};
     sendResponse({
@@ -366,38 +680,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type !== 'NAVIWRITE_FILL_JOB') return false;
 
   const job = message.job || {};
-  const title = job.title || job.keyword || '';
-  const body = buildBody(job, message.images || []);
-  const richBody = buildRichBody(job, message.images || []);
-  const titleTarget = findTitleTarget();
-  let bodyTarget = findBodyTarget();
-  if (!bodyTarget && body) {
-    activateBodyArea();
-    bodyTarget = findBodyTarget();
-  }
-
-  if (!titleTarget && !bodyTarget) {
-    sendResponse({
-      ok: false,
-      error: '현재 프레임에서 제목/본문 입력 영역을 찾지 못했습니다. 작성창을 클릭한 뒤 다시 시도하세요.',
-    });
-    return true;
-  }
-  if (body && !bodyTarget) {
-    sendResponse({
-      ok: false,
-      error: '제목 영역은 찾았지만 본문 입력 영역을 찾지 못했습니다. 본문 영역을 한 번 클릭한 뒤 다시 삽입하세요.',
-    });
-    return true;
-  }
-
-  const categorySelected = selectCategoryByName(job.category || job.category_guess || job.target_category || '');
-  if (titleTarget && title) setText(titleTarget, title);
-  if (bodyTarget && body) setRichText(bodyTarget, richBody, body);
-
-  sendResponse({
-    ok: true,
-    note: `${titleTarget ? '제목' : ''}${titleTarget && bodyTarget ? '/' : ''}${bodyTarget ? '본문' : ''} 삽입 시도 완료${categorySelected ? ' · 카테고리 선택 시도 완료' : ''}`,
-  });
+  fillJobLikeTyping(job, message.images || [])
+    .then((result) => sendResponse(result))
+    .catch((err) => sendResponse({ ok: false, error: err.message }));
   return true;
 });

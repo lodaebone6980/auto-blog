@@ -135,6 +135,10 @@ button.secondary {
   background: var(--accent);
 }
 
+button.danger {
+  background: var(--danger);
+}
+
 button.success {
   width: 100%;
   background: var(--success);
