@@ -359,6 +359,54 @@ function delayPlanForJob(job = {}) {
   };
 }
 
+function normalizedApiBase(value = '') {
+  return String(value || '').replace(/\/$/, '');
+}
+
+async function postApiJson(url, body = {}, tenantId = '') {
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(tenantId ? { 'x-naviwrite-tenant': tenantId } : {}),
+    },
+    body: JSON.stringify(body),
+  });
+  const text = await response.text();
+  let payload = {};
+  try {
+    payload = text ? JSON.parse(text) : {};
+  } catch {
+    payload = { raw: text };
+  }
+  if (!response.ok) {
+    throw new Error(payload.error || payload.message || text || `API request failed (${response.status})`);
+  }
+  return payload;
+}
+
+async function requestRunnerPublishPlan({ apiBase = '', tenantId = '', job = {}, profile = {}, body = {} }) {
+  const base = normalizedApiBase(apiBase);
+  if (!base || !job.id) return { job, plan: null };
+  const spacingMinMinutes = Number(body.spacingMinMinutes || job.between_posts_delay_minutes || job.betweenPostsDelayMinutes || 120);
+  const spacingMaxMinutes = Number(body.spacingMaxMinutes || job.spacing_max_minutes || job.spacingMaxMinutes || 180);
+  const payload = await postApiJson(`${base}/publish-queue/${job.id}/runner-plan`, {
+    claim: true,
+    runnerName: 'naviwrite-runner',
+    lastPublishedAt: body.lastPublishedAt || body.latestPublishedAt || null,
+    lastPublishedUrl: body.lastPublishedUrl || body.latestPublishedUrl || null,
+    publishAccountId: profile.id || job.publish_account_id || '',
+    publishAccountLabel: profile.label || job.publish_account_label || '',
+    publishAccountPlatform: profile.platform || job.publish_account_platform || job.platform || '',
+    spacingMinMinutes,
+    spacingMaxMinutes,
+  }, tenantId);
+  return {
+    job: payload.job || job,
+    plan: payload.plan || null,
+  };
+}
+
 function publishTextForJob(job = {}) {
   const title = job.title || job.keyword || '';
   const body = job.plain_text || job.plainText || job.body || '';
@@ -445,7 +493,7 @@ async function router(req, res) {
       return send(res, 200, {
         status: 'ok',
         service: 'naviwrite-runner',
-        version: '0.2.0',
+        version: '0.2.1',
         dataDir: DATA_DIR,
         profileDir: PROFILE_DIR,
         browserFound: Boolean(findBrowserExecutable()),
@@ -495,10 +543,22 @@ async function router(req, res) {
 
     if (req.method === 'POST' && requestUrl.pathname === '/publish/open-editor') {
       const body = await readBody(req);
-      const job = body.job || {};
+      let job = body.job || {};
       const profileId = safeId(body.profileId || job.publish_account_id || '');
       const profile = profileId ? await readProfile(profileId) : null;
       if (!profile) return send(res, 404, { error: 'profile not found' });
+      let publishPlan = null;
+      if (body.autoPlan !== false && body.apiBase && job.id) {
+        const planned = await requestRunnerPublishPlan({
+          apiBase: body.apiBase,
+          tenantId: body.tenantId || '',
+          job,
+          profile,
+          body,
+        });
+        job = planned.job || job;
+        publishPlan = planned.plan || null;
+      }
       const editorUrl = body.editorUrl || editorUrlFor(profile, job);
       if (!editorUrl) return send(res, 400, { error: 'editor URL is required' });
       const prepared = await savePreparedPublishJob({ profile, job, editorUrl });
@@ -512,7 +572,20 @@ async function router(req, res) {
       ], { detached: true, stdio: 'ignore', windowsHide: false });
       child.unref();
       await updateProfile(profile.id, { lastActivityAt: nowIso() });
-      return send(res, 200, { ok: true, openedUrl: editorUrl, prepared });
+      return send(res, 200, { ok: true, openedUrl: editorUrl, prepared, publishPlan });
+    }
+
+    if (req.method === 'POST' && requestUrl.pathname === '/publish/complete-job') {
+      const body = await readBody(req);
+      const apiBase = normalizedApiBase(body.apiBase);
+      const jobId = body.jobId || body.job_id || body.job?.id;
+      if (!apiBase) return send(res, 400, { error: 'apiBase is required' });
+      if (!jobId) return send(res, 400, { error: 'jobId is required' });
+      const payload = await postApiJson(`${apiBase}/publish-queue/${jobId}/mark-published`, {
+        publishedUrl: body.publishedUrl || body.published_url || '',
+        publishedAt: body.publishedAt || body.published_at || nowIso(),
+      }, body.tenantId || '');
+      return send(res, 200, { ok: true, ...payload });
     }
 
     if (req.method === 'POST' && requestUrl.pathname === '/publish/claim-next') {
@@ -533,6 +606,21 @@ async function router(req, res) {
       });
       const payload = await response.json();
       if (!response.ok) return send(res, response.status, payload);
+      if (payload.job && body.autoPlan !== false) {
+        const planned = await requestRunnerPublishPlan({
+          apiBase,
+          tenantId: body.tenantId || '',
+          job: payload.job,
+          profile: {
+            id: body.publishAccountId || payload.job.publish_account_id || '',
+            label: body.publishAccountLabel || payload.job.publish_account_label || '',
+            platform: body.platform || payload.job.publish_account_platform || payload.job.platform || '',
+          },
+          body,
+        });
+        payload.job = planned.job || payload.job;
+        payload.publishPlan = planned.plan || null;
+      }
       return send(res, 200, {
         ...payload,
         delayPlan: payload.job ? delayPlanForJob(payload.job) : null,

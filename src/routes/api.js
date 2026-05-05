@@ -2949,6 +2949,112 @@ async function buildAutoPublishSlots({ tenantId, count, spacingMinutes = 120 }) 
   return Array.from({ length: count }, (_, index) => new Date(startAt.getTime() + index * spacingMs).toISOString());
 }
 
+function normalizeSpacingMinutes(value, fallback, min = 1, max = 1440) {
+  return clampNumber(parseInt(value, 10) || fallback, min, max);
+}
+
+function normalizeDateValue(value) {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function computeRunnerPublishPlan({
+  lastPublishedAt = null,
+  spacingMinMinutes = 120,
+  spacingMaxMinutes = 180,
+  now = new Date(),
+} = {}) {
+  const minMinutes = normalizeSpacingMinutes(spacingMinMinutes, 120, 1, 1440);
+  const maxMinutes = Math.max(minMinutes, normalizeSpacingMinutes(spacingMaxMinutes, 180, 1, 1440));
+  const lastDate = normalizeDateValue(lastPublishedAt);
+  const maxSpacingMs = maxMinutes * 60 * 1000;
+
+  if (!lastDate) {
+    return {
+      publishMode: 'immediate',
+      publishStatus: '발행대기',
+      scheduledAt: null,
+      reason: '최근 발행 기록 없음',
+      spacingMinMinutes: minMinutes,
+      spacingMaxMinutes: maxMinutes,
+      now: now.toISOString(),
+      lastPublishedAt: null,
+    };
+  }
+
+  const elapsedMs = now.getTime() - lastDate.getTime();
+  if (elapsedMs >= maxSpacingMs) {
+    return {
+      publishMode: 'immediate',
+      publishStatus: '발행대기',
+      scheduledAt: null,
+      reason: `${maxMinutes}분 이상 발행 공백`,
+      spacingMinMinutes: minMinutes,
+      spacingMaxMinutes: maxMinutes,
+      now: now.toISOString(),
+      lastPublishedAt: lastDate.toISOString(),
+      elapsedMinutes: Math.max(0, Math.floor(elapsedMs / 60000)),
+    };
+  }
+
+  const candidateAt = new Date(lastDate.getTime() + maxSpacingMs);
+  return {
+    publishMode: 'scheduled',
+    publishStatus: '예약대기',
+    scheduledAt: candidateAt.toISOString(),
+    reason: `${maxMinutes}분 이내 최근 발행 감지`,
+    spacingMinMinutes: minMinutes,
+    spacingMaxMinutes: maxMinutes,
+    now: now.toISOString(),
+    lastPublishedAt: lastDate.toISOString(),
+    elapsedMinutes: Math.max(0, Math.floor(elapsedMs / 60000)),
+  };
+}
+
+async function loadLatestPublishedForRunnerPlan({ tenantId, jobId, publishAccountId, publishAccountLabel, publishAccountPlatform }) {
+  const values = [tenantId, jobId];
+  const accountConditions = [];
+  if (publishAccountId) {
+    values.push(publishAccountId);
+    accountConditions.push(`publish_account_id = $${values.length}`);
+  }
+  if (publishAccountLabel) {
+    values.push(publishAccountLabel);
+    accountConditions.push(`publish_account_label = $${values.length}`);
+  }
+  if (publishAccountPlatform) {
+    values.push(publishAccountPlatform);
+    accountConditions.push(`publish_account_platform = $${values.length}`);
+  }
+  if (accountConditions.length === 0) return null;
+
+  const accountWhere = accountConditions.length ? `AND (${accountConditions.join(' OR ')})` : '';
+  const { rows } = await pool.query(
+    `SELECT id,
+            COALESCE(published_at, scheduled_at) AS published_at,
+            published_at AS actual_published_at,
+            scheduled_at AS planned_at,
+            published_url,
+            publish_status,
+            publish_account_id,
+            publish_account_label,
+            publish_account_platform
+     FROM content_jobs
+     WHERE COALESCE(tenant_id, 'owner') = $1
+       AND id <> $2
+       AND (
+         (published_at IS NOT NULL AND publish_status IN ('발행완료', 'RSS확인완료', '성과추적중'))
+         OR (scheduled_at IS NOT NULL AND publish_status IN ('발행중', '발행대기', '예약대기', '자동발행대기'))
+       )
+       ${accountWhere}
+     ORDER BY COALESCE(published_at, scheduled_at) DESC
+     LIMIT 1`,
+    values
+  );
+  return rows[0] || null;
+}
+
 async function createContentJobFromRewrite({ tenantId, rewriteJob, body = {} }) {
   const input = normalizeJobInput({
     ...body,
@@ -5105,14 +5211,17 @@ router.post('/rewrite-jobs/:id/to-content-job', async (req, res) => {
     const rewrite = await pool.query('SELECT * FROM rewrite_jobs WHERE id = $1', [req.params.id]);
     if (rewrite.rows.length === 0) return res.status(404).json({ error: 'Rewrite job not found' });
     const rewriteJob = rewrite.rows[0];
-    const scheduledAt = req.body?.scheduledAt || req.body?.scheduled_at || (await buildAutoPublishSlots({ tenantId, count: 1, spacingMinutes: req.body?.spacingMinutes || req.body?.betweenPostsDelayMinutes || 120 }))[0];
+    const autoReady = Boolean(req.body?.autoReady);
+    const scheduledAt = autoReady
+      ? null
+      : req.body?.scheduledAt || req.body?.scheduled_at || (await buildAutoPublishSlots({ tenantId, count: 1, spacingMinutes: req.body?.spacingMinutes || req.body?.betweenPostsDelayMinutes || 120 }))[0];
     const result = await createContentJobFromRewrite({
       tenantId,
       rewriteJob,
       body: {
         ...req.body,
-        publishMode: req.body?.publishMode || req.body?.publish_mode || 'scheduled',
-        publishStatus: req.body?.publishStatus || req.body?.publish_status || '예약대기',
+        publishMode: autoReady ? 'draft' : req.body?.publishMode || req.body?.publish_mode || 'scheduled',
+        publishStatus: autoReady ? '자동발행대기' : req.body?.publishStatus || req.body?.publish_status || '예약대기',
         scheduledAt,
       },
     });
@@ -5134,7 +5243,9 @@ router.post('/rewrite-jobs/to-content-jobs/bulk', async (req, res) => {
     const spacingMinutes = clampNumber(parseInt(body.spacingMinutes || body.betweenPostsDelayMinutes || 120, 10) || 120, 1, 1440);
     const actionDelayMinutes = clampNumber(parseInt(body.actionDelayMinutes || 1, 10) || 1, 1, 60);
     const publishStatus = body.autoReady ? '자동발행대기' : '예약대기';
-    const slots = await buildAutoPublishSlots({ tenantId, count: rewriteJobIds.length, spacingMinutes });
+    const slots = body.autoReady
+      ? Array.from({ length: rewriteJobIds.length }, () => null)
+      : await buildAutoPublishSlots({ tenantId, count: rewriteJobIds.length, spacingMinutes });
     const { rows: rewrites } = await pool.query(
       `SELECT *
        FROM rewrite_jobs
@@ -5152,7 +5263,7 @@ router.post('/rewrite-jobs/to-content-jobs/bulk', async (req, res) => {
         rewriteJob,
         body: {
           ...body,
-          publishMode: 'scheduled',
+          publishMode: body.autoReady ? 'draft' : 'scheduled',
           publishStatus,
           scheduledAt: slots[index],
           actionDelayMinSeconds: actionDelayMinutes * 60,
@@ -5171,6 +5282,7 @@ router.post('/rewrite-jobs/to-content-jobs/bulk', async (req, res) => {
       actionDelayMinutes,
       publishStatus,
       firstScheduledAt: created[0]?.scheduled_at || null,
+      runnerDecidesSchedule: Boolean(body.autoReady),
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -5310,6 +5422,82 @@ router.get('/generated-images/:id/file', async (req, res) => {
     res.setHeader('Cache-Control', 'private, max-age=3600');
     res.setHeader('Content-Disposition', `inline; filename="naviwrite-image-${image.id}.${mime.includes('svg') ? 'svg' : 'png'}"`);
     res.send(buffer);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/publish-queue/:id/runner-plan', async (req, res) => {
+  try {
+    const tenantId = tenantIdFromReq(req);
+    const job = await loadTenantContentJob(req, req.params.id);
+    if (!job) return res.status(404).json({ error: 'Content job not found' });
+
+    const publishAccountId = req.body.publishAccountId || req.body.publish_account_id || job.publish_account_id || null;
+    const publishAccountLabel = req.body.publishAccountLabel || req.body.publish_account_label || job.publish_account_label || null;
+    const publishAccountPlatform = req.body.publishAccountPlatform || req.body.publish_account_platform || job.publish_account_platform || job.platform || null;
+    const spacingMinMinutes = normalizeSpacingMinutes(req.body.spacingMinMinutes || req.body.spacing_min_minutes || job.between_posts_delay_minutes || 120, 120, 1, 1440);
+    const spacingMaxMinutes = normalizeSpacingMinutes(req.body.spacingMaxMinutes || req.body.spacing_max_minutes || 180, 180, spacingMinMinutes, 1440);
+    const requestedLastPublishedAt = normalizeOptionalDate(
+      req.body.lastPublishedAt || req.body.last_published_at || req.body.latestPublishedAt || req.body.latest_published_at
+    );
+    const fallbackLast = requestedLastPublishedAt
+      ? null
+      : await loadLatestPublishedForRunnerPlan({
+        tenantId,
+        jobId: job.id,
+        publishAccountId,
+        publishAccountLabel,
+        publishAccountPlatform,
+      });
+    const lastPublishedAt = requestedLastPublishedAt || fallbackLast?.published_at || null;
+    const planNow = new Date();
+    const plan = computeRunnerPublishPlan({
+      lastPublishedAt,
+      spacingMinMinutes,
+      spacingMaxMinutes,
+      now: planNow,
+    });
+    const claim = Boolean(req.body.claim);
+    const storedScheduledAt = claim && plan.publishMode === 'immediate' ? planNow.toISOString() : plan.scheduledAt;
+    const runnerPlan = {
+      ...plan,
+      source: requestedLastPublishedAt ? 'extension_last_published_at' : fallbackLast ? 'db_latest_published_at' : 'no_history',
+      latestPublishedJobId: fallbackLast?.id || null,
+      latestPublishedUrl: req.body.lastPublishedUrl || req.body.last_published_url || fallbackLast?.published_url || null,
+      storedScheduledAt,
+      plannedBy: req.body.runnerName || req.body.runner_name || 'naviwrite-runner',
+      plannedAt: new Date().toISOString(),
+      claim,
+    };
+    const publishStatus = claim ? '발행중' : plan.publishStatus;
+    const { rows } = await pool.query(
+      `UPDATE content_jobs
+       SET publish_mode = $2,
+           scheduled_at = $3,
+           publish_status = $4,
+           publish_account_id = COALESCE($5, publish_account_id),
+           publish_account_label = COALESCE($6, publish_account_label),
+           publish_account_platform = COALESCE($7, publish_account_platform),
+           between_posts_delay_minutes = $8,
+           runner_plan = $9,
+           updated_at = NOW()
+       WHERE id = $1
+       RETURNING *`,
+      [
+        job.id,
+        plan.publishMode,
+        storedScheduledAt,
+        publishStatus,
+        publishAccountId,
+        publishAccountLabel,
+        publishAccountPlatform,
+        spacingMinMinutes,
+        JSON.stringify(runnerPlan),
+      ]
+    );
+    await addJobEvent(job.id, 'runner_publish_plan', 'Runner가 최근 발행 기준으로 즉시/예약 계획을 저장했습니다', runnerPlan);
+    res.json({ ok: true, job: rows[0], plan: runnerPlan });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

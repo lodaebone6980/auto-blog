@@ -2542,22 +2542,22 @@ function RewritePanel() {
       return null;
     }
     setQueueing(true);
-    setMessage(`${rewriteJobIds.length}개 작업을 발행 큐로 보내는 중입니다.`);
+    setMessage(`${rewriteJobIds.length}개 작업을 자동발행 대기로 보내는 중입니다.`);
     const res = await safeFetch(`${API}/rewrite-jobs/to-content-jobs/bulk`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         rewriteJobIds,
-        publishMode: 'scheduled',
+        publishMode: 'draft',
         spacingMinutes: 120,
+        spacingMaxMinutes: 180,
         actionDelayMinutes: 1,
-        autoReady: false,
+        autoReady: true,
       }),
     });
     setQueueing(false);
     if (res?.ok) {
-      const firstTime = res.firstScheduledAt ? new Date(res.firstScheduledAt).toLocaleString('ko-KR') : '즉시';
-      setMessage(`${res.created || rewriteJobIds.length}개 작업을 발행 큐로 보냈습니다. 첫 시간: ${firstTime}`);
+      setMessage(`${res.created || rewriteJobIds.length}개 작업을 자동발행 대기로 보냈습니다. 즉시/예약 시간은 확장프로그램이 블로그별 최근 발행 기준으로 저장합니다.`);
       await loadRewriteData();
       return res;
     } else {
@@ -3086,7 +3086,7 @@ function RewritePanel() {
             disabled={selectedRewriteLinks.length === 0 || queueing}
             style={{ height: 30, padding: '0 12px', borderRadius: 8, border: 'none', background: selectedRewriteLinks.length === 0 || queueing ? COLORS.textMuted : COLORS.success, color: 'white', fontSize: 11, fontWeight: 850, cursor: selectedRewriteLinks.length === 0 || queueing ? 'not-allowed' : 'pointer' }}
           >
-            발행큐로 보내기
+            자동발행 대기
           </button>
         </div>
         <div style={{ overflowX: 'auto', maxHeight: 430 }}>
@@ -3165,7 +3165,7 @@ function RewritePanel() {
                             onClick={() => sendToPublishQueue(jobFromSourceLink(link))}
                             style={{ height: 28, padding: '0 9px', borderRadius: 7, border: 'none', background: COLORS.success, color: 'white', fontSize: 10, fontWeight: 850, cursor: 'pointer' }}
                           >
-                            발행 큐
+                            자동발행 대기
                           </button>
                         </div>
                       ) : (
@@ -3336,7 +3336,7 @@ function RewritePanel() {
                       disabled={!job.body && !job.plain_text}
                       style={{ height: 30, padding: '0 12px', borderRadius: 8, border: 'none', background: !job.body && !job.plain_text ? COLORS.textMuted : COLORS.success, color: 'white', fontSize: 11, fontWeight: 850, cursor: !job.body && !job.plain_text ? 'not-allowed' : 'pointer' }}
                     >
-                      발행 큐로 보내기
+                      자동발행 대기
                     </button>
                   </div>
                 </div>
@@ -4742,12 +4742,21 @@ function PublishQueuePanel() {
       body: JSON.stringify({
         apiBase: absoluteApiBase(),
         profileId,
+        autoPlan: true,
+        spacingMinMinutes: Number(draft.betweenPostsDelayMinutes) || 120,
+        spacingMaxMinutes: 180,
         job: runnerJobPayload(job, draft, account),
       }),
     });
     setWorkingId(null);
     if (res?.ok) {
-      setMessage(`#${job.id} 작성창을 열고 제목/본문을 Runner에 준비했습니다${res.prepared?.clipboardReady ? ' · 클립보드 준비됨' : ''}.`);
+      const planText = res.publishPlan?.publishMode === 'scheduled' && res.publishPlan?.scheduledAt
+        ? ` · 예약 ${new Date(res.publishPlan.scheduledAt).toLocaleString('ko-KR')}`
+        : res.publishPlan?.publishMode === 'immediate'
+          ? ' · 즉시 발행 판단'
+          : '';
+      setMessage(`#${job.id} 작성창을 열고 제목/본문을 Runner에 준비했습니다${planText}${res.prepared?.clipboardReady ? ' · 클립보드 준비됨' : ''}.`);
+      await loadQueue();
     } else {
       setMessage(res?.error || 'Runner 작성창 열기에 실패했습니다.');
     }
@@ -4869,7 +4878,7 @@ function PublishQueuePanel() {
           <div>
             <h2 style={{ fontSize: 18, fontWeight: 850, color: COLORS.primary, marginBottom: 4 }}>발행 큐</h2>
             <p style={{ fontSize: 12, color: COLORS.textSecondary, lineHeight: 1.6 }}>
-              발행 생성 결과를 실제 발행 단위로 관리합니다. 즉시/예약 발행, 계정 슬롯, 행동 딜레이, RSS 확인, 옵시디언 내보내기를 여기에서 확정합니다.
+              발행 생성 결과를 실제 발행 단위로 관리합니다. 확장프로그램이 업로드할 계정의 최근 발행 시간을 확인해 즉시/예약 계획을 저장하고, 완료 후 URL과 상태를 다시 기록합니다.
             </p>
           </div>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -4904,7 +4913,7 @@ function PublishQueuePanel() {
         <div style={{ padding: '14px 18px', borderBottom: `1px solid ${COLORS.border}` }}>
           <h3 style={{ fontSize: 15, fontWeight: 850, color: COLORS.primary }}>발행 작업 목록</h3>
           <p style={{ marginTop: 4, fontSize: 11, color: COLORS.textSecondary }}>
-            기본 딜레이는 액션 사이 1분, 글 사이 120분입니다. Runner/확장프로그램은 이 DB 값을 읽어 순차 실행합니다.
+            기본 딜레이는 액션 사이 1분, 블로그별 발행 간격 120~180분입니다. Runner/확장프로그램은 최근 발행이 2~3시간 안에 있으면 예약으로, 없으면 즉시 발행으로 저장합니다.
           </p>
         </div>
         <div style={{ overflowX: 'auto' }}>
@@ -4914,7 +4923,7 @@ function PublishQueuePanel() {
             </div>
           ) : jobs.length === 0 ? (
             <div style={{ padding: 36, textAlign: 'center', color: COLORS.textMuted, fontSize: 13 }}>
-              아직 발행 큐에 들어온 글이 없습니다. 발행 생성 목록에서 `발행 큐로 보내기`를 눌러주세요.
+              아직 발행 큐에 들어온 글이 없습니다. 발행 생성 목록에서 `자동발행 대기`를 눌러주세요.
             </div>
           ) : (
             <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1380 }}>

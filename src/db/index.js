@@ -496,6 +496,7 @@ export async function initDB() {
         published_url TEXT,
         published_at TIMESTAMPTZ,
         obsidian_export_status TEXT DEFAULT '관리자전용',
+        runner_plan JSONB DEFAULT '{}',
         error_message TEXT,
         created_at TIMESTAMPTZ DEFAULT NOW(),
         updated_at TIMESTAMPTZ DEFAULT NOW()
@@ -588,6 +589,7 @@ export async function initDB() {
       ALTER TABLE content_jobs ADD COLUMN IF NOT EXISTS published_url TEXT;
       ALTER TABLE content_jobs ADD COLUMN IF NOT EXISTS published_at TIMESTAMPTZ;
       ALTER TABLE content_jobs ADD COLUMN IF NOT EXISTS obsidian_export_status TEXT DEFAULT '관리자전용';
+      ALTER TABLE content_jobs ADD COLUMN IF NOT EXISTS runner_plan JSONB DEFAULT '{}';
 
       -- Content Job Event Log
       CREATE TABLE IF NOT EXISTS content_job_events (
