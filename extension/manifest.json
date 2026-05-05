@@ -1,10 +1,11 @@
 {
   "manifest_version": 3,
   "name": "NaviWrite 자동발행",
-  "version": "1.1.0",
-  "description": "NaviWrite 서버 계정 슬롯과 네이버 작성 화면을 연결합니다.",
+  "version": "1.2.0",
+  "description": "NaviWrite 서버 발행큐와 네이버 작성 화면을 연결합니다.",
   "permissions": [
     "activeTab",
+    "clipboardWrite",
     "cookies",
     "scripting",
     "storage",
@@ -36,6 +37,7 @@
         "https://brunch.co.kr/*"
       ],
       "js": ["content.js"],
+      "all_frames": true,
       "run_at": "document_idle"
     }
   ]
