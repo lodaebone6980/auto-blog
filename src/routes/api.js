@@ -1294,7 +1294,7 @@ function clampNumber(value, min, max) {
 const DEFAULT_REWRITE_SETTINGS = {
   contentSkillKey: 'adsense_traffic',
   generatorMode: 'openai',
-  openaiModel: 'gpt-4.1-mini',
+  openaiModel: 'gpt-5-mini',
   targetCharCount: 2200,
   sectionCharCount: 300,
   sectionCount: 7,
@@ -2037,8 +2037,14 @@ function compactTitleCandidate(value = '') {
     .replace(/클릭하세요|확인하세요|알아보세요|시작하세요/g, '')
     .replace(/신청방법/g, '신청 방법')
     .replace(/일정안내/g, '일정 안내')
+    .replace(/공식\s*홈페이지\s*정보/g, '공식 홈페이지')
+    .replace(/홈페이지\s*정보/g, '홈페이지')
     .replace(/신청\s*방법과\s*일정\s*안내/g, '신청 방법 일정 안내')
+    .replace(/신청\s*방법\s*및\s*일정\s*안내/g, '신청 방법 일정 안내')
+    .replace(/일정\s*안내와\s*공식\s*홈페이지/g, '일정 안내 공식 홈페이지')
+    .replace(/일정\s*안내\s*및\s*공식\s*홈페이지/g, '일정 안내 공식 홈페이지')
     .replace(/대상과\s*신청\s*방법/g, '대상 신청 방법')
+    .replace(/\s+(및|와|과)\s+/g, ' ')
     .replace(/\s+(정리|확인|방법|알아보기)\s+\1/g, ' $1')
     .replace(/\s+/g, ' ')
     .trim();
@@ -2630,8 +2636,9 @@ function buildOpenAiRewritePrompt({ job, analyses = [], pattern = {}, settings =
       },
       structureRules: [
         'title은 SEO/AEO/GEO 기준으로 메인키워드와 검색 의도 보조어를 자연스럽게 포함한다.',
+        'title은 네이버 검색형 제목으로 쓴다. 조사/연결어(및, 와, 과)는 가능하면 빼고 핵심 키워드를 검색량 높은 순서로 배열한다.',
         'title에는 랜딩페이지식 CTA를 쓰지 않는다. 금지: 홈페이지에서 쉽게 시작하세요, 지금 바로, 클릭하세요, 확인하세요, 알아보세요, 시작하세요, 놓치지 마세요.',
-        '정책/여행/신청 글 제목은 명사형으로 쓴다. 예: 메인키워드 신청 방법 일정 안내, 메인키워드 대상 기준 신청 기간.',
+        '정책/여행/신청 글 제목은 명사형으로 쓴다. 예: 완도 반값여행 신청 방법 일정 안내 공식 홈페이지, 메인키워드 대상 기준 신청 기간.',
         '오타를 만들지 않는다. 특히 반값여행을 반갑여행으로 쓰지 않는다.',
         `본문 글자수는 공백 제외 ${range.minCharCount}~${range.maxCharCount}자 범위에 맞춘다. 목표는 ${targetCharCount}자다.`,
         `메인키워드 '${keyword}'는 본문 전체에 ${range.minKwCount}~${range.maxKwCount}회만 자연스럽게 넣는다.`,
@@ -3293,7 +3300,6 @@ const OPENAI_PRICING_USD_PER_1M = {
   'gpt-4.1-mini': { input: 0.40, output: 1.60, label: 'GPT-4.1 mini' },
   'gpt-4.1': { input: 2.00, output: 8.00, label: 'GPT-4.1' },
   'gpt-5-mini': { input: 0.25, output: 2.00, label: 'GPT-5 mini' },
-  'gpt-5.4': { input: 2.50, output: 15.00, label: 'GPT-5.4' },
 };
 
 function normalizeOpenAiModel(model = '') {
@@ -3340,7 +3346,8 @@ function openAiSettingKey(tenantId = 'owner') {
 
 async function getOpenAiSettings(tenantId = 'owner') {
   const stored = await getAppSetting(openAiSettingKey(tenantId), {});
-  const model = normalizeOpenAiModel(stored.model || process.env.OPENAI_WRITER_MODEL || DEFAULT_REWRITE_SETTINGS.openaiModel);
+  const storedModel = stored.model === 'gpt-4.1-mini' ? '' : stored.model;
+  const model = normalizeOpenAiModel(storedModel || process.env.OPENAI_WRITER_MODEL || DEFAULT_REWRITE_SETTINGS.openaiModel);
   let siteApiKey = '';
   try {
     siteApiKey = stored.apiKeyCipher ? decryptCredentialSecret({
@@ -3593,10 +3600,13 @@ async function saveGeneratedImagesForContentJob({ tenantId, contentJobId, rewrit
 }
 
 function buildObsidianMarkdown(job = {}, images = []) {
+  const generationModel = job.openai_model || DEFAULT_REWRITE_SETTINGS.openaiModel;
   const frontmatter = [
     '---',
     `tenant: ${job.tenant_id || 'owner'}`,
     `keyword: ${JSON.stringify(job.keyword || '')}`,
+    `generation_model: ${generationModel}`,
+    'title_rule: "naver_search_compact"',
     `platform: ${job.platform || 'blog'}`,
     `category: ${JSON.stringify(job.category || '')}`,
     `publish_mode: ${job.publish_mode || 'draft'}`,
@@ -3614,7 +3624,7 @@ function buildObsidianMarkdown(job = {}, images = []) {
   const imageList = images.length
     ? images.map((image) => `- ${image.image_type} #${image.section_no}: ${image.file_path || image.public_url || 'data-url'}`).join('\n')
     : '- 이미지 없음';
-  return `${frontmatter}# ${job.title || job.keyword}\n\n## 발행 정보\n\n- 계정: ${job.publish_account_label || '-'}\n- 모드: ${job.publish_mode || 'draft'}\n- 상태: ${job.publish_status || '-'}\n- URL: ${job.published_url || '-'}\n\n## 키워드/성과\n\n- 메인 키워드: ${job.keyword || '-'}\n- 글자수: ${job.char_count || 0}\n- KW 반복: ${job.kw_count || 0}\n- 이미지: ${job.image_count || 0}\n\n## 이미지\n\n${imageList}\n\n## 본문\n\n${job.plain_text || job.body || ''}\n`;
+  return `${frontmatter}# ${job.title || job.keyword}\n\n## 발행 정보\n\n- 계정: ${job.publish_account_label || '-'}\n- 모드: ${job.publish_mode || 'draft'}\n- 상태: ${job.publish_status || '-'}\n- URL: ${job.published_url || '-'}\n\n## 생성 규칙\n\n- 모델 기준: ${generationModel}\n- 제목 규칙: 메인키워드 전면, 자동완성/연관 키워드 조합, 조사/연결어 최소화, 랜딩 CTA 금지\n- 제목 예시형: 메인키워드 신청 방법 일정 안내 공식 홈페이지\n- 본문 기준: 공백 제외 ${DEFAULT_REWRITE_SETTINGS.targetCharCount}자 전후, 소제목 ${DEFAULT_REWRITE_SETTINGS.sectionCount}개, KW 반복 ${DEFAULT_REWRITE_SETTINGS.targetKwCount}회 기준\n- 이미지 기준: 썸네일 1장과 섹션 이미지, 500x500 중앙 정렬\n\n## 키워드/성과\n\n- 메인 키워드: ${job.keyword || '-'}\n- 글자수: ${job.char_count || 0}\n- KW 반복: ${job.kw_count || 0}\n- 이미지: ${job.image_count || 0}\n- SEO/GEO/AEO: ${Math.round(Number(job.seo_score || 0))}/${Math.round(Number(job.geo_score || 0))}/${Math.round(Number(job.aeo_score || 0))}\n\n## 이미지\n\n${imageList}\n\n## 본문\n\n${job.plain_text || job.body || ''}\n`;
 }
 
 function isOwnerTenant(req) {

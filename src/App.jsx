@@ -35,7 +35,7 @@ const SORT_OPTIONS = [
 const DEFAULT_REWRITE_SETTINGS = {
   contentSkillKey: 'adsense_traffic',
   generatorMode: 'openai',
-  openaiModel: 'gpt-4.1-mini',
+  openaiModel: 'gpt-5-mini',
   targetCharCount: 2200,
   sectionCharCount: 300,
   sectionCount: 7,
@@ -2311,7 +2311,9 @@ function RewritePanel() {
   const [rewriteSettings, setRewriteSettings] = useState(() => {
     try {
       const saved = JSON.parse(localStorage.getItem('naviwrite.rewrite.settings') || 'null') || {};
-      return { ...DEFAULT_REWRITE_SETTINGS, ...saved };
+      const merged = { ...DEFAULT_REWRITE_SETTINGS, ...saved };
+      if (!saved.openaiModel || saved.openaiModel === 'gpt-4.1-mini') merged.openaiModel = DEFAULT_REWRITE_SETTINGS.openaiModel;
+      return merged;
     } catch {
       return DEFAULT_REWRITE_SETTINGS;
     }
@@ -3305,13 +3307,13 @@ function RewritePanel() {
             <label style={{ display: 'grid', gap: 5 }}>
               <span style={{ fontSize: 11, color: COLORS.textSecondary, fontWeight: 800 }}>OpenAI 모델</span>
               <select
-                value={rewriteSettings.openaiModel || 'gpt-4.1-mini'}
+                value={rewriteSettings.openaiModel || DEFAULT_REWRITE_SETTINGS.openaiModel}
                 onChange={(e) => updateRewriteSetting('openaiModel', e.target.value)}
                 style={{ ...inputStyle, height: 36, marginBottom: 0 }}
               >
-                <option value="gpt-4.1-mini">gpt-4.1-mini · 저비용</option>
+                <option value="gpt-5-mini">gpt-5-mini · 기본</option>
+                <option value="gpt-4.1-mini">gpt-4.1-mini · 예전 저비용</option>
                 <option value="gpt-4.1">gpt-4.1 · 고품질</option>
-                <option value="gpt-5-mini">gpt-5-mini · 최신 저비용</option>
               </select>
             </label>
           </div>
@@ -4129,7 +4131,7 @@ function OperationsSettingsPanelLegacy() {
     runnerUrl: 'http://127.0.0.1:39271',
     naverClientId: '',
     naverClientSecret: '',
-    openAiModel: 'gpt-4.1-mini',
+    openAiModel: 'gpt-5-mini',
     openAiMonthlyBudgetUsd: 20,
     accounts: [],
     qrAccounts: [],
@@ -4541,7 +4543,7 @@ function OperationsSettingsPanel() {
   const [qrForm, setQrForm] = useState({ label: '', naverIdHint: '', dailyLimit: 100 });
   const [vpnForm, setVpnForm] = useState({ label: '', provider: 'nordvpn', target: '', mode: '수동 확인' });
   const [credentialDrafts, setCredentialDrafts] = useState({});
-  const [openAiForm, setOpenAiForm] = useState({ apiKey: '', model: 'gpt-4.1-mini', monthlyBudgetUsd: 20, hasApiKey: false, keySource: 'missing' });
+  const [openAiForm, setOpenAiForm] = useState({ apiKey: '', model: 'gpt-5-mini', monthlyBudgetUsd: 20, hasApiKey: false, keySource: 'missing' });
   const [openAiSaving, setOpenAiSaving] = useState(false);
 
   const saveSettings = (next) => {
@@ -4596,7 +4598,7 @@ function OperationsSettingsPanel() {
       setOpenAiForm((prev) => ({
         ...prev,
         apiKey: '',
-        model: res.settings.model || 'gpt-4.1-mini',
+        model: res.settings.model || 'gpt-5-mini',
         monthlyBudgetUsd: res.settings.monthlyBudgetUsd || 20,
         hasApiKey: Boolean(res.settings.hasApiKey),
         keySource: res.settings.keySource || 'missing',
@@ -5056,10 +5058,9 @@ function OperationsSettingsPanel() {
             onChange={(e) => setOpenAiForm({ ...openAiForm, model: e.target.value })}
             style={{ ...inputStyle, marginBottom: 0 }}
           >
+            <option value="gpt-5-mini">gpt-5-mini</option>
             <option value="gpt-4.1-mini">gpt-4.1-mini</option>
             <option value="gpt-4.1">gpt-4.1</option>
-            <option value="gpt-5-mini">gpt-5-mini</option>
-            <option value="gpt-5.4">gpt-5.4</option>
           </select>
           <input
             type="number"
