@@ -113,6 +113,11 @@ input {
   font-size: 12px;
 }
 
+.delay-field {
+  display: grid;
+  gap: 5px;
+}
+
 button {
   height: 34px;
   padding: 0 11px;

@@ -3908,6 +3908,38 @@ async function createContentJobFromRewrite({ tenantId, rewriteJob, body = {} }) 
   return { job: rows[0], images };
 }
 
+async function ensureContentJobFromRewrite({ tenantId, rewriteJob, body = {} }) {
+  const { rows: existing } = await pool.query(
+    `SELECT cj.*,
+            COUNT(gi.id)::int AS generated_image_count
+     FROM content_jobs cj
+     LEFT JOIN generated_images gi ON gi.content_job_id = cj.id
+     WHERE COALESCE(cj.tenant_id, 'owner') = $1
+       AND cj.rewrite_job_id = $2
+       AND cj.publish_status NOT IN ('발행완료', 'RSS확인완료', '성과추적중')
+     GROUP BY cj.id
+     ORDER BY cj.created_at DESC
+     LIMIT 1`,
+    [tenantId, rewriteJob.id]
+  );
+  if (existing[0]) {
+    const images = await loadGeneratedImages(existing[0].id);
+    return { job: existing[0], images, existing: true };
+  }
+  return createContentJobFromRewrite({
+    tenantId,
+    rewriteJob,
+    body: {
+      publishMode: 'draft',
+      publishStatus: '초안대기',
+      actionDelayMinSeconds: 60,
+      actionDelayMaxSeconds: 60,
+      betweenPostsDelayMinutes: 120,
+      ...body,
+    },
+  });
+}
+
 async function syncJobToGoogleSheet(job) {
   const webhookUrl = process.env.GOOGLE_SHEETS_WEBHOOK_URL;
   if (!webhookUrl) {
@@ -6239,10 +6271,28 @@ router.post('/rewrite-jobs', async (req, res) => {
       }
     });
 
+    const contentJobs = [];
+    for (const rewriteJob of processed.filter((item) => item?.status === '글생성 완료')) {
+      const result = await ensureContentJobFromRewrite({
+        tenantId,
+        rewriteJob,
+        body: {
+          publishMode: 'draft',
+          publishStatus: '초안대기',
+          actionDelayMinSeconds: 60,
+          actionDelayMaxSeconds: 60,
+          betweenPostsDelayMinutes: 120,
+        },
+      });
+      contentJobs.push({ ...result.job, generated_image_count: result.images.length, existing: Boolean(result.existing) });
+    }
+
     res.json({
       ok: true,
       created: insertedJobs.length,
       processed: processed.length,
+      contentJobsCreated: contentJobs.filter((item) => !item.existing).length,
+      contentJobs,
       concurrency,
       jobs: processed,
     });
@@ -6253,14 +6303,30 @@ router.post('/rewrite-jobs', async (req, res) => {
 
 router.post('/rewrite-jobs/:id/process', async (req, res) => {
   try {
+    const tenantId = tenantIdFromReq(req);
     const job = await processRewriteJob(req.params.id, {
-      tenantId: tenantIdFromReq(req),
+      tenantId,
       forceVariant: Boolean(req.body?.forceVariant || req.body?.force_variant),
       generatorMode: req.body?.generatorMode || req.body?.generator_mode,
     });
+    const contentResult = job.status === '글생성 완료'
+      ? await ensureContentJobFromRewrite({
+          tenantId,
+          rewriteJob: job,
+          body: {
+            publishMode: 'draft',
+            publishStatus: '초안대기',
+            actionDelayMinSeconds: 60,
+            actionDelayMaxSeconds: 60,
+            betweenPostsDelayMinutes: 120,
+          },
+        })
+      : null;
     res.json({
       ok: true,
       job,
+      contentJob: contentResult?.job || null,
+      contentJobExisting: Boolean(contentResult?.existing),
       generatorMode: job.generator_mode || 'server_template',
       elapsedMs: job.elapsed_ms || null,
       variantIndex: job.variant_index || 0,
@@ -6408,6 +6474,7 @@ router.post('/publish-queue/:id/claim', async (req, res) => {
     const platform = req.body?.platform || null;
     const publishAccountId = req.body?.publishAccountId || req.body?.publish_account_id || null;
     const publishAccountLabel = req.body?.publishAccountLabel || req.body?.publish_account_label || null;
+    const ignoreSchedule = req.body?.ignoreSchedule === true || req.body?.ignore_schedule === true;
     await resetStalePublishingJobs({
       tenantId,
       minutes: req.body?.staleMinutes || req.body?.stale_minutes,
@@ -6422,10 +6489,10 @@ router.post('/publish-queue/:id/claim', async (req, res) => {
        WHERE id = $1
          AND COALESCE(tenant_id, 'owner') = $2
          AND publish_status IN ('자동발행대기', '발행대기', '예약대기', '초안대기')
-         AND (scheduled_at IS NULL OR scheduled_at <= NOW())
+         AND ($6::boolean OR scheduled_at IS NULL OR scheduled_at <= NOW())
          AND ($3::text IS NULL OR platform = $3 OR publish_account_platform = $3)
        RETURNING *`,
-      [jobId, tenantId, platform, publishAccountId, publishAccountLabel]
+      [jobId, tenantId, platform, publishAccountId, publishAccountLabel, ignoreSchedule]
     );
     if (rows.length === 0) {
       return res.status(409).json({ error: '이미 다른 PC가 점유했거나 지금 발행 가능한 상태가 아닙니다.' });

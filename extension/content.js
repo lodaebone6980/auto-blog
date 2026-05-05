@@ -53,19 +53,118 @@ function setText(node, text) {
   emitInput(node);
 }
 
+function setRichText(node, html, fallbackText) {
+  node.focus();
+  if ('value' in node) {
+    node.value = fallbackText;
+    emitInput(node);
+    return;
+  }
+  const selection = window.getSelection();
+  const range = document.createRange();
+  range.selectNodeContents(node);
+  selection.removeAllRanges();
+  selection.addRange(range);
+  const inserted = document.execCommand?.('insertHTML', false, html);
+  if (!inserted) node.innerHTML = html;
+  emitInput(node);
+}
+
 function plainBody(job) {
   return job.body || job.plain_text || job.plainText || '';
 }
 
-function buildBody(job, images) {
+function escapeHtml(value) {
+  return String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+function ctaUrl(job) {
+  return job.cta_url || job.ctaUrl || job.qr_target_url || job.qrTargetUrl || job.naver_qr_manage_url || job.naverQrManageUrl || '';
+}
+
+function imageUrl(image) {
+  return image.downloadUrl || image.download_url || image.publicUrl || image.public_url || image.url || '';
+}
+
+function imageLabel(image, index) {
+  return image.label || image.image_role || image.imageRole || `이미지 ${index + 1}`;
+}
+
+function firstContentLine(lines) {
+  return lines.find((line) => line.length > 8 && !/^[-#*>]/.test(line)) || '';
+}
+
+function buildBody(job, images = []) {
   const body = plainBody(job);
-  if (!images?.length) return body;
+  const link = ctaUrl(job);
   const imageNotes = images.map((image, index) => {
-    const label = image.label || image.image_role || `이미지 ${index + 1}`;
-    const url = image.downloadUrl || image.url || image.publicUrl || '';
+    const label = imageLabel(image, index);
+    const url = imageUrl(image);
     return `[${label}] ${url}`;
   }).join('\n');
-  return `${body}\n\n---\n이미지 삽입 참고\n${imageNotes}`;
+  return [
+    body,
+    imageNotes ? `\n[이미지]\n${imageNotes}` : '',
+    link ? `\n[CTA 링크]\n${link}` : '',
+  ].filter(Boolean).join('\n\n');
+}
+
+function buildRichBody(job, images = []) {
+  const raw = plainBody(job);
+  const lines = raw.split(/\n+/).map((line) => line.trim()).filter(Boolean);
+  const link = ctaUrl(job);
+  const blocks = [];
+  const firstLine = firstContentLine(lines);
+  let imageIndex = 0;
+  let quoteInserted = false;
+
+  if (firstLine && !lines.some((line) => /^>|^인용구[:：]/.test(line))) {
+    blocks.push(`<blockquote>${escapeHtml(firstLine)}</blockquote>`);
+    quoteInserted = true;
+  }
+
+  lines.forEach((line, index) => {
+    const isQuote = /^>|^인용구[:：]/.test(line);
+    const cleaned = line.replace(/^>\s*/, '').replace(/^인용구[:：]\s*/, '');
+    const isHeading = line.length <= 34 && !/[.?!。]$/.test(line) && index > 0;
+    if (isQuote) {
+      blocks.push(`<blockquote>${escapeHtml(cleaned)}</blockquote>`);
+      quoteInserted = true;
+    } else if (isHeading) {
+      blocks.push(`<h3>${escapeHtml(line)}</h3>`);
+    } else if (!(quoteInserted && line === firstLine)) {
+      blocks.push(`<p>${escapeHtml(line)}</p>`);
+    }
+
+    if (images[imageIndex] && (index === 1 || isQuote || (index > 0 && index % 4 === 0))) {
+      const url = imageUrl(images[imageIndex]);
+      const label = imageLabel(images[imageIndex], imageIndex);
+      if (url) {
+        blocks.push(`<p style="text-align:center;"><img src="${escapeHtml(url)}" alt="${escapeHtml(label)}" style="max-width:500px;width:100%;height:auto;display:block;margin:14px auto;" /></p>`);
+      }
+      imageIndex += 1;
+    }
+  });
+
+  while (images[imageIndex]) {
+    const url = imageUrl(images[imageIndex]);
+    const label = imageLabel(images[imageIndex], imageIndex);
+    if (url) {
+      blocks.push(`<p style="text-align:center;"><img src="${escapeHtml(url)}" alt="${escapeHtml(label)}" style="max-width:500px;width:100%;height:auto;display:block;margin:14px auto;" /></p>`);
+    }
+    imageIndex += 1;
+  }
+
+  if (link) {
+    blocks.push(`<p><strong>바로 확인하기</strong><br><a href="${escapeHtml(link)}" target="_blank" rel="noopener noreferrer">${escapeHtml(link)}</a></p>`);
+  }
+
+  return blocks.join('');
 }
 
 function currentBlogUrl() {
@@ -209,6 +308,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   const job = message.job || {};
   const title = job.title || job.keyword || '';
   const body = buildBody(job, message.images || []);
+  const richBody = buildRichBody(job, message.images || []);
   const titleTarget = findTitleTarget();
   const bodyTarget = findBodyTarget();
 
@@ -222,7 +322,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   const categorySelected = selectCategoryByName(job.category || job.category_guess || job.target_category || '');
   if (titleTarget && title) setText(titleTarget, title);
-  if (bodyTarget && body) setText(bodyTarget, body);
+  if (bodyTarget && body) setRichText(bodyTarget, richBody, body);
 
   sendResponse({
     ok: true,
