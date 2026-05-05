@@ -4095,7 +4095,7 @@ function OperationsSettingsPanelLegacy() {
           </div>
           <StatusBadge value={openAiForm.hasApiKey ? `키 저장됨 · ${openAiForm.keySource}` : '키 필요'} />
         </div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(220px, 1.4fr) minmax(150px, .8fr) minmax(130px, .6fr) 150px', gap: 8 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 8 }}>
           <input
             type="password"
             value={openAiForm.apiKey}
@@ -4196,7 +4196,7 @@ function OperationsSettingsPanelLegacy() {
       </div>
 
       <section style={{ ...cardStyle, padding: 16, background: '#fff7ed', borderColor: '#fed7aa' }}>
-        <p style={{ fontSize: 12, color: '#9a3412', lineHeight: 1.65 }}>
+        <p style={{ fontSize: 12, color: COLORS.primary, lineHeight: 1.65 }}>
           운영 기준: 서버는 작업, 상태, 암호화된 계정 자격증명을 저장합니다. 로그인 세션은 Runner PC에 저장하고,
           발행 전에는 6시간 체크 또는 2시간 무활동 기준으로 로그인 재확인을 요구합니다.
         </p>
@@ -4766,33 +4766,49 @@ function OperationsSettingsPanel() {
       <section style={{ ...cardStyle, padding: 20 }}>
         <h2 style={{ fontSize: 18, fontWeight: 850, color: COLORS.primary, marginBottom: 5 }}>운영 설정</h2>
         <p style={{ fontSize: 12, color: COLORS.textSecondary, lineHeight: 1.65 }}>
-          이 화면은 발행 계정, QR 계정, VPN 프로필을 준비하는 곳입니다. ID/PW는 사이트 계정에 서버 암호화 저장하고,
-          네이버 IP 보안, 2차 인증, 새 환경 확인은 인증 창에서 직접 완료한 뒤 발행 준비 상태로 저장합니다.
+          이 화면은 OpenAI 원고 생성, 발행 계정, 네이버 QR 계정을 준비하는 곳입니다.
+          API 키와 ID/PW는 서버에 암호화 저장하고, 실제 네이버 로그인과 발행은 확장프로그램에서 진행합니다.
         </p>
       </section>
 
       <section style={{ ...cardStyle, padding: 18 }}>
         <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16, marginBottom: 12 }}>
           <div>
-            <h3 style={{ fontSize: 15, fontWeight: 850, color: COLORS.primary, marginBottom: 4 }}>Local Runner 연결</h3>
+            <h3 style={{ fontSize: 15, fontWeight: 850, color: COLORS.primary, marginBottom: 4 }}>OpenAI API 키</h3>
             <p style={{ fontSize: 12, color: COLORS.textSecondary, lineHeight: 1.6 }}>
-            Runner는 계정별 브라우저 세션, 인증 창 열기, 발행창 열기, VPN 명령 계획을 담당합니다. ID/PW는 사이트 계정에 암호화 저장합니다.
+              글 생성은 서버에서 OpenAI API로 처리합니다. 확장프로그램에는 API 키를 넣지 않고, 여기서 저장한 서버 키만 사용합니다.
             </p>
           </div>
-          <StatusBadge value={runnerStatus.state === 'ok' ? '연결됨' : runnerStatus.state === 'fail' ? '오류' : '대기중'} />
+          <StatusBadge value={openAiForm.hasApiKey ? `저장됨 · ${openAiForm.keySource}` : '키 필요'} />
         </div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 8 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(220px, 1.4fr) minmax(150px, .8fr) minmax(130px, .6fr) 150px', gap: 8 }}>
           <input
-            value={settings.runnerUrl}
-            onChange={(e) => saveSettings({ ...settings, runnerUrl: e.target.value })}
-            placeholder="http://127.0.0.1:39271"
+            type="password"
+            value={openAiForm.apiKey}
+            onChange={(e) => setOpenAiForm({ ...openAiForm, apiKey: e.target.value })}
+            placeholder={openAiForm.hasApiKey ? '새 키로 바꿀 때만 입력' : 'OPENAI_API_KEY'}
             style={{ ...inputStyle, marginBottom: 0 }}
           />
-          <button type="button" onClick={testRunner} style={{ ...primaryButtonStyle, marginBottom: 0 }}>
-            연결 테스트
-          </button>
-          <button type="button" onClick={() => downloadStaticAsset(RUNNER_ZIP_PATH, 'naviwrite-runner.zip')} style={{ ...primaryButtonStyle, marginBottom: 0, display: 'grid', placeItems: 'center', background: COLORS.success }}>
-            Runner 다운로드
+          <select
+            value={openAiForm.model}
+            onChange={(e) => setOpenAiForm({ ...openAiForm, model: e.target.value })}
+            style={{ ...inputStyle, marginBottom: 0 }}
+          >
+            <option value="gpt-4.1-mini">gpt-4.1-mini</option>
+            <option value="gpt-4.1">gpt-4.1</option>
+            <option value="gpt-5-mini">gpt-5-mini</option>
+            <option value="gpt-5.4">gpt-5.4</option>
+          </select>
+          <input
+            type="number"
+            min="1"
+            value={openAiForm.monthlyBudgetUsd}
+            onChange={(e) => setOpenAiForm({ ...openAiForm, monthlyBudgetUsd: e.target.value })}
+            placeholder="월 예산 USD"
+            style={{ ...inputStyle, marginBottom: 0 }}
+          />
+          <button type="button" onClick={saveOpenAiSettings} disabled={openAiSaving} style={{ ...primaryButtonStyle, marginBottom: 0 }}>
+            {openAiSaving ? '저장 중' : 'OpenAI 저장'}
           </button>
         </div>
         {runnerStatus.message && (
@@ -4806,8 +4822,8 @@ function OperationsSettingsPanel() {
           </p>
         )}
         <p style={{ marginTop: 8, fontSize: 10, color: COLORS.textMuted, lineHeight: 1.6 }}>
-          설치 방식: Runner ZIP을 풀고 <code>install-startup.cmd</code>를 한 번 실행하면 Windows 로그인 시 자동 실행됩니다.
-          바로 확인하려면 <code>check-runner.cmd</code> 또는 <code>http://127.0.0.1:39271/health</code>를 열어보세요.
+          기존 키가 저장되어 있으면 입력칸은 비워도 됩니다. 새 키를 넣고 저장하면 서버 암호화 값이 교체됩니다.
+          월 예산은 실제 OpenAI 잔액이 아니라 NaviWrite 사용량 추정 기준입니다.
         </p>
       </section>
 
@@ -4852,7 +4868,7 @@ function OperationsSettingsPanel() {
 
         <div style={{ display: 'grid', gap: 14 }}>
           <section style={{ ...cardStyle, padding: 18 }}>
-            <h3 style={{ fontSize: 15, fontWeight: 850, color: COLORS.primary, marginBottom: 12 }}>Naver Search API</h3>
+            <h3 style={{ fontSize: 15, fontWeight: 850, color: COLORS.primary, marginBottom: 12 }}>네이버 검색 API (선택)</h3>
             <input
               value={settings.naverClientId || ''}
               onChange={(e) => saveSettings({ ...settings, naverClientId: e.target.value })}
@@ -4879,26 +4895,13 @@ function OperationsSettingsPanel() {
             <button type="button" onClick={addQr} style={primaryButtonStyle}>QR 계정 추가</button>
             <SettingList items={settings.qrAccounts} onRemove={(id) => removeItem('qrAccounts', id)} meta={(item) => `${item.usedToday}/${item.dailyLimit} · ${item.status}`} />
           </section>
-
-          <section style={{ ...cardStyle, padding: 18 }}>
-            <h3 style={{ fontSize: 15, fontWeight: 850, color: COLORS.primary, marginBottom: 12 }}>VPN 프로필</h3>
-            <input value={vpnForm.label} onChange={(e) => setVpnForm({ ...vpnForm, label: e.target.value })} placeholder="예: 블로그 계정 1 KR" style={inputStyle} />
-            <select value={vpnForm.provider} onChange={(e) => setVpnForm({ ...vpnForm, provider: e.target.value })} style={inputStyle}>
-              <option value="nordvpn">NordVPN CLI</option>
-              <option value="mullvad">Mullvad CLI</option>
-              <option value="manual">수동 전환</option>
-            </select>
-            <input value={vpnForm.target} onChange={(e) => setVpnForm({ ...vpnForm, target: e.target.value })} placeholder="국가/서버 예: South Korea" style={inputStyle} />
-            <button type="button" onClick={addVpn} style={primaryButtonStyle}>VPN 프로필 추가</button>
-            <SettingList items={settings.vpnProfiles} onRemove={(id) => removeItem('vpnProfiles', id)} meta={(item) => `${item.provider} · ${item.target || 'target 없음'} · ${item.mode}`} />
-          </section>
         </div>
       </div>
 
-      <section style={{ ...cardStyle, padding: 16, background: '#fff7ed', borderColor: '#fed7aa' }}>
+      <section style={{ ...cardStyle, padding: 16, background: '#f0f7ff', borderColor: '#c7ddf2' }}>
         <p style={{ fontSize: 12, color: '#9a3412', lineHeight: 1.65 }}>
-          운영 기준: 프로그램 시작 시 Runner 연결 테스트와 세션 체크를 먼저 진행합니다. 최근 로그인 체크가 6시간을 넘었거나 2시간 이상 활동이 없으면
-          해당 계정은 발행 전 재확인을 요구합니다. 저장된 자격증명은 자동 로그인 보조용 준비 단계이며, 실제 발행 자동화는 사용자 확인 흐름으로 붙입니다.
+          운영 기준: 일반 사용자는 확장프로그램만 설치하면 됩니다. 계정 로그인 확인, 글 삽입, 발행 URL 저장은 확장프로그램에서 진행하고,
+          OpenAI API 키와 계정 비밀번호는 사이트 서버에 암호화 저장합니다.
         </p>
       </section>
     </div>
