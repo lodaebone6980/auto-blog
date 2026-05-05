@@ -1990,12 +1990,13 @@ function generateTitleCandidates({ keyword, topic = '', platform = 'blog', categ
     .filter((term) => !cleanKeyword.includes(term));
   const actionBlend = [...new Set([...signalActionTerms, ...actions])].slice(0, 3);
   const keywordPhrases = buildTitleKeywordPhrases({ keyword: cleanKeyword, keywordSignals: cleanSignals, actions: actionBlend });
+  const hasApplyTerm = /신청/.test(cleanKeyword);
   const candidates = [
     ...(policyIntent ? [
-      `${cleanKeyword} 대상 지급일 신청 방법`,
-      `${cleanKeyword} 신청 대상 금액 사용처 정리`,
-      `${cleanKeyword} 신청기간 지급일 확인 방법`,
-      `${cleanKeyword} 정부24 신청 방법 대상 정리`,
+      `${cleanKeyword} 대상 지급일 ${hasApplyTerm ? '정리' : '신청 방법'}`,
+      `${cleanKeyword} ${hasApplyTerm ? '금액 사용처 정리' : '신청 대상 금액 사용처 정리'}`,
+      `${cleanKeyword} ${hasApplyTerm ? '기간 지급일 확인 방법' : '신청기간 지급일 확인 방법'}`,
+      `${cleanKeyword} 정부24 ${hasApplyTerm ? '방법 대상 정리' : '신청 방법 대상 정리'}`,
       `${cleanKeyword} 지역별 대상 기준 확인 방법`,
     ] : []),
     `${subject} ${tail}`,
@@ -2020,6 +2021,7 @@ function generateTitleCandidates({ keyword, topic = '', platform = 'blog', categ
   return [...new Set(candidates.map(compactTitleCandidate).filter((title) => {
     if (!title || !title.includes(cleanKeyword)) return false;
     if (policyIntent && /예매|티켓팅|티켓|유형|결과|가격/.test(title)) return false;
+    if (policyIntent && (title.match(/신청(?!기간)/g) || []).length > 1) return false;
     return title.replace(/\s/g, '').length >= cleanKeyword.replace(/\s/g, '').length + 4;
   }))].slice(0, 12);
 }
