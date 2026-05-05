@@ -2377,7 +2377,11 @@ function RewritePanel() {
   const recommendKeywords = async () => {
     const isDirectMode = generationMode === 'direct';
     const hasSource = !isDirectMode && selectedSourceLinkIds.length > 0;
-    const topic = targetTopic || keywordsText;
+    const directKeywords = keywordsText.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean);
+    const directKeywordInput = directKeywords[0] || '';
+    const topic = isDirectMode
+      ? (directKeywordInput || targetTopic)
+      : (targetTopic || directKeywordInput);
     if (!hasSource && !topic.trim()) {
       setMessage('키워드 추천을 위해 수집 링크를 선택하거나 주제를 입력하세요.');
       return;
@@ -2390,7 +2394,7 @@ function RewritePanel() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         sourceLinkIds: isDirectMode ? [] : selectedSourceLinkIds,
-        sourceText: isDirectMode ? '' : keywordsText,
+        sourceText: isDirectMode ? [targetTopic, directKeywords.slice(1).join('\n')].filter(Boolean).join('\n') : keywordsText,
         topic,
         platform,
         category,
