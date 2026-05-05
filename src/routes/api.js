@@ -16,6 +16,16 @@ const JOB_STATUSES = new Set([
   '오류',
 ]);
 
+const DEFAULT_PUBLISH_STALE_LOCK_MINUTES = Math.max(
+  5,
+  Math.min(240, parseInt(process.env.PUBLISH_STALE_LOCK_MINUTES || '30', 10) || 30)
+);
+
+function normalizeStalePublishMinutes(value) {
+  const minutes = parseInt(value ?? DEFAULT_PUBLISH_STALE_LOCK_MINUTES, 10);
+  return Math.max(5, Math.min(240, Number.isFinite(minutes) ? minutes : DEFAULT_PUBLISH_STALE_LOCK_MINUTES));
+}
+
 function makeNaverQrName(keyword, campaignName) {
   const date = new Date().toISOString().slice(0, 10).replace(/-/g, '');
   const safeKeyword = String(keyword || '키워드').trim().replace(/\s+/g, '_');
@@ -3679,6 +3689,31 @@ async function addJobEvent(jobId, eventType, message, payload = {}) {
   );
 }
 
+async function resetStalePublishingJobs({ tenantId = null, minutes = null, reason = 'timeout' } = {}) {
+  const staleMinutes = normalizeStalePublishMinutes(minutes);
+  const message = `${staleMinutes}분 이상 발행중 상태가 유지되어 자동발행 대기로 복구했습니다.`;
+  const { rows } = await pool.query(
+    `UPDATE content_jobs
+     SET publish_status = '자동발행대기',
+         scheduled_at = NULL,
+         error_message = CASE
+           WHEN error_message IS NULL OR error_message = '' THEN $3
+           ELSE error_message
+         END,
+         updated_at = NOW()
+     WHERE ($1::text IS NULL OR COALESCE(tenant_id, 'owner') = $1)
+       AND publish_status = '발행중'
+       AND published_url IS NULL
+       AND updated_at < NOW() - ($2::int * INTERVAL '1 minute')
+     RETURNING *`,
+    [tenantId, staleMinutes, message]
+  );
+  for (const job of rows) {
+    await addJobEvent(job.id, 'publish_auto_requeued', message, { staleMinutes, reason });
+  }
+  return { count: rows.length, minutes: staleMinutes, jobs: rows };
+}
+
 async function buildAutoPublishSlots({ tenantId, count, spacingMinutes = 120 }) {
   const spacingMs = clampNumber(parseInt(spacingMinutes, 10) || 120, 1, 1440) * 60 * 1000;
   const now = new Date();
@@ -6327,6 +6362,11 @@ router.post('/publish-queue/claim-next', async (req, res) => {
     const platform = req.body?.platform || null;
     const publishAccountId = req.body?.publishAccountId || req.body?.publish_account_id || null;
     const publishAccountLabel = req.body?.publishAccountLabel || req.body?.publish_account_label || null;
+    const staleReset = await resetStalePublishingJobs({
+      tenantId,
+      minutes: req.body?.staleMinutes || req.body?.stale_minutes,
+      reason: 'claim_next',
+    });
     const { rows } = await pool.query(
       `WITH next_job AS (
          SELECT id
@@ -6349,13 +6389,13 @@ router.post('/publish-queue/claim-next', async (req, res) => {
        RETURNING cj.*`,
       [tenantId, platform, publishAccountId, publishAccountLabel]
     );
-    if (rows.length === 0) return res.json({ ok: true, job: null });
+    if (rows.length === 0) return res.json({ ok: true, job: null, staleReset });
     await addJobEvent(rows[0].id, 'publish_claimed', '자동발행 Runner가 작업을 점유했습니다', {
       platform,
       publishAccountId,
       publishAccountLabel,
     });
-    res.json({ ok: true, job: rows[0] });
+    res.json({ ok: true, job: rows[0], staleReset });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -6364,6 +6404,11 @@ router.post('/publish-queue/claim-next', async (req, res) => {
 router.get('/publish-queue', async (req, res) => {
   try {
     const tenantId = tenantIdFromReq(req);
+    await resetStalePublishingJobs({
+      tenantId,
+      minutes: req.query?.staleMinutes || req.query?.stale_minutes,
+      reason: 'queue_list',
+    });
     const limit = Math.min(parseInt(req.query.limit || '120', 10), 300);
     const { status, mode, keyword } = req.query;
     const where = [`COALESCE(cj.tenant_id, 'owner') = $1`];
@@ -6579,6 +6624,32 @@ router.patch('/publish-queue/:id', async (req, res) => {
     );
     await addJobEvent(job.id, 'publish_queue_updated', 'Publish queue settings updated', req.body);
     res.json({ job: rows[0] });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/publish-queue/:id/requeue', async (req, res) => {
+  try {
+    const job = await loadTenantContentJob(req, req.params.id);
+    if (!job) return res.status(404).json({ error: 'Content job not found' });
+    if (['발행완료', 'RSS확인완료', '성과추적중'].includes(job.publish_status) && !req.body?.force) {
+      return res.status(400).json({ error: '이미 발행 완료된 작업은 자동발행 대기로 되돌릴 수 없습니다.' });
+    }
+    const { rows } = await pool.query(
+      `UPDATE content_jobs
+       SET publish_status = '자동발행대기',
+           scheduled_at = NULL,
+           error_message = NULL,
+           updated_at = NOW()
+       WHERE id = $1
+       RETURNING *`,
+      [job.id]
+    );
+    await addJobEvent(job.id, 'publish_manual_requeued', '사용자가 작업을 자동발행 대기로 복구했습니다', {
+      previousStatus: job.publish_status,
+    });
+    res.json({ ok: true, job: rows[0] });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -7224,6 +7295,12 @@ export function startCollectionSchedulers() {
       } catch (err) {
         console.warn('[collections] rss monitor failed:', err.message);
       }
+    }
+    try {
+      const reset = await resetStalePublishingJobs({ tenantId: null, reason: 'scheduler' });
+      if (reset.count > 0) console.log(`[publish] stale jobs requeued: ${reset.count}`);
+    } catch (err) {
+      console.warn('[publish] stale job reset failed:', err.message);
     }
   };
 

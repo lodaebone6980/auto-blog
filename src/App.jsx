@@ -5578,6 +5578,22 @@ function PublishQueuePanel({ embedded = false } = {}) {
     }
   };
 
+  const restoreToWaiting = async (job) => {
+    setWorkingId(job.id);
+    const res = await safeFetch(`${API}/publish-queue/${job.id}/requeue`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    setWorkingId(null);
+    if (res?.job) {
+      setMessage(`#${job.id} 자동발행 대기로 복구했습니다.`);
+      await loadQueue();
+    } else {
+      setMessage(res?.error || '자동발행 대기 복구에 실패했습니다.');
+    }
+  };
+
   const checkRss = async (job) => {
     const draft = drafts[job.id] || {};
     setWorkingId(job.id);
@@ -5638,6 +5654,7 @@ function PublishQueuePanel({ embedded = false } = {}) {
             </h2>
             <p style={{ fontSize: 12, color: COLORS.textSecondary, lineHeight: 1.6 }}>
               발행 생성에서 자동발행 대기로 넘긴 글을 관리합니다. 확장프로그램이 업로드할 계정의 최근 발행 시간을 확인해 즉시/예약 계획을 저장하고, 완료 후 URL과 상태를 다시 기록합니다.
+              30분 이상 발행중으로 멈춘 작업은 서버가 자동으로 자동발행 대기로 복구합니다.
             </p>
           </div>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -5699,6 +5716,7 @@ function PublishQueuePanel({ embedded = false } = {}) {
                   const busy = workingId === job.id;
                   const selectedAccount = accountForJob(job);
                   const canPublishWordPress = selectedAccount?.platform === 'wordpress';
+                  const canRequeue = ['발행중', '발행대기', '예약대기', '오류'].includes(job.publish_status);
                   return (
                     <tr key={job.id} style={{ fontSize: 12, borderBottom: `1px solid ${COLORS.border}`, verticalAlign: 'top' }}>
                       <td style={{ padding: '12px' }}>
@@ -5766,6 +5784,19 @@ function PublishQueuePanel({ embedded = false } = {}) {
                             WP 발행
                           </button>
                           <button type="button" disabled={busy} onClick={() => markPublished(job)} style={smallButtonStyle}>발행 완료</button>
+                          <button
+                            type="button"
+                            disabled={busy || !canRequeue}
+                            onClick={() => restoreToWaiting(job)}
+                            style={{
+                              ...smallButtonStyle,
+                              opacity: canRequeue ? 1 : 0.45,
+                              color: canRequeue ? COLORS.warning : COLORS.textMuted,
+                              borderColor: canRequeue ? COLORS.warning : COLORS.border,
+                            }}
+                          >
+                            대기로 복구
+                          </button>
                           <button type="button" disabled={busy} onClick={() => checkRss(job)} style={smallButtonStyle}>RSS 확인</button>
                           <button type="button" disabled={busy} onClick={() => exportObsidian(job)} style={{ ...smallButtonStyle, background: COLORS.primary, color: 'white', borderColor: COLORS.primary }}>Obsidian</button>
                         </div>
