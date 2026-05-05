@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 
 const API = '/api';
+const EXTENSION_ZIP_PATH = '/downloads/naviwrite-extension.zip';
+const RUNNER_ZIP_PATH = '/downloads/naviwrite-runner.zip';
 
 const COLORS = {
   primary: '#1B3A5C',
@@ -97,6 +99,17 @@ async function safeFetch(url, opts) {
   } catch {
     return null;
   }
+}
+
+function downloadStaticAsset(path, filename) {
+  const url = `${window.location.origin}${path}?v=${Date.now()}`;
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.rel = 'noopener noreferrer';
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
 }
 
 function volumeBandFor(key) {
@@ -344,24 +357,25 @@ function SidebarNav({ groups, activeView, onSelect, onGuideOpen, healthOk }) {
             {healthOk ? '서버 정상' : '서버 확인 중'}
           </span>
         </div>
-        <a
-          href="/downloads/naviwrite-extension.zip"
-          download
+        <button
+          type="button"
+          onClick={() => downloadStaticAsset(EXTENSION_ZIP_PATH, 'naviwrite-extension.zip')}
           style={{
             minHeight: 44,
+            border: 'none',
             borderRadius: 8,
             background: COLORS.accent,
             color: 'white',
-            textDecoration: 'none',
             display: 'grid',
             placeItems: 'center',
             fontSize: 13,
             fontWeight: 900,
+            cursor: 'pointer',
             boxShadow: '0 8px 20px rgba(46,117,182,0.22)',
           }}
         >
           확장프로그램 다운로드
-        </a>
+        </button>
         <p style={{ fontSize: 10, lineHeight: 1.45, color: COLORS.textMuted }}>
           Chrome 개발자 모드에서 압축 해제 후 로드해서 발행 작업과 연결합니다.
         </p>
@@ -3964,15 +3978,15 @@ function OperationsSettingsPanelLegacy() {
           <StatusBadge value="확장 중심" />
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 8 }}>
-          <a href="/downloads/naviwrite-extension.zip" style={{ ...primaryButtonStyle, marginBottom: 0, display: 'grid', placeItems: 'center', textDecoration: 'none' }}>
+          <button type="button" onClick={() => downloadStaticAsset(EXTENSION_ZIP_PATH, 'naviwrite-extension.zip')} style={{ ...primaryButtonStyle, marginBottom: 0, display: 'grid', placeItems: 'center' }}>
             확장프로그램 다운로드
-          </a>
+          </button>
           <button type="button" onClick={() => window.open('https://nid.naver.com/nidlogin.login', '_blank', 'noopener,noreferrer')} style={{ ...primaryButtonStyle, marginBottom: 0, background: COLORS.success }}>
             네이버 로그인 열기
           </button>
-          <a href="/downloads/naviwrite-runner.zip" style={{ ...primaryButtonStyle, marginBottom: 0, display: 'grid', placeItems: 'center', textDecoration: 'none', background: '#64748b' }}>
+          <button type="button" onClick={() => downloadStaticAsset(RUNNER_ZIP_PATH, 'naviwrite-runner.zip')} style={{ ...primaryButtonStyle, marginBottom: 0, display: 'grid', placeItems: 'center', background: '#64748b' }}>
             Runner 선택 다운로드
-          </a>
+          </button>
         </div>
         {runnerStatus.message && (
           <p style={{
@@ -4604,9 +4618,9 @@ function OperationsSettingsPanel() {
           <button type="button" onClick={testRunner} style={{ ...primaryButtonStyle, marginBottom: 0 }}>
             연결 테스트
           </button>
-          <a href="/downloads/naviwrite-runner.zip" style={{ ...primaryButtonStyle, marginBottom: 0, display: 'grid', placeItems: 'center', textDecoration: 'none', background: COLORS.success }}>
+          <button type="button" onClick={() => downloadStaticAsset(RUNNER_ZIP_PATH, 'naviwrite-runner.zip')} style={{ ...primaryButtonStyle, marginBottom: 0, display: 'grid', placeItems: 'center', background: COLORS.success }}>
             Runner 다운로드
-          </a>
+          </button>
         </div>
         {runnerStatus.message && (
           <p style={{
