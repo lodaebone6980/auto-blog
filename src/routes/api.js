@@ -1962,7 +1962,8 @@ function buildTitleKeywordPhrases({ keyword = '', keywordSignals = [], actions =
 
 function generateTitleCandidates({ keyword, topic = '', platform = 'blog', category = '', analyses = [], keywordSignals = [] }) {
   const cleanKeyword = normalizeKeywordValue(keyword);
-  const cleanTopic = normalizeTitleValue(topic);
+  const cleanTopic = normalizeKeywordValue(topic);
+  const policyIntent = isPolicySupportKeyword(`${cleanKeyword} ${cleanTopic}`);
   const cleanKeywordCompact = cleanKeyword.replace(/\s/g, '').toLowerCase();
   const cleanSignals = [...new Set(keywordSignals.map(normalizeKeywordValue).filter((item) => item && item !== cleanKeyword))]
     .filter((item) => item.replace(/\s/g, '').toLowerCase() !== cleanKeywordCompact)
@@ -1990,6 +1991,13 @@ function generateTitleCandidates({ keyword, topic = '', platform = 'blog', categ
   const actionBlend = [...new Set([...signalActionTerms, ...actions])].slice(0, 3);
   const keywordPhrases = buildTitleKeywordPhrases({ keyword: cleanKeyword, keywordSignals: cleanSignals, actions: actionBlend });
   const candidates = [
+    ...(policyIntent ? [
+      `${cleanKeyword} 대상 지급일 신청 방법`,
+      `${cleanKeyword} 신청 대상 금액 사용처 정리`,
+      `${cleanKeyword} 신청기간 지급일 확인 방법`,
+      `${cleanKeyword} 정부24 신청 방법 대상 정리`,
+      `${cleanKeyword} 지역별 대상 기준 확인 방법`,
+    ] : []),
     `${subject} ${tail}`,
     `${cleanKeyword} ${actionBlend.join(' ')} 정리`,
     ...keywordPhrases.map((phrase) => `${cleanKeyword} ${phrase} 정리`),
@@ -2003,8 +2011,7 @@ function generateTitleCandidates({ keyword, topic = '', platform = 'blog', categ
     }),
     `${cleanKeyword} 바로가기 링크 결과 정리`,
     `${cleanKeyword} 대상 기준 신청 방법`,
-    `${cleanKeyword} 일정 예매 가격 확인`,
-    `${cleanKeyword} 후기 주의사항 총정리`,
+    ...(!policyIntent ? [`${cleanKeyword} 일정 예매 가격 확인`, `${cleanKeyword} 후기 주의사항 총정리`] : []),
     `${cleanKeyword} ${category || '정보'} 최신 기준 정리`,
     makeRewriteTitle(cleanKeyword, cleanTopic, platform, { sourceActionTerms: actions }),
     ...sourceTitles.slice(0, 4).map((title) => `${cleanKeyword} ${titleRecommendationActions(title).slice(0, 3).join(' ')} 정리`),
@@ -2012,6 +2019,7 @@ function generateTitleCandidates({ keyword, topic = '', platform = 'blog', categ
 
   return [...new Set(candidates.map(compactTitleCandidate).filter((title) => {
     if (!title || !title.includes(cleanKeyword)) return false;
+    if (policyIntent && /예매|티켓팅|티켓|유형|결과|가격/.test(title)) return false;
     return title.replace(/\s/g, '').length >= cleanKeyword.replace(/\s/g, '').length + 4;
   }))].slice(0, 12);
 }
