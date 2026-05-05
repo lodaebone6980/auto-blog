@@ -464,8 +464,10 @@ async function fetchJobImages(jobId) {
 }
 
 function publishWaitingJobs() {
+  const doneStatuses = ['발행 완료', '발행완료', 'RSS확인완료', '성과추적중'];
   return state.jobs.filter((job) => {
-    return (job.status || '') === '글생성 완료';
+    const body = job.body || job.plain_text || job.plainText || '';
+    return body.trim().length > 0 && !doneStatuses.includes(job.status || job.publish_status || '');
   });
 }
 
@@ -474,9 +476,9 @@ function renderJobList() {
   const jobs = publishWaitingJobs();
   state.selectedJobIds = state.selectedJobIds.map((id) => Number(id)).filter((id) => jobs.some((job) => Number(job.id) === id));
   chrome.storage.local.set({ selectedJobIds: state.selectedJobIds });
-  setText('selectedJobCount', `선택 ${state.selectedJobIds.length}개 / 글생성 완료 ${jobs.length}개`);
+  setText('selectedJobCount', `선택 ${state.selectedJobIds.length}개 / 작성 가능 ${jobs.length}개`);
   if (!jobs.length) {
-    box.textContent = '사이트의 발행 생성 작업 목록에 글생성 완료 작업이 없습니다. 발행 생성에서 글을 먼저 만들어주세요.';
+    box.textContent = '사이트의 발행 생성 작업 목록에 본문이 완성된 작업이 없습니다. 발행 생성에서 글을 먼저 만들어주세요.';
     box.classList.add('muted');
     return;
   }
@@ -529,10 +531,10 @@ function escapeHtml(value) {
 
 async function loadPublishJobs() {
   setStep('claim', 'active', '사이트의 발행 생성 작업 목록을 불러오는 중입니다.');
-  const jobs = await api('/rewrite-jobs?status=글생성 완료&limit=120');
+  const jobs = await api('/rewrite-jobs?limit=120');
   state.jobs = Array.isArray(jobs) ? jobs : [];
   renderJobList();
-  setStep('claim', 'done', `글생성 완료 작업 ${publishWaitingJobs().length}개 확인`);
+  setStep('claim', 'done', `본문 완성 작업 ${publishWaitingJobs().length}개 확인`);
 }
 
 async function claimSelectedJob(jobId) {
@@ -728,7 +730,7 @@ async function openJobTabAndStart() {
   selectTab('job');
   await loadPublishJobs();
   if (!state.selectedJobIds.length) {
-    setText('loginText', '작업 탭에서 글생성 완료 작업을 체크한 뒤 작업 시작을 누르세요.');
+    setText('loginText', '작업 탭에서 본문이 완성된 작업을 체크한 뒤 작업 시작을 누르세요.');
     setStep('claim', 'active', '발행 생성 작업 목록에서 진행할 글을 체크해 주세요.');
     return;
   }
