@@ -5223,6 +5223,9 @@ router.get('/rss-items', async (req, res) => {
       values.push(req.query.status);
       where.push(`rsi.status = $${values.length}`);
     }
+    if (req.query.checkedForPublish === 'true' || req.query.checked_for_publish === 'true') {
+      where.push('rsi.checked_for_publish = TRUE');
+    }
     if (req.query.rssSourceId || req.query.sourceId) {
       const sourceId = parseInt(req.query.rssSourceId || req.query.sourceId, 10);
       if (Number.isFinite(sourceId)) {

@@ -1618,6 +1618,7 @@ function SourceCollectionPanel({ onOpenRewrite }) {
             </table>
           )}
         </div>
+
       </section>
 
       <section style={sectionStyle}>
@@ -1836,6 +1837,7 @@ function RssDetectionPanel({ onOpenRewrite }) {
       }),
     })));
     localStorage.setItem('naviwrite.rewrite.selectedRssItemIds', JSON.stringify(selectedRssItems.map((item) => item.id)));
+    localStorage.setItem('naviwrite.rewrite.openMode', 'benchmark');
     setPreparing(false);
     setMessage(`RSS 글 ${selectedRssItems.length}개를 발행 생성 대기로 넘겼습니다.`);
     await loadRssData();
@@ -2270,11 +2272,23 @@ function BenchmarkSettingsPanel() {
 
 function RewritePanel() {
   const [links, setLinks] = useState([]);
+  const [rssItems, setRssItems] = useState([]);
   const [jobs, setJobs] = useState([]);
-  const [generationMode, setGenerationMode] = useState('direct');
+  const [generationMode, setGenerationMode] = useState(() => {
+    const requestedMode = localStorage.getItem('naviwrite.rewrite.openMode');
+    return ['direct', 'benchmark'].includes(requestedMode) ? requestedMode : 'direct';
+  });
   const [selectedSourceLinkIds, setSelectedSourceLinkIds] = useState(() => {
     try {
       const saved = JSON.parse(localStorage.getItem('naviwrite.rewrite.selectedSourceLinkIds') || '[]');
+      return Array.isArray(saved) ? saved : [];
+    } catch {
+      return [];
+    }
+  });
+  const [selectedRssItemIds, setSelectedRssItemIds] = useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem('naviwrite.rewrite.selectedRssItemIds') || '[]');
       return Array.isArray(saved) ? saved : [];
     } catch {
       return [];
@@ -2322,17 +2336,20 @@ function RewritePanel() {
 
   const loadRewriteData = useCallback(async () => {
     setLoading(true);
-    const [linkRes, jobRes] = await Promise.all([
+    const [linkRes, jobRes, rssRes] = await Promise.all([
       safeFetch(`${API}/collections/links?limit=150`),
       safeFetch(`${API}/rewrite-jobs?limit=80`),
+      safeFetch(`${API}/rss-items?checkedForPublish=true&limit=150`),
     ]);
     setLoading(false);
     if (Array.isArray(linkRes)) setLinks(linkRes);
     if (Array.isArray(jobRes)) setJobs(jobRes);
+    if (Array.isArray(rssRes)) setRssItems(rssRes);
   }, []);
 
   useEffect(() => {
     loadRewriteData();
+    localStorage.removeItem('naviwrite.rewrite.openMode');
   }, [loadRewriteData]);
 
   useEffect(() => {
@@ -2350,6 +2367,10 @@ function RewritePanel() {
   }, [selectedSourceLinkIds]);
 
   useEffect(() => {
+    localStorage.setItem('naviwrite.rewrite.selectedRssItemIds', JSON.stringify(selectedRssItemIds));
+  }, [selectedRssItemIds]);
+
+  useEffect(() => {
     localStorage.setItem('naviwrite.rewrite.settings', JSON.stringify(rewriteSettings));
   }, [rewriteSettings]);
 
@@ -2358,12 +2379,23 @@ function RewritePanel() {
     [links]
   );
 
+  const rssReadyItems = useMemo(
+    () => rssItems.filter((item) => item.checked_for_publish && !item.rewrite_job_id),
+    [rssItems]
+  );
+
   const selectedSources = useMemo(
     () => collectedLinks.filter((link) => selectedSourceLinkIds.includes(link.id)),
     [collectedLinks, selectedSourceLinkIds]
   );
 
+  const selectedRssItems = useMemo(
+    () => rssReadyItems.filter((item) => selectedRssItemIds.includes(item.id)),
+    [rssReadyItems, selectedRssItemIds]
+  );
+
   const allSourcesSelected = collectedLinks.length > 0 && collectedLinks.every((link) => selectedSourceLinkIds.includes(link.id));
+  const allRssItemsSelected = rssReadyItems.length > 0 && rssReadyItems.every((item) => selectedRssItemIds.includes(item.id));
 
   const selectedRewriteLinks = useMemo(
     () => selectedSources.filter((link) => link.rewrite_job_id),
@@ -2401,8 +2433,9 @@ function RewritePanel() {
     () => keywordsText.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean).length,
     [keywordsText]
   );
-  const rewriteJobCount = generationMode === 'direct' ? directKeywordCount : selectedSources.length;
-  const canCreateGenerationJobs = generationMode === 'direct' ? directKeywordCount > 0 : selectedSources.length > 0;
+  const benchmarkSelectionCount = selectedSources.length + selectedRssItems.length;
+  const rewriteJobCount = generationMode === 'direct' ? directKeywordCount : benchmarkSelectionCount;
+  const canCreateGenerationJobs = generationMode === 'direct' ? directKeywordCount > 0 : benchmarkSelectionCount > 0;
   const selectedCostCount = selectedCompletedRewriteJobs.length || rewriteJobCount || 1;
 
   useEffect(() => {
@@ -2413,7 +2446,7 @@ function RewritePanel() {
       body: JSON.stringify({
         count: selectedCostCount,
         targetCharCount: rewriteSettings.targetCharCount,
-        sourceCount: generationMode === 'direct' ? 0 : selectedSources.length,
+        sourceCount: generationMode === 'direct' ? 0 : benchmarkSelectionCount,
         sectionCount: rewriteSettings.sectionCount,
         model: rewriteSettings.openaiModel,
       }),
@@ -2421,7 +2454,7 @@ function RewritePanel() {
       if (alive && res?.estimate) setOpenAiEstimate(res);
     });
     return () => { alive = false; };
-  }, [selectedCostCount, rewriteSettings.targetCharCount, rewriteSettings.sectionCount, rewriteSettings.openaiModel, generationMode, selectedSources.length]);
+  }, [selectedCostCount, rewriteSettings.targetCharCount, rewriteSettings.sectionCount, rewriteSettings.openaiModel, generationMode, benchmarkSelectionCount]);
 
   const toggleSource = (id) => {
     setSelectedSourceLinkIds((prev) => (
@@ -2431,6 +2464,16 @@ function RewritePanel() {
 
   const toggleAllSources = () => {
     setSelectedSourceLinkIds(allSourcesSelected ? [] : collectedLinks.map((link) => link.id));
+  };
+
+  const toggleRssItem = (id) => {
+    setSelectedRssItemIds((prev) => (
+      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
+    ));
+  };
+
+  const toggleAllRssItems = () => {
+    setSelectedRssItemIds(allRssItemsSelected ? [] : rssReadyItems.map((item) => item.id));
   };
 
   const toggleRewriteJob = (id) => {
@@ -2464,6 +2507,22 @@ function RewritePanel() {
       await loadRewriteData();
     } else {
       setMessage(res?.error || '수정 메인키워드 저장에 실패했습니다.');
+    }
+  };
+
+  const saveRssKeyword = async (item, selectedKeyword) => {
+    const value = selectedKeyword.trim();
+    if (!value || value === (item.selected_keyword || item.main_keyword || '')) return;
+    const res = await safeFetch(`${API}/rss-items/${item.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ selectedKeyword: value, checkedForPublish: true }),
+    });
+    if (res?.ok) {
+      setMessage(`RSS 선택 키워드 저장: ${value}`);
+      await loadRewriteData();
+    } else {
+      setMessage(res?.error || 'RSS 선택 키워드 저장에 실패했습니다.');
     }
   };
 
@@ -2606,45 +2665,80 @@ function RewritePanel() {
     const isDirectMode = generationMode === 'direct';
     const directKeywordsText = isDirectMode ? keywordsText.trim() : '';
     if (rewriteJobCount === 0) {
-      setMessage(isDirectMode ? '직접 키워드 메뉴에서 발행 생성할 메인키워드를 입력해 주세요.' : '벤치마킹 된 블로그 메뉴에서 수집완료 링크를 1개 이상 선택해 주세요.');
+      setMessage(isDirectMode ? '직접 키워드 메뉴에서 발행 생성할 메인키워드를 입력해 주세요.' : '벤치마킹 된 블로그 메뉴에서 수집완료 링크나 RSS 대기 글을 1개 이상 선택해 주세요.');
       return;
     }
     if (isDirectMode && !directKeywordsText) {
       setMessage('직접 키워드는 행별 기준 없이 입력한 키워드로 새 글을 만듭니다.');
       return;
     }
-    if (!isDirectMode && selectedSourceLinkIds.length === 0) {
-      setMessage('수집글 기준 생성은 패턴으로 삼을 수집완료 링크를 1개 이상 선택해야 합니다.');
+    if (!isDirectMode && benchmarkSelectionCount === 0) {
+      setMessage('수집글/RSS 기준 생성은 패턴으로 삼을 항목을 1개 이상 선택해야 합니다.');
       return;
     }
 
     setCreating(true);
     setMessage(`발행 생성 작업 ${rewriteJobCount}개를 생성 중입니다.`);
-    const res = await safeFetch(`${API}/rewrite-jobs`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        keywordsText: directKeywordsText,
-        sourceRowMode: !isDirectMode,
-        sourceLinkIds: isDirectMode ? [] : selectedSourceLinkIds,
-        targetTopic,
-        platform,
-        category,
-        useNaverQr: true,
-        useAiImages: true,
-        customTitle,
-        rewriteSettings,
-        concurrency: 3,
-      }),
-    });
+    const createdCounts = [];
+    const errors = [];
+
+    if (isDirectMode || selectedSourceLinkIds.length > 0) {
+      const res = await safeFetch(`${API}/rewrite-jobs`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          keywordsText: directKeywordsText,
+          sourceRowMode: !isDirectMode,
+          sourceLinkIds: isDirectMode ? [] : selectedSourceLinkIds,
+          targetTopic,
+          platform,
+          category,
+          useNaverQr: true,
+          useAiImages: true,
+          customTitle,
+          rewriteSettings,
+          concurrency: 3,
+        }),
+      });
+      if (res?.ok) {
+        createdCounts.push(Number(res.created || 0));
+      } else {
+        errors.push(res?.error || '수집글 기준 발행 생성에 실패했습니다.');
+      }
+    }
+
+    if (!isDirectMode && selectedRssItems.length > 0) {
+      const res = await safeFetch(`${API}/rss-items/to-rewrite-jobs`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          itemIds: selectedRssItems.map((item) => item.id),
+          useNaverQr: true,
+          useAiImages: true,
+          customTitle,
+          rewriteSettings,
+        }),
+      });
+      if (res?.ok) {
+        createdCounts.push(Number(res.created || 0));
+        setSelectedRssItemIds((prev) => prev.filter((id) => !selectedRssItems.some((item) => item.id === id)));
+      } else {
+        errors.push(res?.error || 'RSS 기준 발행 생성에 실패했습니다.');
+      }
+    }
+
     setCreating(false);
 
-    if (res?.ok) {
-      setMessage(`발행 생성 완료 · 생성 ${res.created}개`);
+    const createdTotal = createdCounts.reduce((sum, value) => sum + value, 0);
+    if (createdTotal > 0 && errors.length === 0) {
+      setMessage(`발행 생성 완료 · 생성 ${createdTotal}개`);
       setKeywordsText('');
       await loadRewriteData();
+    } else if (createdTotal > 0) {
+      setMessage(`일부 생성 완료 · 생성 ${createdTotal}개 · ${errors.join(' / ')}`);
+      await loadRewriteData();
     } else {
-      setMessage(res?.error || '발행 생성 작업 생성에 실패했습니다.');
+      setMessage(errors.join(' / ') || '발행 생성 작업 생성에 실패했습니다.');
     }
   };
 
@@ -3452,6 +3546,117 @@ function RewritePanel() {
                 ))}
               </tbody>
             </table>
+          )}
+        </div>
+
+        <div style={{ padding: '14px 18px', borderTop: `1px solid ${COLORS.border}`, background: '#fbfdff' }}>
+          <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', marginBottom: 10 }}>
+            <div>
+              <h4 style={{ fontSize: 13, fontWeight: 900, color: COLORS.primary, marginBottom: 3 }}>RSS 발행 생성 대기</h4>
+              <p style={{ fontSize: 11, color: COLORS.textSecondary, lineHeight: 1.55 }}>
+                RSS 관리에서 체크해 넘긴 글입니다. 여기서 키워드를 한 번 더 확인하고 같은 버튼으로 발행 생성 작업을 만듭니다.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={toggleAllRssItems}
+              disabled={rssReadyItems.length === 0}
+              style={{ height: 30, padding: '0 12px', borderRadius: 8, border: `1px solid ${COLORS.border}`, background: 'white', color: COLORS.primary, fontSize: 11, fontWeight: 850, cursor: rssReadyItems.length === 0 ? 'not-allowed' : 'pointer' }}
+            >
+              {allRssItemsSelected ? 'RSS 전체 해제' : 'RSS 전체 선택'}
+            </button>
+          </div>
+          {rssReadyItems.length === 0 ? (
+            <div style={{ padding: 18, border: `1px dashed ${COLORS.border}`, borderRadius: 10, textAlign: 'center', color: COLORS.textMuted, fontSize: 12, background: 'white' }}>
+              RSS 관리에서 글을 체크한 뒤 `선택 RSS 발행 생성 준비`를 누르면 여기에 표시됩니다.
+            </div>
+          ) : (
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1120 }}>
+                <thead>
+                  <tr style={{ background: '#f8fafc', color: COLORS.textSecondary, fontSize: 11, textAlign: 'left' }}>
+                    {['선택', '상태', '블로그 / 제목', '선택 KW', '검색량', '발행일', 'URL'].map((head) => (
+                      <th key={head} style={{ padding: '9px 10px', borderBottom: `1px solid ${COLORS.border}` }}>
+                        {head === '선택' ? (
+                          <input
+                            type="checkbox"
+                            checked={allRssItemsSelected}
+                            onChange={toggleAllRssItems}
+                            aria-label="RSS 발행 생성 대기 전체 선택 또는 해제"
+                          />
+                        ) : head}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {rssReadyItems.map((item) => {
+                    const sourceLabel = rssSourceLabel(item);
+                    const sourceBadge = rssSourceBadgeStyle(sourceLabel);
+                    const band = volumeBandFor(item.volume_band || 'unknown');
+                    return (
+                      <tr key={`rss-ready-${item.id}`} style={{ fontSize: 12, borderBottom: `1px solid ${COLORS.border}` }}>
+                        <td style={{ padding: '9px 10px' }}>
+                          <input
+                            type="checkbox"
+                            checked={selectedRssItemIds.includes(item.id)}
+                            onChange={() => toggleRssItem(item.id)}
+                            aria-label="RSS 글 기준 발행 생성 선택"
+                          />
+                        </td>
+                        <td style={{ padding: '9px 10px', minWidth: 120 }}><StatusBadge value={item.status || '발행 생성 대기'} /></td>
+                        <td style={{ padding: '9px 10px', maxWidth: 380 }}>
+                          <div style={{ display: 'grid', gridTemplateColumns: 'auto minmax(0, 1fr)', alignItems: 'center', gap: 8 }}>
+                            <span title={sourceLabel} style={{
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              maxWidth: 112,
+                              height: 24,
+                              padding: '0 9px',
+                              borderRadius: 999,
+                              background: sourceBadge.background,
+                              color: sourceBadge.color,
+                              border: `1px solid ${sourceBadge.border}`,
+                              fontSize: 10,
+                              fontWeight: 900,
+                              whiteSpace: 'nowrap',
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                            }}>
+                              {sourceLabel}
+                            </span>
+                            <p style={{ minWidth: 0, fontWeight: 850, color: COLORS.textPrimary, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                              {item.title || '-'}
+                            </p>
+                          </div>
+                        </td>
+                        <td style={{ padding: '9px 10px', minWidth: 150 }}>
+                          <input
+                            defaultValue={item.selected_keyword || item.main_keyword || ''}
+                            onBlur={(e) => saveRssKeyword(item, e.target.value)}
+                            style={{ width: 138, height: 30, border: `1px solid ${COLORS.border}`, borderRadius: 7, padding: '0 8px', fontSize: 11, fontWeight: 850 }}
+                          />
+                        </td>
+                        <td style={{ padding: '9px 10px' }}>
+                          <span style={{ display: 'inline-flex', alignItems: 'center', height: 24, padding: '0 8px', borderRadius: 999, background: band.color, color: band.textColor, fontSize: 10, fontWeight: 900 }}>
+                            {item.search_volume != null ? Number(item.search_volume).toLocaleString() : formatSearchVolume(item.search_volume)}
+                          </span>
+                        </td>
+                        <td style={{ padding: '9px 10px', color: COLORS.textSecondary, whiteSpace: 'nowrap', fontSize: 11 }}>
+                          {formatDateTime(item.published_at || item.detected_at)}
+                        </td>
+                        <td style={{ padding: '9px 10px', maxWidth: 280 }}>
+                          <a href={item.link} target="_blank" rel="noreferrer" style={{ display: 'block', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                            {item.link}
+                          </a>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
           )}
         </div>
       </section>
