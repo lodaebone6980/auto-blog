@@ -3662,6 +3662,7 @@ router.get('/views/status', async (req, res) => {
     const platform = req.query.platform === 'cafe' ? 'cafe' : 'blog';
     const limit = Math.min(parseInt(req.query.limit || '100', 10), 300);
     const days = Math.min(Math.max(parseInt(req.query.days || '30', 10) || 30, 1), 90);
+    const tenantId = tenantIdFromReq(req);
 
     if (platform === 'cafe') {
       const { rows } = await pool.query(
@@ -3764,17 +3765,33 @@ router.get('/views/status', async (req, res) => {
       )
       : { rows: [] };
     const closedDailyViews = rows.reduce((sum, item) => sum + Number(item.closed_daily_view_count || 0), 0);
+    const dailyPublishByBlog = await pool.query(
+      `SELECT COALESCE(NULLIF(publish_account_label, ''), NULLIF(publish_account_id::text, ''), '미지정') AS blog_label,
+              COALESCE(publish_account_id::text, '') AS publish_account_id,
+              COUNT(*)::int AS published_count
+       FROM content_jobs
+       WHERE COALESCE(tenant_id, 'owner') = $1
+         AND COALESCE(publish_account_platform, platform, 'blog') = 'blog'
+         AND publish_status IN ('발행완료', 'RSS확인완료', '성과추적중')
+         AND published_at IS NOT NULL
+         AND (published_at AT TIME ZONE 'Asia/Seoul')::date = $2::date
+       GROUP BY 1, 2
+       ORDER BY published_count DESC, blog_label ASC`,
+      [tenantId, kstDateString()]
+    );
     return res.json({
       platform,
       items: rows,
       history: history.rows,
       perBlogHistory: perBlogHistory.rows,
+      dailyPublishByBlog: dailyPublishByBlog.rows,
       stats: {
         total: rows.length,
         realtimeTotalViews: rows.reduce((sum, item) => sum + Number(item.last_total_view_count || item.total_view_count || 0), 0),
         todayCurrentViews: rows.reduce((sum, item) => sum + Number(item.last_today_view_count || item.today_view_count || 0), 0),
         closedDailyViews,
         dailyViews: closedDailyViews,
+        todayPublishedPosts: dailyPublishByBlog.rows.reduce((sum, item) => sum + Number(item.published_count || 0), 0),
       },
     });
   } catch (err) {
@@ -4072,7 +4089,7 @@ async function checkRssSourceById(sourceId, options = {}) {
 async function checkDueRssSources({ maxSources = 12, limit = 20 } = {}) {
   const settings = await getAppSetting('benchmark_settings', { rssContinuousEnabled: true });
   if (settings.rssContinuousEnabled === false) return [];
-  const intervalMinutes = clampNumber(parseInt(process.env.RSS_CHECK_INTERVAL_MINUTES || '30', 10) || 30, 5, 1440);
+  const intervalMinutes = clampNumber(parseInt(process.env.RSS_CHECK_INTERVAL_MINUTES || '60', 10) || 60, 5, 1440);
   const { rows: sources } = await pool.query(
     `SELECT *
      FROM rss_sources
@@ -5632,7 +5649,7 @@ export function startCollectionSchedulers() {
         console.warn('[collections] daily view snapshot failed:', err.message);
       }
     }
-    const rssIntervalMs = clampNumber(parseInt(process.env.RSS_CHECK_INTERVAL_MINUTES || '30', 10) || 30, 5, 1440) * 60 * 1000;
+    const rssIntervalMs = clampNumber(parseInt(process.env.RSS_CHECK_INTERVAL_MINUTES || '60', 10) || 60, 5, 1440) * 60 * 1000;
     if (Date.now() - lastRssMonitorAt >= rssIntervalMs) {
       lastRssMonitorAt = Date.now();
       try {

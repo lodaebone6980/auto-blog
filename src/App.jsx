@@ -1753,9 +1753,9 @@ function RssDetectionPanel({ onOpenRewrite }) {
     <section style={{ ...cardStyle, padding: 18 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap', marginBottom: 12 }}>
         <div>
-          <h3 style={{ fontSize: 15, fontWeight: 850, color: COLORS.primary, marginBottom: 4 }}>RSS 감지 키워드 검토</h3>
+          <h3 style={{ fontSize: 15, fontWeight: 850, color: COLORS.primary, marginBottom: 4 }}>RSS 관리</h3>
           <p style={{ fontSize: 11, color: COLORS.textSecondary, lineHeight: 1.6 }}>
-            블로그/워드프레스 RSS 새 글을 감지하고 기간별 글, 메인키워드, 자동완성어, 검색량 밴드를 검토합니다.
+            벤치마킹 RSS 소스를 등록하고 각 블로그별 지속 감지 ON/OFF, 새 글 키워드, 자동완성어, 검색량 밴드를 함께 관리합니다.
           </p>
         </div>
         <button
@@ -1776,6 +1776,12 @@ function RssDetectionPanel({ onOpenRewrite }) {
         >
           {importingBlogs ? '동기화 중' : '수집 블로그 RSS 가져오기'}
         </button>
+      </div>
+
+      <div style={{ padding: 10, borderRadius: 10, border: `1px solid ${COLORS.border}`, background: '#f8fafc', marginBottom: 10 }}>
+        <p style={{ fontSize: 11, color: COLORS.textSecondary, lineHeight: 1.55 }}>
+          기본 자동 감지는 1시간마다 실행합니다. 발행량이 적은 블로그는 4~12시간 간격으로 낮춰도 되고, 하루 10개 이상 올라오는 블로그만 1시간 감지가 유리합니다.
+        </p>
       </div>
 
       <div style={{ display: 'grid', gap: 8, marginBottom: 10 }}>
@@ -2150,6 +2156,7 @@ function RewritePanel() {
   const [links, setLinks] = useState([]);
   const [jobs, setJobs] = useState([]);
   const [rssItems, setRssItems] = useState([]);
+  const [generationMode, setGenerationMode] = useState('direct');
   const [selectedRssItemIds, setSelectedRssItemIds] = useState(() => {
     try {
       const saved = JSON.parse(localStorage.getItem('naviwrite.rewrite.selectedRssItemIds') || '[]');
@@ -2284,12 +2291,12 @@ function RewritePanel() {
   );
 
   const effectiveKeywordsText = keywordsText.trim() || derivedSourceKeywords.join('\n');
-  const keywordCount = useMemo(
-    () => effectiveKeywordsText.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean).length,
-    [effectiveKeywordsText]
+  const directKeywordCount = useMemo(
+    () => keywordsText.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean).length,
+    [keywordsText]
   );
-  const rewriteJobCount = keywordsText.trim() ? keywordCount : selectedSources.length;
-  const canCreateGenerationJobs = keywordCount > 0 || selectedSources.length > 0;
+  const rewriteJobCount = generationMode === 'direct' ? directKeywordCount : selectedSources.length;
+  const canCreateGenerationJobs = generationMode === 'direct' ? directKeywordCount > 0 : selectedSources.length > 0;
 
   const toggleSource = (id) => {
     setSelectedSourceLinkIds((prev) => (
@@ -2470,11 +2477,17 @@ function RewritePanel() {
   };
 
   const createRewriteJobs = async () => {
+    const isDirectMode = generationMode === 'direct';
+    const directKeywordsText = isDirectMode ? keywordsText.trim() : '';
     if (rewriteJobCount === 0) {
-      setMessage('발행 생성할 메인키워드를 입력하거나 메인키워드가 잡힌 수집완료 링크를 선택해 주세요.');
+      setMessage(isDirectMode ? '직접 키워드 메뉴에서 발행 생성할 메인키워드를 입력해 주세요.' : '벤치마킹 된 블로그 메뉴에서 수집완료 링크를 1개 이상 선택해 주세요.');
       return;
     }
-    if (!keywordsText.trim() && selectedSourceLinkIds.length === 0) {
+    if (isDirectMode && !directKeywordsText) {
+      setMessage('직접 키워드는 행별 기준 없이 입력한 키워드로 새 글을 만듭니다.');
+      return;
+    }
+    if (!isDirectMode && selectedSourceLinkIds.length === 0) {
       setMessage('수집글 기준 생성은 패턴으로 삼을 수집완료 링크를 1개 이상 선택해야 합니다.');
       return;
     }
@@ -2485,9 +2498,9 @@ function RewritePanel() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        keywordsText: keywordsText.trim() ? keywordsText : '',
-        sourceRowMode: !keywordsText.trim(),
-        sourceLinkIds: keywordsText.trim() ? [] : selectedSourceLinkIds,
+        keywordsText: directKeywordsText,
+        sourceRowMode: !isDirectMode,
+        sourceLinkIds: isDirectMode ? [] : selectedSourceLinkIds,
         targetTopic,
         platform,
         category,
@@ -2646,7 +2659,35 @@ function RewritePanel() {
           </button>
         </div>
 
-        <details style={{ marginTop: 16, border: `1px solid ${COLORS.border}`, borderRadius: 12, padding: 14, background: '#f8fafc' }}>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 16 }}>
+          {[
+            ['direct', '직접 키워드', '키워드만 넣고 소제목·인용구·이미지 스킬로 새 글 생성'],
+            ['benchmark', '벤치마킹 된 블로그', '수집/RSS 글의 패턴만 참고해 행별 재구성'],
+          ].map(([key, label, caption]) => (
+            <button
+              key={key}
+              type="button"
+              onClick={() => setGenerationMode(key)}
+              style={{
+                minHeight: 42,
+                padding: '7px 12px',
+                borderRadius: 10,
+                border: `1px solid ${generationMode === key ? COLORS.primary : COLORS.border}`,
+                background: generationMode === key ? COLORS.primary : 'white',
+                color: generationMode === key ? 'white' : COLORS.textPrimary,
+                fontSize: 12,
+                fontWeight: 900,
+                cursor: 'pointer',
+                textAlign: 'left',
+              }}
+            >
+              <span style={{ display: 'block' }}>{label}</span>
+              <span style={{ display: 'block', marginTop: 2, fontSize: 10, fontWeight: 700, color: generationMode === key ? 'rgba(255,255,255,.82)' : COLORS.textMuted }}>{caption}</span>
+            </button>
+          ))}
+        </div>
+
+        <details open={generationMode === 'direct'} style={{ marginTop: 16, border: `1px solid ${COLORS.border}`, borderRadius: 12, padding: 14, background: '#f8fafc', display: generationMode === 'direct' ? 'block' : 'none' }}>
           <summary style={{ cursor: 'pointer', fontSize: 13, fontWeight: 900, color: COLORS.primary }}>
             직접 키워드로 새 글 만들기
           </summary>
@@ -2743,7 +2784,7 @@ function RewritePanel() {
           </div>
         </details>
 
-        {keywordRecommendations?.candidates?.length > 0 && (
+        {generationMode === 'direct' && keywordRecommendations?.candidates?.length > 0 && (
           <div style={{
             marginTop: 14,
             padding: 14,
@@ -2813,7 +2854,7 @@ function RewritePanel() {
           </div>
         )}
 
-        {titleRecommendations?.candidates?.length > 0 && (
+        {generationMode === 'direct' && titleRecommendations?.candidates?.length > 0 && (
           <div style={{
             marginTop: 14,
             padding: 14,
@@ -2878,6 +2919,7 @@ function RewritePanel() {
         )}
 
         <div style={{
+          display: generationMode === 'benchmark' ? 'block' : 'none',
           marginTop: 14,
           padding: 14,
           border: `1px solid ${COLORS.border}`,
@@ -3114,7 +3156,7 @@ function RewritePanel() {
         </div>
       </section>
 
-      <section style={sectionStyle}>
+      <section style={{ ...sectionStyle, display: generationMode === 'benchmark' ? 'block' : 'none' }}>
         <div style={{ padding: '14px 18px', borderBottom: `1px solid ${COLORS.border}`, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
           <div style={{ marginRight: 'auto' }}>
             <h3 style={{ fontSize: 15, fontWeight: 850, color: COLORS.primary }}>수집 글 기준 발행 생성</h3>
@@ -3454,6 +3496,7 @@ function ViewStatusPanel() {
   const stats = data.stats || {};
   const history = Array.isArray(data.history) ? data.history : [];
   const perBlogHistory = Array.isArray(data.perBlogHistory) ? data.perBlogHistory : [];
+  const dailyPublishByBlog = Array.isArray(data.dailyPublishByBlog) ? data.dailyPublishByBlog : [];
   const blogLineChartData = useMemo(() => {
     const palette = [COLORS.primary, COLORS.success, COLORS.accent, COLORS.warning, '#6366f1', '#14b8a6', '#f97316', '#8b5cf6'];
     if (perBlogHistory.length === 0 && history.length > 0) {
@@ -3559,6 +3602,7 @@ function ViewStatusPanel() {
               ['저장 블로그', stats.total || 0, COLORS.primary],
               ['최근 마감 1일 조회', Number(stats.closedDailyViews || stats.dailyViews || 0).toLocaleString(), COLORS.success],
               ['오늘 현재 조회', Number(stats.todayCurrentViews || 0).toLocaleString(), COLORS.accent],
+              ['오늘 발행 글', Number(stats.todayPublishedPosts || 0).toLocaleString(), COLORS.warning],
               ['현재 전체 조회', Number(stats.realtimeTotalViews || 0).toLocaleString(), COLORS.textPrimary],
             ]
           : [
@@ -3573,6 +3617,40 @@ function ViewStatusPanel() {
           </div>
         ))}
       </div>
+
+      {platform === 'blog' && (
+        <section style={{ ...cardStyle, padding: 16 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 10 }}>
+            <div>
+              <h3 style={{ fontSize: 15, fontWeight: 850, color: COLORS.primary }}>오늘 블로그별 발행 수</h3>
+              <p style={{ marginTop: 4, fontSize: 11, color: COLORS.textSecondary }}>
+                발행완료/RSS확인완료로 저장된 글을 계정 슬롯 기준으로 집계합니다.
+              </p>
+            </div>
+            <span style={{ fontSize: 12, fontWeight: 900, color: COLORS.warning }}>
+              총 {Number(stats.todayPublishedPosts || 0).toLocaleString()}개
+            </span>
+          </div>
+          {dailyPublishByBlog.length === 0 ? (
+            <div style={{ padding: 14, border: `1px dashed ${COLORS.border}`, borderRadius: 10, color: COLORS.textMuted, fontSize: 12, textAlign: 'center' }}>
+              오늘 발행완료로 기록된 블로그 글이 아직 없습니다.
+            </div>
+          ) : (
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              {dailyPublishByBlog.map((row) => (
+                <div key={`${row.publish_account_id || row.blog_label}`} style={{ minWidth: 150, padding: '10px 12px', borderRadius: 10, border: `1px solid ${COLORS.border}`, background: '#f8fafc' }}>
+                  <p style={{ fontSize: 12, fontWeight: 900, color: COLORS.textPrimary, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {row.blog_label || '미지정'}
+                  </p>
+                  <p style={{ marginTop: 6, fontSize: 22, lineHeight: 1, fontWeight: 900, color: COLORS.warning }}>
+                    {Number(row.published_count || 0).toLocaleString()}개
+                  </p>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+      )}
 
       {platform === 'blog' && (
         <LineChart
@@ -5194,8 +5272,8 @@ export default function App() {
       label: '작업 흐름',
       items: [
         { key: 'collect', view: 'collect', label: '수집', caption: '링크 · 키워드 소스', badge: navBadge(stats?.sourceLinks || stats?.collectedLinks) },
-        { key: 'benchmark', view: 'benchmark', label: '벤치마킹', caption: '패턴 소스 · 기준값' },
-        { key: 'rss', view: 'rss', label: '키워드 검토', caption: 'RSS · 검색량 · 제목 후보' },
+        { key: 'benchmark', view: 'benchmark', label: '벤치마킹 기준', caption: '패턴 소스 · 작성 규격' },
+        { key: 'rss', view: 'rss', label: 'RSS 관리', caption: '소스 지속감지 · 검색량 · 키워드' },
         { key: 'rewrite', view: 'rewrite', label: '발행 생성', caption: 'SEO · AEO · GEO · 이미지', badge: navBadge(contentJobs.length) },
         { key: 'publish', view: 'publish', label: '발행 큐', caption: '예약 · 계정 · 자동발행', badge: navBadge(stats?.publishQueuePending || stats?.queuedPublishJobs) },
         { key: 'views', view: 'views', label: '성과', caption: '조회수 · 댓글 · 공감', badge: navBadge(posts.length) },
