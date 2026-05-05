@@ -2244,10 +2244,17 @@ function makeTemplateImage({ keyword, section, subtitle, index, platform }) {
   const palette = platform === 'cafe' ? palettes[(seed + 1) % palettes.length] : palettes[seed % palettes.length];
   const { bg, primary, accent, text } = palette;
   const layout = index % 3;
-  const badge = index === 0 ? '대표' : `SEC ${String(index).padStart(2, '0')}`;
+  const cornerLabel = index === 0 ? 'COVER' : `NAVI ${String(index).padStart(2, '0')}`;
   const safeKeyword = escapeSvgText(String(keyword || '').slice(0, 16));
   const safeSection = escapeSvgText(String(section || '').slice(0, 18));
   const safeSubtitle = escapeSvgText(String(subtitle || '핵심만 정리').slice(0, 20));
+  const safeCornerLabel = escapeSvgText(cornerLabel);
+  const cornerSvg = `
+    <path d="M0 0 H108 L0 108 Z" fill="${accent}" opacity="0.88"/>
+    <path d="M0 0 H76 L0 76 Z" fill="${primary}" opacity="0.10"/>
+    <rect x="34" y="42" width="52" height="5" rx="2.5" fill="${primary}" opacity="0.72"/>
+    <text x="34" y="66" text-anchor="start" font-family="Arial, sans-serif" font-size="12" font-weight="900" letter-spacing="1.2" fill="${primary}">${safeCornerLabel}</text>
+    <circle cx="96" cy="35" r="4" fill="${primary}" opacity="0.48"/>`;
   const layoutSvg = layout === 1
     ? `
     <rect x="50" y="104" width="400" height="8" rx="4" fill="${primary}" opacity="0.18"/>
@@ -2272,8 +2279,7 @@ function makeTemplateImage({ keyword, section, subtitle, index, platform }) {
   const svg = `
   <svg xmlns="http://www.w3.org/2000/svg" width="500" height="500" viewBox="0 0 500 500">
     <rect width="500" height="500" fill="${bg}"/>
-    <rect x="34" y="34" width="104" height="34" rx="8" fill="${primary}"/>
-    <text x="86" y="57" text-anchor="middle" dominant-baseline="middle" font-family="Arial, sans-serif" font-size="15" font-weight="800" fill="#fff">${badge}</text>
+    ${cornerSvg}
     ${layoutSvg}
     <rect x="78" y="406" width="344" height="5" fill="${primary}" opacity="0.22"/>
   </svg>`;
