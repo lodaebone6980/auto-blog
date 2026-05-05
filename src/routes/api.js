@@ -1757,6 +1757,8 @@ async function researchKeywordsFromText({ title = '', text = '', sourceUrl = '',
 const TITLE_RECOMMENDATION_ACTIONS = [
   '링크', '결과', '유형', '확인', '방법', '정리', '신청', '대상', '기준', '지급일',
   '일정', '예매', '가격', '후기', '추천', '비교', '주의사항', '바로가기',
+  '기간', '금액', '사용처', '조회', '지역', '조건', '서류', '홈페이지',
+  '사이트', '날짜', '시간', '장소', '혜택', '변경', '최신', '발표', '지원', '환급', '지급',
 ];
 
 function titleRecommendationActions(text = '') {
@@ -1799,6 +1801,36 @@ function compactTitleCandidate(value = '') {
   return title;
 }
 
+function buildTitleKeywordPhrases({ keyword = '', keywordSignals = [], actions = [] }) {
+  const cleanKeyword = normalizeKeywordValue(keyword);
+  const phrases = [];
+  const seen = new Set();
+  const addPhrase = (terms = []) => {
+    const picked = [...new Set(terms
+      .map(normalizeKeywordValue)
+      .filter((term) => term && !cleanKeyword.includes(term)))]
+      .slice(0, 3);
+    if (picked.length === 0) return;
+    const phrase = picked.join(' ');
+    const key = phrase.replace(/\s/g, '').toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    phrases.push(phrase);
+  };
+
+  keywordSignals.forEach((signal) => {
+    const text = normalizeKeywordValue(signal);
+    const terms = TITLE_RECOMMENDATION_ACTIONS.filter((term) => text.includes(term));
+    addPhrase(terms);
+  });
+
+  for (let i = 0; i < actions.length; i += 1) {
+    addPhrase(actions.slice(i, i + 3));
+  }
+
+  return phrases.slice(0, 6);
+}
+
 function generateTitleCandidates({ keyword, topic = '', platform = 'blog', category = '', analyses = [], keywordSignals = [] }) {
   const cleanKeyword = normalizeKeywordValue(keyword);
   const cleanTopic = normalizeTitleValue(topic);
@@ -1827,9 +1859,12 @@ function generateTitleCandidates({ keyword, topic = '', platform = 'blog', categ
     .flatMap((signal) => TITLE_RECOMMENDATION_ACTIONS.filter((term) => signal.includes(term)))
     .filter((term) => !cleanKeyword.includes(term));
   const actionBlend = [...new Set([...signalActionTerms, ...actions])].slice(0, 3);
+  const keywordPhrases = buildTitleKeywordPhrases({ keyword: cleanKeyword, keywordSignals: cleanSignals, actions: actionBlend });
   const candidates = [
     `${subject} ${tail}`,
     `${cleanKeyword} ${actionBlend.join(' ')} 정리`,
+    ...keywordPhrases.map((phrase) => `${cleanKeyword} ${phrase} 정리`),
+    ...keywordPhrases.slice(0, 3).map((phrase) => `${cleanKeyword} ${phrase} 확인 방법`),
     `${cleanKeyword} ${cleanTopic || '핵심'} 확인 방법`,
     ...cleanSignals.slice(0, 4).map((signal) => {
       const tailFromSignal = signal.includes(cleanKeyword)
