@@ -1760,8 +1760,9 @@ function rankKeywordRecommendations(candidates = [], { seedQuery = '', hasKeywor
     const relevanceBase = containsSeed ? 1_000_000_000 : seedContainsKeyword ? 240_000_000 : 0;
     const actionBoost = hasStrongAction && verifiedDemand ? 420_000_000 : 0;
     const exactPenalty = exactSeed && !hasKeywordTool ? 160_000_000 : 0;
+    const unverifiedPenalty = !verifiedDemand ? 240_000_000 : 0;
     const weakRelationPenalty = !containsSeed && !seedContainsKeyword ? 260_000_000 : 0;
-    return relevanceBase + actionBoost - exactPenalty - weakRelationPenalty + demandValue;
+    return relevanceBase + actionBoost - exactPenalty - unverifiedPenalty - weakRelationPenalty + demandValue;
   };
 
   return [...candidates].sort((a, b) => {
