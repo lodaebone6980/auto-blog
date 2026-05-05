@@ -2106,6 +2106,81 @@ function isPolicySupportKeyword(keyword = '') {
   return /민생|지원금|소비쿠폰|환급|급여|수당|바우처|고유가/.test(String(keyword || ''));
 }
 
+function rewriteIntroParagraphs({ keyword = '', subject = '', topic = '', category = '', isPolicySupport = false, variantIndex = 0 }) {
+  const source = `${keyword} ${subject} ${topic} ${category}`;
+  const pick = (sets) => sets[Math.abs(variantIndex) % sets.length];
+  if (isPolicySupport) {
+    const policyKeyword = keyword.includes('신청') ? keyword : `${keyword} 신청`;
+    return pick([
+      [
+        `${keyword}는 비슷한 이름의 안내가 많아서 먼저 대상과 신청 기준을 나눠 보는 게 좋습니다.`,
+        `특히 지원금성 정보는 중앙정부 공통 정책인지, 지자체 자체 사업인지에 따라 지급일과 사용처가 달라질 수 있습니다.`,
+        `이번 글에서는 ${policyKeyword} 대상, 지급일, 금액, 사용처를 확인하는 순서 중심으로 정리하겠습니다.`,
+      ],
+      [
+        `${keyword}를 찾다 보면 금액부터 지급일, 사용처까지 정보가 흩어져 있어 헷갈리기 쉽습니다.`,
+        `이럴 때는 내 지역에서 신청 가능한지, 어떤 방식으로 지급되는지, 어디에서 쓸 수 있는지를 먼저 확인해야 합니다.`,
+        `아래에서는 ${keyword} 기준과 신청 전 체크할 부분을 단계별로 살펴보겠습니다.`,
+      ],
+      [
+        `${keyword} 관련 공지가 나오면 가장 먼저 확인해야 할 부분은 대상 여부와 실제 신청 기간입니다.`,
+        `같은 지원금처럼 보여도 지역별 공고나 카드사 안내에 따라 세부 조건이 달라지는 경우가 있습니다.`,
+        `그래서 이번 글에서는 ${keyword} 확인 방법을 신청 흐름에 맞춰 정리했습니다.`,
+      ],
+    ]);
+  }
+  if (/테스트|검사|유형|결과|성격|MBTI|SBTI|링크|사이트/i.test(source)) {
+    return pick([
+      [
+        `${keyword} 관련 캡처가 SNS와 단톡방에 자주 보이길래 어떤 테스트인지 직접 흐름을 정리해봤습니다.`,
+        `처음에는 익숙한 성격 검사 변형처럼 보였지만, 진행 방식과 결과 유형을 보면 확인할 포인트가 따로 있습니다.`,
+        `이번 글에서는 ${keyword} 진행 방법, 결과 확인 기준, 링크 이용 시 주의할 점을 중심으로 살펴보겠습니다.`,
+      ],
+      [
+        `${keyword}를 검색해보면 링크와 결과 이야기가 함께 나오는데, 막상 어디서 시작해야 하는지 헷갈릴 수 있습니다.`,
+        `테스트형 콘텐츠는 문항 수, 결과 유형, 공유 방식만 먼저 알아도 전체 흐름을 빠르게 파악할 수 있습니다.`,
+        `아래에서는 ${keyword}를 처음 해보는 분들이 확인하면 좋은 핵심만 순서대로 정리했습니다.`,
+      ],
+      [
+        `요즘 ${keyword} 이야기가 자주 보이면서 결과 유형이나 접속 링크를 찾는 분들이 늘고 있습니다.`,
+        `비슷한 이름의 페이지가 섞여 있을 수 있어 진행 전에는 공식 경로와 결과 해석 방식을 함께 보는 편이 좋습니다.`,
+        `이번 글에서는 ${keyword}의 기본 구조와 확인 방법을 읽기 쉽게 정리해드리겠습니다.`,
+      ],
+    ]);
+  }
+  if (/가격|재고|판매처|구매|상품|제품|예매|예약|티켓|일정/.test(source)) {
+    return pick([
+      [
+        `${keyword}를 알아볼 때는 가격이나 일정만 보는 것보다 실제 구매 가능 여부와 확인 경로를 함께 봐야 합니다.`,
+        `비슷한 안내가 많아도 판매처, 재고, 예약 방식에 따라 체감 정보가 크게 달라질 수 있습니다.`,
+        `이번 글에서는 ${keyword} 확인 순서와 놓치기 쉬운 체크 포인트를 정리했습니다.`,
+      ],
+      [
+        `${keyword}는 검색 결과마다 정보가 조금씩 달라서 한 번에 기준을 잡아두는 편이 편합니다.`,
+        `먼저 일정과 조건을 보고, 그다음 가격이나 판매처처럼 바로 행동으로 이어지는 항목을 확인하면 됩니다.`,
+        `아래에서는 ${keyword}를 볼 때 필요한 핵심 기준을 순서대로 살펴보겠습니다.`,
+      ],
+    ]);
+  }
+  return pick([
+    [
+      `${keyword}를 찾아보면 설명은 많지만 실제로 무엇부터 확인해야 하는지 한눈에 잡히지 않을 때가 많습니다.`,
+      `${subject}은 기준과 순서를 먼저 잡아두면 필요한 정보만 빠르게 걸러볼 수 있습니다.`,
+      `이번 글에서는 ${keyword} 핵심 기준과 확인 방법, 주의할 부분을 순서대로 정리하겠습니다.`,
+    ],
+    [
+      `${keyword}는 겉으로 보기엔 간단해 보여도 막상 확인하려면 비교해야 할 항목이 꽤 있습니다.`,
+      `그래서 먼저 큰 기준을 잡고, 그다음 세부 조건과 실제 확인 순서를 보는 방식이 가장 깔끔합니다.`,
+      `아래에서는 ${keyword}를 처음 보는 분도 이해하기 쉽게 핵심만 나눠서 살펴보겠습니다.`,
+    ],
+    [
+      `${keyword} 관련 정보를 보다 보면 같은 표현이 반복돼도 실제로 필요한 내용은 사람마다 다를 수 있습니다.`,
+      `중요한 건 지금 내 상황에서 확인해야 할 기준과 바로 실행할 수 있는 순서를 구분하는 것입니다.`,
+      `이번 글에서는 ${keyword}를 판단할 때 필요한 흐름을 중심으로 정리했습니다.`,
+    ],
+  ]);
+}
+
 function makeSectionTitles(keyword, topic, count, variantIndex = 0) {
   const subject = topic || keyword;
   if (isPolicySupportKeyword(keyword)) {
@@ -2209,7 +2284,7 @@ function buildRewriteDraft({ keyword, topic, platform, ctaUrl, useNaverQr, useAi
   const title = normalizeTitleValue(customTitle) || makeRewriteTitle(keyword, topic, platform, pattern);
   const bodySectionCount = Math.max(1, (pattern.sectionCount || DEFAULT_REWRITE_SETTINGS.sectionCount) - 1);
   const sectionTitles = makeSectionTitles(keyword, topic, bodySectionCount, variantIndex);
-  const subject = topic || '이 내용';
+  const subject = normalizeKeywordValue(topic) || normalizeKeywordValue(keyword);
   const isPolicySupport = isPolicySupportKeyword(keyword);
   const targetSectionChars = pattern.sectionCharCount || DEFAULT_REWRITE_SETTINGS.sectionCharCount;
   const desiredKwCount = pattern.targetKwCount || DEFAULT_REWRITE_SETTINGS.targetKwCount;
@@ -2218,23 +2293,14 @@ function buildRewriteDraft({ keyword, topic, platform, ctaUrl, useNaverQr, useAi
     pattern.imageCount || 0,
     (publishSpec.thumbnailCount || 1) + Math.max(sectionTitles.length, publishSpec.sectionImageCount || 0)
   );
-  const searchIntent = titleIntentTail(keyword, topic, pattern.sourceActionTerms || []);
-  const sourceKeywordHint = Array.isArray(pattern.sourceKeywords)
-    ? pattern.sourceKeywords.filter((item) => item && item !== keyword).slice(0, 3).join(', ')
-    : '';
-  const intro = isPolicySupport
-    ? [
-        `${keyword}를 검색하면 비슷한 제목의 글이 많이 나오지만, 실제로 중요한 건 내 지역과 내 조건에 맞는 신청 가능 여부입니다.`,
-        `특히 지원금성 정보는 중앙정부 공통 정책인지, 지자체 자체 사업인지에 따라 대상과 지급일이 달라질 수 있습니다.`,
-        `이번 글에서는 ${keyword} 신청 대상, 지급일, 금액, 사용처를 확인하는 순서 중심으로 정리하겠습니다.`,
-        `아래 내용은 참고 글의 문장을 재사용하지 않고, 검색자가 바로 확인해야 할 항목만 새 구성으로 다시 쓴 초안입니다.`,
-      ]
-    : [
-        `${subject}을 알아보다 보면 정보는 많은데 정작 지금 나에게 필요한 기준을 한 번에 잡기 어렵습니다.`,
-        `그래서 이번 글은 ${keyword}를 중심으로 핵심 흐름과 확인 순서, 놓치기 쉬운 부분을 새롭게 정리했습니다.`,
-        `검색 의도는 ${searchIntent}에 맞추고, 주제 범위는 ${sourceKeywordHint || keyword} 흐름 안에서 벗어나지 않게 잡았습니다.`,
-        `아래 내용은 참고 글의 문장을 가져온 것이 아니라 글 구성과 분량, 반복 밀도만 반영해 새로 작성한 초안입니다.`,
-      ];
+  const intro = rewriteIntroParagraphs({
+    keyword,
+    subject,
+    topic,
+    category: pattern.category || pattern.sourceCategory || '',
+    isPolicySupport,
+    variantIndex,
+  });
   const linkTarget = ctaUrl || '[글별 CTA 링크 입력 필요]';
   const cta = platform === 'cafe'
     ? [
