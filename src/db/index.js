@@ -252,6 +252,7 @@ export async function initDB() {
         use_ai_images BOOLEAN DEFAULT FALSE,
         source_analysis_ids JSONB DEFAULT '[]',
         settings_json JSONB DEFAULT '{}',
+        content_skill_key TEXT DEFAULT 'adsense_traffic',
         status TEXT DEFAULT '대기중',
         pattern_json JSONB DEFAULT '{}',
         custom_title TEXT,
@@ -356,6 +357,7 @@ export async function initDB() {
       ALTER TABLE blog_view_snapshots ADD COLUMN IF NOT EXISTS is_day_closed BOOLEAN DEFAULT FALSE;
       ALTER TABLE blog_view_snapshots ADD COLUMN IF NOT EXISTS daily_view_source TEXT;
       ALTER TABLE rewrite_jobs ADD COLUMN IF NOT EXISTS settings_json JSONB DEFAULT '{}';
+      ALTER TABLE rewrite_jobs ADD COLUMN IF NOT EXISTS content_skill_key TEXT DEFAULT 'adsense_traffic';
       ALTER TABLE rewrite_jobs ADD COLUMN IF NOT EXISTS custom_title TEXT;
       ALTER TABLE rewrite_jobs ADD COLUMN IF NOT EXISTS source_kind TEXT DEFAULT 'collected';
       ALTER TABLE rewrite_jobs ADD COLUMN IF NOT EXISTS source_item_id INTEGER;
@@ -451,6 +453,7 @@ export async function initDB() {
         keyword TEXT NOT NULL,
         category TEXT DEFAULT 'general',
         platform TEXT DEFAULT 'blog',
+        content_skill_key TEXT DEFAULT 'adsense_traffic',
         source_url TEXT,
         cta_url TEXT,
         qr_target_url TEXT,
@@ -563,6 +566,7 @@ export async function initDB() {
       ALTER TABLE content_jobs ADD COLUMN IF NOT EXISTS tenant_id TEXT DEFAULT 'owner';
       ALTER TABLE content_jobs ADD COLUMN IF NOT EXISTS created_by_user_id TEXT;
       ALTER TABLE content_jobs ADD COLUMN IF NOT EXISTS rewrite_job_id INTEGER;
+      ALTER TABLE content_jobs ADD COLUMN IF NOT EXISTS content_skill_key TEXT DEFAULT 'adsense_traffic';
       ALTER TABLE content_jobs ADD COLUMN IF NOT EXISTS source_analysis_id INTEGER;
       ALTER TABLE content_jobs ADD COLUMN IF NOT EXISTS publish_account_id TEXT;
       ALTER TABLE content_jobs ADD COLUMN IF NOT EXISTS publish_account_label TEXT;

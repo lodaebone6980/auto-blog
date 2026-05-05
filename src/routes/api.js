@@ -1188,6 +1188,7 @@ function clampNumber(value, min, max) {
 }
 
 const DEFAULT_REWRITE_SETTINGS = {
+  contentSkillKey: 'adsense_traffic',
   targetCharCount: 2200,
   sectionCharCount: 300,
   sectionCount: 7,
@@ -1201,6 +1202,57 @@ const DEFAULT_REWRITE_SETTINGS = {
   benchmarkMedianKwCount: 19,
   benchmarkMedianImageCount: 12,
 };
+
+const CONTENT_SKILLS = {
+  adsense_traffic: {
+    key: 'adsense_traffic',
+    name: '애드센스 유입용',
+    description: '검색 유입을 목표로 소제목별 인용구, 반복 키워드, 서버 사전 생성 이미지를 함께 준비합니다.',
+    articleGoal: 'search_traffic_adsense',
+    targetPlatforms: ['naver_blog', 'naver_cafe', 'wordpress'],
+    imagePipeline: {
+      generationTiming: 'draft_generation',
+      storage: 'server_generated_images',
+      editorMode: 'extension_download_blob_then_upload',
+      defaultSize: '500x500',
+      alignment: 'center',
+      manualReviewRequired: false,
+      policy: '본문 생성 단계에서 대표 이미지와 섹션 이미지를 미리 만들고, 발행 단계에서는 서버 이미지를 받아 업로드만 수행',
+    },
+    writingRules: {
+      quotePerSection: true,
+      keywordRepeatBias: '+1',
+      similarityRiskTarget: 'low',
+      ctaPlacement: '도입 CTA 이후 또는 2번째 섹션 뒤',
+    },
+  },
+  clinic_marketing_manual: {
+    key: 'clinic_marketing_manual',
+    name: '병의원/마케팅 수동 이미지형',
+    description: '전문성/브랜드 검수가 필요한 업종용 예비 스킬입니다. 이미지는 사용자가 업로드하거나 수정한 뒤 발행합니다.',
+    articleGoal: 'lead_generation_brand_marketing',
+    targetPlatforms: ['naver_blog', 'wordpress'],
+    imagePipeline: {
+      generationTiming: 'manual_review',
+      storage: 'user_uploaded_or_edited_assets',
+      editorMode: 'extension_upload_reviewed_assets',
+      defaultSize: 'custom',
+      alignment: 'content_dependent',
+      manualReviewRequired: true,
+      policy: '의료/브랜드 이미지는 자동 생성본을 바로 발행하지 않고 사용자 검수/교체 후 사용',
+    },
+    writingRules: {
+      quotePerSection: true,
+      keywordRepeatBias: 'controlled',
+      similarityRiskTarget: 'very_low',
+      ctaPlacement: '상담/예약 문맥에 맞춰 수동 확정',
+    },
+  },
+};
+
+function contentSkillFor(key = '') {
+  return CONTENT_SKILLS[key] || CONTENT_SKILLS.adsense_traffic;
+}
 
 function parseJsonObject(value, fallback = {}) {
   if (!value) return fallback;
@@ -1218,6 +1270,7 @@ function parseRewriteSettings(input = {}) {
   return {
     ...DEFAULT_REWRITE_SETTINGS,
     ...raw,
+    contentSkillKey: raw.contentSkillKey || raw.content_skill_key || DEFAULT_REWRITE_SETTINGS.contentSkillKey,
     targetCharCount: clampNumber(parseInt(raw.targetCharCount ?? raw.target_char_count ?? DEFAULT_REWRITE_SETTINGS.targetCharCount, 10) || DEFAULT_REWRITE_SETTINGS.targetCharCount, 1200, 5000),
     sectionCharCount: clampNumber(parseInt(raw.sectionCharCount ?? raw.section_char_count ?? DEFAULT_REWRITE_SETTINGS.sectionCharCount, 10) || DEFAULT_REWRITE_SETTINGS.sectionCharCount, 150, 700),
     sectionCount: clampNumber(parseInt(raw.sectionCount ?? raw.section_count ?? DEFAULT_REWRITE_SETTINGS.sectionCount, 10) || DEFAULT_REWRITE_SETTINGS.sectionCount, 3, 10),
@@ -1229,10 +1282,13 @@ function parseRewriteSettings(input = {}) {
 
 function buildPublishSpec(platform = 'blog', settingsInput = {}, overrides = {}) {
   const settings = parseRewriteSettings(settingsInput);
+  const contentSkill = contentSkillFor(settings.contentSkillKey);
   const normalizedPlatform = normalizePlatform(platform);
   const sectionCount = settings.sectionCount;
   const base = {
     mechanism: 'publish_generation',
+    contentSkillKey: contentSkill.key,
+    contentSkillName: contentSkill.name,
     platform: normalizedPlatform,
     structureMutation: '원문 구성 순서와 소제목 표현은 그대로 쓰지 않고 의도만 재배열',
     targetCharCount: settings.targetCharCount,
@@ -1244,6 +1300,10 @@ function buildPublishSpec(platform = 'blog', settingsInput = {}, overrides = {})
     imageSize: '500x500',
     imageAlignment: 'center',
     imageStyle: '상하좌우 여백 균형, 중앙정렬, 모바일에서 읽히는 고대비 텍스트 카드',
+    imagePipeline: contentSkill.imagePipeline,
+    imageEditorMode: contentSkill.imagePipeline.editorMode,
+    imageStorage: contentSkill.imagePipeline.storage,
+    manualImageReviewRequired: contentSkill.imagePipeline.manualReviewRequired,
     quotePerSection: normalizedPlatform === 'blog' || normalizedPlatform === 'cafe',
     videoRequired: normalizedPlatform === 'blog',
     qrOrLinkRequired: true,
@@ -2614,6 +2674,7 @@ function normalizeJobInput(body = {}) {
     keyword: body.keyword || body.targetKeyword,
     category: body.category || 'general',
     platform: body.platform || 'blog',
+    content_skill_key: body.content_skill_key || body.contentSkillKey || 'adsense_traffic',
     source_url: body.source_url || body.sourceUrl || null,
     cta_url: body.cta_url || body.ctaUrl || null,
     qr_target_url: body.qr_target_url || body.qrTargetUrl || body.cta_url || body.ctaUrl || null,
@@ -2841,6 +2902,21 @@ async function loadGeneratedImages(contentJobId) {
   return rows;
 }
 
+function generatedImageDownloadUrl(req, image) {
+  const tenantId = encodeURIComponent(tenantIdFromReq(req));
+  return `/api/generated-images/${image.id}/file?tenantId=${tenantId}`;
+}
+
+function generatedImageClientPayload(req, image) {
+  return {
+    ...image,
+    download_url: generatedImageDownloadUrl(req, image),
+    downloadUrl: generatedImageDownloadUrl(req, image),
+    editor_upload_mode: 'extension_download_blob_then_upload',
+    editorUploadMode: 'extension_download_blob_then_upload',
+  };
+}
+
 async function addJobEvent(jobId, eventType, message, payload = {}) {
   await pool.query(
     `INSERT INTO content_job_events (job_id, event_type, message, payload)
@@ -2881,6 +2957,7 @@ async function createContentJobFromRewrite({ tenantId, rewriteJob, body = {} }) 
     keyword: rewriteJob.target_keyword,
     category: rewriteJob.category,
     platform: rewriteJob.platform,
+    contentSkillKey: rewriteJob.content_skill_key || parseRewriteSettings(rewriteJob.settings_json).contentSkillKey,
     ctaUrl: rewriteJob.cta_url,
     qrTargetUrl: rewriteJob.cta_url,
     title: rewriteJob.title,
@@ -2905,7 +2982,7 @@ async function createContentJobFromRewrite({ tenantId, rewriteJob, body = {} }) 
   const qrName = makeNaverQrName(input.keyword, input.campaign_name || 'rewrite');
   const { rows } = await pool.query(
     `INSERT INTO content_jobs (
-       tenant_id, rewrite_job_id, keyword, category, platform, cta_url, qr_target_url,
+       tenant_id, rewrite_job_id, keyword, category, platform, content_skill_key, cta_url, qr_target_url,
        title, body, plain_text, char_count, kw_count, image_count,
        seo_score, geo_score, aeo_score, total_score,
        naver_qr_name, qr_status, generation_status, editor_status,
@@ -2913,11 +2990,11 @@ async function createContentJobFromRewrite({ tenantId, rewriteJob, body = {} }) 
        publish_account_label, publish_account_platform, action_delay_min_seconds,
        action_delay_max_seconds, between_posts_delay_minutes, rss_url, obsidian_export_status
      )
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33)
      RETURNING *`,
     [
       input.tenant_id, input.rewrite_job_id, input.keyword, input.category, input.platform,
-      input.cta_url, input.qr_target_url, input.title, input.body, input.plain_text,
+      input.content_skill_key, input.cta_url, input.qr_target_url, input.title, input.body, input.plain_text,
       input.char_count, input.kw_count, input.image_count, input.seo_score, input.geo_score,
       input.aeo_score, input.total_score, qrName, input.qr_status, input.generation_status,
       input.editor_status, input.publish_mode, input.scheduled_at, input.publish_status,
@@ -4690,6 +4767,13 @@ router.post('/keyword-recommendations', async (req, res) => {
   }
 });
 
+router.get('/content-skills', async (req, res) => {
+  res.json({
+    defaultSkillKey: DEFAULT_REWRITE_SETTINGS.contentSkillKey,
+    skills: Object.values(CONTENT_SKILLS),
+  });
+});
+
 router.post('/title-recommendations', async (req, res) => {
   try {
     const directKeywordMode = Boolean(req.body?.directKeywordMode || req.body?.direct_keyword_mode || req.body?.mode === 'direct');
@@ -4917,6 +5001,7 @@ router.post('/rewrite-jobs', async (req, res) => {
     const useNaverQr = Boolean(req.body?.useNaverQr || req.body?.use_naver_qr);
     const useAiImages = Boolean(req.body?.useAiImages || req.body?.use_ai_images);
     const rewriteSettings = parseRewriteSettings(req.body?.rewriteSettings || req.body?.settings || {});
+    const contentSkillKey = contentSkillFor(rewriteSettings.contentSkillKey).key;
     const customTitle = normalizeTitleValue(req.body?.customTitle || req.body?.custom_title || req.body?.recommendedTitle || '');
 
     const rewriteSpecs = sourceRowMode
@@ -4942,10 +5027,10 @@ router.post('/rewrite-jobs', async (req, res) => {
       const { rows } = await pool.query(
         `INSERT INTO rewrite_jobs (
           target_keyword, target_topic, platform, category, cta_url,
-          use_naver_qr, use_ai_images, source_analysis_ids, settings_json,
+          use_naver_qr, use_ai_images, source_analysis_ids, settings_json, content_skill_key,
           custom_title, status, source_kind, publish_spec
         )
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'대기중',$11,$12)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'대기중',$12,$13)
         RETURNING *`,
         [
           spec.keyword,
@@ -4957,6 +5042,7 @@ router.post('/rewrite-jobs', async (req, res) => {
           useAiImages,
           JSON.stringify(spec.sourceAnalysisIds),
           JSON.stringify(rewriteSettings),
+          contentSkillKey,
           rewriteSpecs.length === 1 ? customTitle : '',
           sourceRowMode ? 'collected_row' : (resolvedSourceAnalysisIds.length ? 'collected_pattern' : 'direct_keyword'),
           JSON.stringify(buildPublishSpec(spec.platform, rewriteSettings, {
@@ -5187,7 +5273,43 @@ router.get('/publish-queue/:id/images', async (req, res) => {
     const job = await loadTenantContentJob(req, req.params.id);
     if (!job) return res.status(404).json({ error: 'Content job not found' });
     const images = await loadGeneratedImages(job.id);
-    res.json({ jobId: job.id, images });
+    res.json({
+      jobId: job.id,
+      imageSourceMode: 'server_blob',
+      editorUploadMode: 'extension_download_blob_then_upload',
+      images: images.map((image) => generatedImageClientPayload(req, image)),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/generated-images/:id/file', async (req, res) => {
+  try {
+    const tenantId = tenantIdFromReq(req);
+    const { rows } = await pool.query(
+      `SELECT *
+       FROM generated_images
+       WHERE id = $1
+         AND COALESCE(tenant_id, 'owner') = $2
+       LIMIT 1`,
+      [req.params.id, tenantId]
+    );
+    const image = rows[0];
+    if (!image) return res.status(404).json({ error: 'Generated image not found' });
+    if (image.public_url) return res.redirect(image.public_url);
+    if (!image.data_url) return res.status(404).json({ error: 'No downloadable image data' });
+
+    const match = String(image.data_url).match(/^data:([^;,]+)(;base64)?,([\s\S]*)$/);
+    if (!match) return res.status(422).json({ error: 'Unsupported image data format' });
+    const mime = match[1] || 'application/octet-stream';
+    const isBase64 = Boolean(match[2]);
+    const payload = match[3] || '';
+    const buffer = isBase64 ? Buffer.from(payload, 'base64') : Buffer.from(decodeURIComponent(payload), 'utf8');
+    res.setHeader('Content-Type', mime);
+    res.setHeader('Cache-Control', 'private, max-age=3600');
+    res.setHeader('Content-Disposition', `inline; filename="naviwrite-image-${image.id}.${mime.includes('svg') ? 'svg' : 'png'}"`);
+    res.send(buffer);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

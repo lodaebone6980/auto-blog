@@ -31,6 +31,7 @@ const SORT_OPTIONS = [
 ];
 
 const DEFAULT_REWRITE_SETTINGS = {
+  contentSkillKey: 'adsense_traffic',
   targetCharCount: 2200,
   sectionCharCount: 300,
   sectionCount: 7,
@@ -43,6 +44,11 @@ const DEFAULT_REWRITE_SETTINGS = {
   benchmarkMedianSectionCharCount: 280,
   benchmarkMedianKwCount: 19,
   benchmarkMedianImageCount: 12,
+};
+
+const CONTENT_SKILL_LABELS = {
+  adsense_traffic: '애드센스 유입용',
+  clinic_marketing_manual: '병의원/마케팅 수동 이미지형',
 };
 
 const VOLUME_BANDS = [
@@ -2922,6 +2928,9 @@ function RewritePanel() {
               <p style={{ fontSize: 11, color: COLORS.textSecondary, lineHeight: 1.6 }}>
                 openmind200 최근 20개 자동 중앙값은 1,940자 · 7섹션 · 섹션당 약 280자 · KW 19회 · 이미지 12장입니다.
                 운영 기본값은 2,200자 · KW 15회로 보정했습니다.
+              </p>
+              <p style={{ marginTop: 6, fontSize: 11, color: COLORS.primary, fontWeight: 900 }}>
+                적용 스킬: {CONTENT_SKILL_LABELS[rewriteSettings.contentSkillKey] || '애드센스 유입용'} · 서버 사전 생성 이미지 → 확장프로그램 업로드
               </p>
             </div>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
