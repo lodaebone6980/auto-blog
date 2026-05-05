@@ -5244,9 +5244,12 @@ router.get('/rss-items', async (req, res) => {
     }
     values.push(limit);
     const { rows } = await pool.query(
-      `SELECT rsi.*, rs.label AS rss_label, rs.rss_url
+      `SELECT rsi.*, rs.label AS rss_label, rs.rss_url, rs.platform AS rss_platform, rs.category AS rss_category,
+              cb.blog_name AS source_blog_name, cb.blog_title AS source_blog_title,
+              cb.blog_nickname AS source_blog_nickname, cb.blog_id AS source_blog_id
        FROM rss_source_items rsi
        JOIN rss_sources rs ON rs.id = rsi.rss_source_id
+       LEFT JOIN collected_blogs cb ON cb.id = rs.collected_blog_id
        ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
        ORDER BY rsi.published_at DESC NULLS LAST, rsi.detected_at DESC
        LIMIT $${values.length}`,

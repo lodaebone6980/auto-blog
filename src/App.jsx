@@ -188,6 +188,40 @@ function keywordCandidateVolume(candidate) {
     ?? null;
 }
 
+const RSS_SOURCE_BADGE_COLORS = [
+  { background: '#e0f2fe', color: '#075985', border: '#bae6fd' },
+  { background: '#dcfce7', color: '#166534', border: '#bbf7d0' },
+  { background: '#fce7f3', color: '#9d174d', border: '#fbcfe8' },
+  { background: '#fef3c7', color: '#92400e', border: '#fde68a' },
+  { background: '#ede9fe', color: '#5b21b6', border: '#ddd6fe' },
+  { background: '#ccfbf1', color: '#0f766e', border: '#99f6e4' },
+  { background: '#ffe4e6', color: '#be123c', border: '#fecdd3' },
+  { background: '#e0e7ff', color: '#3730a3', border: '#c7d2fe' },
+];
+
+function stableColorIndex(value, modulo) {
+  const text = String(value || 'rss');
+  let hash = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    hash = ((hash << 5) - hash) + text.charCodeAt(i);
+    hash |= 0;
+  }
+  return Math.abs(hash) % modulo;
+}
+
+function rssSourceLabel(item) {
+  return item?.source_blog_nickname
+    || item?.source_blog_name
+    || item?.source_blog_title
+    || item?.rss_label
+    || item?.source_blog_id
+    || 'RSS';
+}
+
+function rssSourceBadgeStyle(label) {
+  return RSS_SOURCE_BADGE_COLORS[stableColorIndex(label, RSS_SOURCE_BADGE_COLORS.length)];
+}
+
 function rssDateBadgeStyle(value) {
   const date = value ? new Date(value) : null;
   if (!date || Number.isNaN(date.getTime())) {
@@ -1992,10 +2026,10 @@ function RssDetectionPanel({ onOpenRewrite }) {
         {filteredRssItems.length === 0 ? (
           <div style={{ padding: 22, textAlign: 'center', color: COLORS.textMuted, fontSize: 12 }}>아직 감지된 RSS 글이 없습니다.</div>
         ) : (
-          <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1040 }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1120 }}>
             <thead>
               <tr style={{ background: '#f8fafc', color: COLORS.textSecondary, fontSize: 11, textAlign: 'left' }}>
-                {['선택', '검색량', '상태', '제목', '선택 KW', '후보/자동완성', '발행 생성'].map((head) => (
+                {['선택', '검색량', '상태', '블로그 / 제목', '선택 KW', '후보/자동완성', '발행 생성'].map((head) => (
                   <th key={head} style={{ padding: '9px 10px', borderBottom: `1px solid ${COLORS.border}` }}>{head}</th>
                 ))}
               </tr>
@@ -2006,6 +2040,8 @@ function RssDetectionPanel({ onOpenRewrite }) {
                 const candidates = parseJsonList(item.keyword_candidates);
                 const autocompletes = parseJsonList(item.autocomplete_keywords);
                 const dateBadge = rssDateBadgeStyle(item.published_at || item.detected_at);
+                const sourceLabel = rssSourceLabel(item);
+                const sourceBadge = rssSourceBadgeStyle(sourceLabel);
                 const candidateChips = candidates.slice(0, 3).map((candidate, index) => {
                   const keyword = typeof candidate === 'string' ? candidate : (candidate.keyword || candidate.term || '');
                   return keyword ? {
@@ -2025,8 +2061,29 @@ function RssDetectionPanel({ onOpenRewrite }) {
                       </span>
                     </td>
                     <td style={{ padding: '9px 10px' }}><StatusBadge value={item.status} /></td>
-                    <td style={{ padding: '9px 10px', maxWidth: 270 }}>
-                      <a href={item.link} target="_blank" rel="noreferrer" style={{ fontWeight: 850, color: COLORS.textPrimary, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', display: 'block' }}>{item.title || '-'}</a>
+                    <td style={{ padding: '9px 10px', maxWidth: 360 }}>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'auto minmax(0, 1fr)', alignItems: 'center', gap: 8 }}>
+                        <span title={sourceLabel} style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          maxWidth: 112,
+                          height: 24,
+                          padding: '0 9px',
+                          borderRadius: 999,
+                          background: sourceBadge.background,
+                          color: sourceBadge.color,
+                          border: `1px solid ${sourceBadge.border}`,
+                          fontSize: 10,
+                          fontWeight: 900,
+                          whiteSpace: 'nowrap',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                        }}>
+                          {sourceLabel}
+                        </span>
+                        <a href={item.link} target="_blank" rel="noreferrer" style={{ minWidth: 0, fontWeight: 850, color: COLORS.textPrimary, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', display: 'block' }}>{item.title || '-'}</a>
+                      </div>
                       <div style={{ marginTop: 4, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                         <span style={{
                           display: 'inline-flex',
