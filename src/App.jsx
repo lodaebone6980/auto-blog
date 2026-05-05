@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 
 const API = '/api';
-const EXTENSION_ZIP_PATH = '/downloads/naviwrite-extension.zip?v=1.3.2';
+const EXTENSION_ZIP_PATH = '/downloads/naviwrite-extension.zip?v=1.3.3';
 const RUNNER_ZIP_PATH = '/downloads/naviwrite-runner.zip';
 
 const COLORS = {
@@ -3419,14 +3419,6 @@ function RewritePanel() {
           >
             전체 다시생성
           </button>
-          <button
-            type="button"
-            onClick={sendSelectedToPublishQueue}
-            disabled={selectedRewriteLinks.length === 0 || queueing}
-            style={{ height: 30, padding: '0 12px', borderRadius: 8, border: 'none', background: selectedRewriteLinks.length === 0 || queueing ? COLORS.textMuted : COLORS.success, color: 'white', fontSize: 11, fontWeight: 850, cursor: selectedRewriteLinks.length === 0 || queueing ? 'not-allowed' : 'pointer' }}
-          >
-            자동발행 대기
-          </button>
         </div>
         <div style={{ overflowX: 'auto', maxHeight: 430 }}>
           {loading ? (
@@ -3499,13 +3491,9 @@ function RewritePanel() {
                           >
                             다시 생성
                           </button>
-                          <button
-                            type="button"
-                            onClick={() => sendToPublishQueue(jobFromSourceLink(link))}
-                            style={{ height: 28, padding: '0 9px', borderRadius: 7, border: 'none', background: COLORS.success, color: 'white', fontSize: 10, fontWeight: 850, cursor: 'pointer' }}
-                          >
-                            자동발행 대기
-                          </button>
+                          <span style={{ display: 'inline-flex', alignItems: 'center', height: 28, padding: '0 9px', borderRadius: 7, background: '#eef6ff', color: COLORS.info, fontSize: 10, fontWeight: 850 }}>
+                            확장프로그램에서 불러옴
+                          </span>
                         </div>
                       ) : (
                         <span style={{ fontSize: 10, color: COLORS.textMuted, fontWeight: 800 }}>체크 후 생성</span>
@@ -3691,7 +3679,7 @@ function RewritePanel() {
             <div>
               <h3 style={{ fontSize: 15, fontWeight: 850, color: COLORS.primary }}>발행 생성 작업 목록</h3>
               <p style={{ marginTop: 4, fontSize: 11, color: COLORS.textSecondary }}>
-                본문이 완성된 글만 테이블로 모았습니다. 체크 후 한 번에 자동발행 대기로 넘기고, 검토 토글로 본문과 이미지 초안을 확인합니다.
+                본문이 완성된 글은 확장프로그램 작업 탭에서 바로 불러옵니다. 이 화면에서는 검토와 재생성만 진행합니다.
               </p>
             </div>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -3710,14 +3698,6 @@ function RewritePanel() {
                 style={{ height: 30, padding: '0 12px', borderRadius: 8, border: `1px solid ${COLORS.border}`, background: 'white', color: COLORS.accent, fontSize: 11, fontWeight: 850, cursor: selectedCompletedRewriteJobs.length === 0 || creating ? 'not-allowed' : 'pointer' }}
               >
                 선택 다시생성
-              </button>
-              <button
-                type="button"
-                onClick={sendSelectedCompletedJobsToPublishQueue}
-                disabled={selectedCompletedRewriteJobs.length === 0 || queueing}
-                style={{ height: 30, padding: '0 12px', borderRadius: 8, border: 'none', background: selectedCompletedRewriteJobs.length === 0 || queueing ? COLORS.textMuted : COLORS.success, color: 'white', fontSize: 11, fontWeight: 850, cursor: selectedCompletedRewriteJobs.length === 0 || queueing ? 'not-allowed' : 'pointer' }}
-              >
-                선택 자동발행 대기
               </button>
             </div>
           </div>
@@ -3812,7 +3792,9 @@ function RewritePanel() {
                           <button type="button" disabled={busy} onClick={() => reprocessJob(job.id)} style={{ ...smallButtonStyle, background: COLORS.primary, color: 'white', borderColor: COLORS.primary }}>
                             {busy ? '생성중' : '다시 생성'}
                           </button>
-                          <button type="button" onClick={() => sendToPublishQueue(job)} style={{ ...smallButtonStyle, gridColumn: 'span 2', background: COLORS.success, color: 'white', borderColor: COLORS.success }}>자동발행 대기</button>
+                          <span style={{ gridColumn: 'span 2', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', height: 28, borderRadius: 8, background: '#eef6ff', color: COLORS.info, fontSize: 10, fontWeight: 850 }}>
+                            확장프로그램에서 바로 불러옴
+                          </span>
                         </div>
                       </td>
                     </tr>,
@@ -3860,7 +3842,6 @@ function RewritePanel() {
         </div>
       </section>
 
-      <PublishQueuePanel embedded />
     </div>
   );
 }

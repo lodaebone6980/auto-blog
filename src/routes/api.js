@@ -6271,28 +6271,12 @@ router.post('/rewrite-jobs', async (req, res) => {
       }
     });
 
-    const contentJobs = [];
-    for (const rewriteJob of processed.filter((item) => item?.status === '글생성 완료')) {
-      const result = await ensureContentJobFromRewrite({
-        tenantId,
-        rewriteJob,
-        body: {
-          publishMode: 'draft',
-          publishStatus: '초안대기',
-          actionDelayMinSeconds: 60,
-          actionDelayMaxSeconds: 60,
-          betweenPostsDelayMinutes: 120,
-        },
-      });
-      contentJobs.push({ ...result.job, generated_image_count: result.images.length, existing: Boolean(result.existing) });
-    }
-
     res.json({
       ok: true,
       created: insertedJobs.length,
       processed: processed.length,
-      contentJobsCreated: contentJobs.filter((item) => !item.existing).length,
-      contentJobs,
+      contentJobsCreated: 0,
+      contentJobs: [],
       concurrency,
       jobs: processed,
     });
@@ -6309,29 +6293,69 @@ router.post('/rewrite-jobs/:id/process', async (req, res) => {
       forceVariant: Boolean(req.body?.forceVariant || req.body?.force_variant),
       generatorMode: req.body?.generatorMode || req.body?.generator_mode,
     });
-    const contentResult = job.status === '글생성 완료'
-      ? await ensureContentJobFromRewrite({
-          tenantId,
-          rewriteJob: job,
-          body: {
-            publishMode: 'draft',
-            publishStatus: '초안대기',
-            actionDelayMinSeconds: 60,
-            actionDelayMaxSeconds: 60,
-            betweenPostsDelayMinutes: 120,
-          },
-        })
-      : null;
     res.json({
       ok: true,
       job,
-      contentJob: contentResult?.job || null,
-      contentJobExisting: Boolean(contentResult?.existing),
+      contentJob: null,
+      contentJobExisting: false,
       generatorMode: job.generator_mode || 'server_template',
       elapsedMs: job.elapsed_ms || null,
       variantIndex: job.variant_index || 0,
       note: job.generator_mode === 'openai' ? 'OpenAI로 원고를 생성했습니다.' : '서버 템플릿 생성기로 원고를 생성했습니다.',
     });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/rewrite-jobs/:id/mark-published', async (req, res) => {
+  try {
+    const tenantId = tenantIdFromReq(req);
+    const rewrite = await pool.query('SELECT * FROM rewrite_jobs WHERE id = $1', [req.params.id]);
+    if (rewrite.rows.length === 0) return res.status(404).json({ error: 'Rewrite job not found' });
+
+    const rewriteJob = rewrite.rows[0];
+    const publishedUrl = req.body.publishedUrl || req.body.published_url || null;
+    const publishedAt = normalizeOptionalDate(req.body.publishedAt || req.body.published_at) || new Date().toISOString();
+    const contentResult = await ensureContentJobFromRewrite({
+      tenantId,
+      rewriteJob,
+      body: {
+        publishMode: 'immediate',
+        publishStatus: '발행완료',
+        publishedUrl,
+        publishedAt,
+      },
+    });
+    const { rows: contentRows } = await pool.query(
+      `UPDATE content_jobs
+       SET published_url = COALESCE($2, published_url),
+           published_at = $3,
+           publish_status = '발행완료',
+           updated_at = NOW()
+       WHERE id = $1
+       RETURNING *`,
+      [contentResult.job.id, publishedUrl, publishedAt]
+    );
+    const { rows: rewriteRows } = await pool.query(
+      `UPDATE rewrite_jobs
+       SET status = '발행 완료',
+           updated_at = NOW()
+       WHERE id = $1
+       RETURNING *`,
+      [rewriteJob.id]
+    );
+    await addJobEvent(contentResult.job.id, 'published_marked_from_rewrite', '확장프로그램이 발행 생성 작업의 발행 URL/status를 저장했습니다', {
+      rewriteJobId: rewriteJob.id,
+      publishedUrl,
+      publishedAt,
+    });
+    await addRewriteEvent(rewriteJob.id, 'published_marked', '확장프로그램이 발행 URL을 저장했습니다', {
+      publishedUrl,
+      publishedAt,
+      contentJobId: contentResult.job.id,
+    });
+    res.json({ ok: true, job: rewriteRows[0], contentJob: contentRows[0] });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

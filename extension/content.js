@@ -26,21 +26,69 @@ function findTitleTarget() {
 }
 
 function findBodyTarget() {
+  const titleTarget = findTitleTarget();
+  const titleBottom = titleTarget?.getBoundingClientRect?.().bottom || 0;
+  const isTitleLike = (node) => {
+    if (!node) return false;
+    if (node === titleTarget) return true;
+    const titleContainer = node.closest?.('.se-title, .se-title-text, [class*="title"]');
+    return Boolean(titleContainer && titleContainer.contains(titleTarget || titleContainer));
+  };
   const selectors = [
+    '.se-main-container [contenteditable="true"]',
+    '.se-content [contenteditable="true"]',
     '.se-section-text [contenteditable="true"]',
     '.se-component-content [contenteditable="true"]',
     '[contenteditable="true"][data-a11y-title*="본문"]',
     '[contenteditable="true"][aria-label*="본문"]',
+    '[contenteditable="true"][data-placeholder*="본문"]',
+    '.se-text-paragraph',
     'textarea[name="content"]',
     'textarea',
     '[contenteditable="true"]',
   ];
+  const candidates = [];
   for (const selector of selectors) {
-    const candidates = Array.from(document.querySelectorAll(selector)).filter(visible);
-    const node = candidates.find((item) => item !== findTitleTarget());
-    if (node) return node;
+    Array.from(document.querySelectorAll(selector))
+      .filter((node) => visible(node) && !isTitleLike(node))
+      .forEach((node) => {
+        if (!candidates.includes(node)) candidates.push(node);
+      });
   }
-  return null;
+  return candidates
+    .map((node) => {
+      const rect = node.getBoundingClientRect();
+      const editableBonus = node.isContentEditable ? 2000 : 0;
+      const bodyHintBonus = /본문|내용|content|paragraph|text/i.test([
+        node.getAttribute?.('aria-label'),
+        node.getAttribute?.('data-placeholder'),
+        node.getAttribute?.('data-a11y-title'),
+        node.className,
+      ].join(' ')) ? 1500 : 0;
+      const belowTitleBonus = rect.top >= titleBottom - 5 ? 800 : 0;
+      const area = Math.min(rect.width * rect.height, 4000);
+      return { node, score: editableBonus + bodyHintBonus + belowTitleBonus + area };
+    })
+    .sort((a, b) => b.score - a.score)[0]?.node || null;
+}
+
+function activateBodyArea() {
+  const selectors = [
+    '.se-main-container',
+    '.se-content',
+    '.se-section-text',
+    '.se-component-content',
+    '[contenteditable="true"][data-placeholder*="본문"]',
+  ];
+  for (const selector of selectors) {
+    const node = Array.from(document.querySelectorAll(selector)).find(visible);
+    if (node) {
+      node.scrollIntoView?.({ block: 'center', inline: 'center' });
+      node.click?.();
+      return true;
+    }
+  }
+  return false;
 }
 
 function setText(node, text) {
@@ -60,6 +108,18 @@ function setRichText(node, html, fallbackText) {
     emitInput(node);
     return;
   }
+  try {
+    const data = new DataTransfer();
+    data.setData('text/html', html);
+    data.setData('text/plain', fallbackText);
+    const pasted = node.dispatchEvent(new ClipboardEvent('paste', {
+      clipboardData: data,
+      bubbles: true,
+      cancelable: true,
+    }));
+    emitInput(node);
+    if (!pasted || (node.textContent || '').trim().length > 20) return;
+  } catch {}
   const selection = window.getSelection();
   const range = document.createRange();
   range.selectNodeContents(node);
@@ -310,12 +370,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   const body = buildBody(job, message.images || []);
   const richBody = buildRichBody(job, message.images || []);
   const titleTarget = findTitleTarget();
-  const bodyTarget = findBodyTarget();
+  let bodyTarget = findBodyTarget();
+  if (!bodyTarget && body) {
+    activateBodyArea();
+    bodyTarget = findBodyTarget();
+  }
 
   if (!titleTarget && !bodyTarget) {
     sendResponse({
       ok: false,
       error: '현재 프레임에서 제목/본문 입력 영역을 찾지 못했습니다. 작성창을 클릭한 뒤 다시 시도하세요.',
+    });
+    return true;
+  }
+  if (body && !bodyTarget) {
+    sendResponse({
+      ok: false,
+      error: '제목 영역은 찾았지만 본문 입력 영역을 찾지 못했습니다. 본문 영역을 한 번 클릭한 뒤 다시 삽입하세요.',
     });
     return true;
   }

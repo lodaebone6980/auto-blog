@@ -3,7 +3,7 @@ const DEFAULT_API = 'https://web-production-184ff.up.railway.app';
 const STEPS = [
   ['login', '네이버 로그인 확인', '현재 Chrome 세션의 네이버 로그인을 확인합니다.'],
   ['channel', '채널/카테고리 확인', '블로그 URL과 카테고리 후보를 감지해 서버에 저장합니다.'],
-  ['claim', '선택 작업 준비', '체크한 작업 중 하나를 겹치지 않게 점유합니다.'],
+  ['claim', '선택 작업 준비', '발행 생성 작업 목록에서 체크한 글을 준비합니다.'],
   ['images', '이미지 불러오기', '서버에 저장된 500x500 이미지 초안을 확인합니다.'],
   ['editor', '작성창 이동', '선택 계정의 플랫폼 작성 화면을 엽니다.'],
   ['insert', '원고 삽입', '현재 작성 화면에 제목과 본문을 삽입합니다.'],
@@ -79,6 +79,36 @@ function absoluteApiAssetUrl(url = '') {
   return url;
 }
 
+function parseJsonArray(value) {
+  if (Array.isArray(value)) return value;
+  if (!value) return [];
+  if (typeof value !== 'string') return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function normalizeEditorJob(job = {}) {
+  const keyword = job.keyword || job.target_keyword || '';
+  const plainText = job.plainText || job.plain_text || job.body || '';
+  const ctaUrl = job.ctaUrl || job.cta_url || '';
+  const qrTargetUrl = job.qrTargetUrl || job.qr_target_url || ctaUrl;
+  return {
+    ...job,
+    keyword,
+    plainText,
+    plain_text: plainText,
+    ctaUrl,
+    cta_url: ctaUrl,
+    qrTargetUrl,
+    qr_target_url: qrTargetUrl,
+    platform: job.platform || 'blog',
+  };
+}
+
 function setStep(key, status, note = '') {
   state.steps[key] = { status, note };
   renderSteps();
@@ -112,7 +142,7 @@ async function loadSettings() {
   const saved = await chromePromise((done) => chrome.storage.local.get(['apiBase', 'selectedAccountId', 'selectedJobIds', 'activeJob', 'images', 'batchDelaySeconds'], done));
   state.apiBase = saved.apiBase || DEFAULT_API;
   state.selectedAccountId = saved.selectedAccountId || '';
-  state.selectedJobIds = Array.isArray(saved.selectedJobIds) ? saved.selectedJobIds : [];
+  state.selectedJobIds = Array.isArray(saved.selectedJobIds) ? saved.selectedJobIds.map((id) => Number(id)).filter(Boolean) : [];
   state.activeJob = saved.activeJob || null;
   state.images = saved.images || [];
   state.batchDelaySeconds = clampNumber(saved.batchDelaySeconds, 5, 600, 60);
@@ -385,16 +415,16 @@ function renderAccounts() {
 
 function renderJob() {
   const box = $('jobBox');
-  const job = state.activeJob;
-  if (!job) {
+  if (!state.activeJob) {
     box.textContent = '대기 중인 작업을 가져오세요.';
     box.classList.add('muted');
     return;
   }
+  const job = normalizeEditorJob(state.activeJob);
   box.classList.remove('muted');
   const body = job.body || job.plain_text || job.plainText || '';
   const preview = body.length > 700 ? `${body.slice(0, 700)}...` : body;
-  box.innerHTML = `<strong>${escapeHtml(job.title || job.keyword || '제목 없음')}</strong><span class="muted">${escapeHtml(job.platform || '')} · ${escapeHtml(job.publish_status || '')}</span><pre>${escapeHtml(preview)}</pre>`;
+  box.innerHTML = `<strong>${escapeHtml(job.title || job.keyword || '제목 없음')}</strong><span class="muted">${escapeHtml(job.platform || '')} · ${escapeHtml(job.status || job.publish_status || '')}</span><pre>${escapeHtml(preview)}</pre>`;
   $('publishedUrl').value = job.published_url || '';
 }
 
@@ -412,7 +442,7 @@ function renderImages() {
 
 function normalizeEditorImages(images = []) {
   return images.map((image) => {
-    const url = image.downloadUrl || image.download_url || image.publicUrl || image.public_url || image.url || '';
+    const url = image.downloadUrl || image.download_url || image.publicUrl || image.public_url || image.url || image.dataUrl || image.data_url || '';
     return {
       ...image,
       downloadUrl: absoluteApiAssetUrl(url),
@@ -421,25 +451,32 @@ function normalizeEditorImages(images = []) {
   });
 }
 
+function imagesFromRewriteJob(job = {}) {
+  return normalizeEditorImages(parseJsonArray(job.images_json || job.imagesJson).map((image, index) => ({
+    ...image,
+    label: image.label || image.title || image.section || image.role || image.image_role || `이미지 ${index + 1}`,
+  })));
+}
+
 async function fetchJobImages(jobId) {
-  const data = await api(`/publish-queue/${jobId}/images`);
-  return normalizeEditorImages(data.images || []);
+  const job = state.jobs.find((item) => Number(item.id) === Number(jobId)) || state.activeJob || {};
+  return imagesFromRewriteJob(job);
 }
 
 function publishWaitingJobs() {
   return state.jobs.filter((job) => {
-    return ['자동발행대기', '발행대기', '예약대기', '초안대기'].includes(job.publish_status);
+    return (job.status || '') === '글생성 완료';
   });
 }
 
 function renderJobList() {
   const box = $('jobList');
   const jobs = publishWaitingJobs();
-  state.selectedJobIds = state.selectedJobIds.filter((id) => jobs.some((job) => job.id === id));
+  state.selectedJobIds = state.selectedJobIds.map((id) => Number(id)).filter((id) => jobs.some((job) => Number(job.id) === id));
   chrome.storage.local.set({ selectedJobIds: state.selectedJobIds });
-  setText('selectedJobCount', `선택 ${state.selectedJobIds.length}개 / 대기 ${jobs.length}개`);
+  setText('selectedJobCount', `선택 ${state.selectedJobIds.length}개 / 글생성 완료 ${jobs.length}개`);
   if (!jobs.length) {
-    box.textContent = '대시보드에 자동발행 대기/발행 대기 작업이 없습니다. 발행 생성에서 글을 체크해 자동발행 대기로 먼저 넘겨주세요.';
+    box.textContent = '사이트의 발행 생성 작업 목록에 글생성 완료 작업이 없습니다. 발행 생성에서 글을 먼저 만들어주세요.';
     box.classList.add('muted');
     return;
   }
@@ -448,11 +485,11 @@ function renderJobList() {
     const checked = state.selectedJobIds.includes(job.id) ? 'checked' : '';
     const account = selectedAccount();
     const platformMatch = !account?.platform || job.platform === account.platform || job.publish_account_platform === account.platform;
-    const meta = `#${job.id} · ${job.platform || '-'} · ${job.publish_status || '-'} · ${Number(job.char_count || 0).toLocaleString()}자 · 이미지 ${job.generated_image_count || job.image_count || 0}${platformMatch ? '' : ' · 선택 계정과 플랫폼 다름'}`;
+    const meta = `#${job.id} · ${job.platform || '-'} · ${job.status || '-'} · ${Number(job.char_count || 0).toLocaleString()}자 · 이미지 ${job.image_count || imagesFromRewriteJob(job).length || 0}${platformMatch ? '' : ' · 선택 계정과 플랫폼 다름'}`;
     return `<label class="job-choice">
       <input type="checkbox" data-job-id="${job.id}" ${checked} />
       <span>
-        <strong>${escapeHtml(job.title || job.keyword || '제목 없음')}</strong>
+        <strong>${escapeHtml(job.title || job.target_keyword || job.keyword || '제목 없음')}</strong>
         <span>${escapeHtml(meta)}</span>
       </span>
     </label>`;
@@ -491,30 +528,23 @@ function escapeHtml(value) {
 }
 
 async function loadPublishJobs() {
-  setStep('claim', 'active', '대시보드 자동발행 대기 작업을 불러오는 중입니다.');
-  const jobs = await api('/publish-queue?limit=120');
+  setStep('claim', 'active', '사이트의 발행 생성 작업 목록을 불러오는 중입니다.');
+  const jobs = await api('/rewrite-jobs?status=글생성 완료&limit=120');
   state.jobs = Array.isArray(jobs) ? jobs : [];
   renderJobList();
-  setStep('claim', 'done', `대기 작업 ${publishWaitingJobs().length}개 확인`);
+  setStep('claim', 'done', `글생성 완료 작업 ${publishWaitingJobs().length}개 확인`);
 }
 
 async function claimSelectedJob(jobId) {
   const account = selectedAccount();
   if (!account) throw new Error('계정 슬롯이 없습니다.');
-  const data = await api(`/publish-queue/${jobId}/claim`, {
-    method: 'POST',
-    body: JSON.stringify({
-      platform: account.platform,
-      publishAccountId: account.id,
-      publishAccountLabel: account.label,
-      ignoreSchedule: true,
-    }),
-  });
-  return data.job || null;
+  const job = publishWaitingJobs().find((item) => Number(item.id) === Number(jobId));
+  if (!job) throw new Error(`#${jobId} 작업을 발행 생성 작업 목록에서 찾지 못했습니다.`);
+  return normalizeEditorJob(job);
 }
 
 async function setActiveJob(job, images = []) {
-  state.activeJob = job;
+  state.activeJob = normalizeEditorJob(job);
   state.images = images;
   await chromePromise((done) => chrome.storage.local.set({
     activeJob: state.activeJob,
@@ -533,6 +563,8 @@ function actionDelaySeconds(job) {
 
 async function startSelectedJobs() {
   if (state.batchRunning) throw new Error('이미 선택 작업을 진행 중입니다.');
+  selectTab('job');
+  if (!state.jobs.length) await loadPublishJobs();
   if (!state.selectedJobIds.length) throw new Error('작업 탭에서 진행할 작업을 체크해 주세요.');
 
   const account = selectedAccount();
@@ -549,7 +581,7 @@ async function startSelectedJobs() {
       const jobId = plannedIds[index];
       setStep('claim', 'active', `선택 작업 ${plannedIds.length}개 중 ${index + 1}번째 작업을 준비합니다.`);
       const job = await claimSelectedJob(jobId);
-      if (!job) throw new Error(`#${jobId} 작업을 점유하지 못했습니다.`);
+      if (!job) throw new Error(`#${jobId} 작업을 준비하지 못했습니다.`);
 
       setStep('images', 'active', `#${job.id} 이미지 초안을 자동으로 불러오는 중입니다.`);
       const images = await fetchJobImages(job.id);
@@ -593,7 +625,8 @@ async function loadJobImages() {
 
 function jobText(job) {
   if (!job) return '';
-  return [job.title || job.keyword || '', '', job.body || job.plain_text || job.plainText || ''].join('\n');
+  const normalized = normalizeEditorJob(job);
+  return [normalized.title || normalized.keyword || '', '', normalized.body || normalized.plain_text || normalized.plainText || ''].join('\n');
 }
 
 async function copyJob() {
@@ -626,7 +659,7 @@ async function openEditorForJob() {
 async function sendFillMessageToFrame(tabId, frameId) {
   return chromePromise((done) => chrome.tabs.sendMessage(tabId, {
     type: 'NAVIWRITE_FILL_JOB',
-    job: state.activeJob,
+    job: normalizeEditorJob(state.activeJob),
     images: state.images,
   }, { frameId }, done)).catch((err) => ({ ok: false, error: err.message }));
 }
@@ -666,32 +699,20 @@ async function insertIntoActiveTab() {
 
 async function markPublished() {
   if (!state.activeJob?.id) throw new Error('발행 완료 저장할 작업이 없습니다.');
+  const rewriteJobId = state.activeJob.rewrite_job_id || state.activeJob.rewriteJobId || state.activeJob.id;
   let publishedUrl = $('publishedUrl').value.trim();
   if (!publishedUrl) {
     const tabs = await chromePromise((done) => chrome.tabs.query({ active: true, currentWindow: true }, done));
     publishedUrl = tabs?.[0]?.url || '';
   }
-  const data = await api(`/publish-queue/${state.activeJob.id}/mark-published`, {
+  const data = await api(`/rewrite-jobs/${rewriteJobId}/mark-published`, {
     method: 'POST',
     body: JSON.stringify({ publishedUrl }),
   });
-  state.activeJob = data.job;
+  state.activeJob = normalizeEditorJob(data.job || state.activeJob);
   await chromePromise((done) => chrome.storage.local.set({ activeJob: state.activeJob }, done));
   renderJob();
   setStep('publish', 'done', '발행 URL과 완료 상태를 서버에 저장했습니다.');
-}
-
-async function requeueActiveJob() {
-  if (!state.activeJob?.id) throw new Error('복구할 현재 작업이 없습니다.');
-  await api(`/publish-queue/${state.activeJob.id}/requeue`, { method: 'POST' });
-  state.activeJob = null;
-  state.images = [];
-  await chromePromise((done) => chrome.storage.local.remove(['activeJob', 'images', 'activeJobBundle'], done));
-  renderJob();
-  renderImages();
-  await loadPublishJobs().catch(() => {});
-  setStep('claim', 'done', '현재 작업을 자동발행 대기로 복구했습니다.');
-  selectTab('job');
 }
 
 async function clearJob() {
@@ -701,6 +722,17 @@ async function clearJob() {
   renderJob();
   renderImages();
   resetSteps();
+}
+
+async function openJobTabAndStart() {
+  selectTab('job');
+  await loadPublishJobs();
+  if (!state.selectedJobIds.length) {
+    setText('loginText', '작업 탭에서 글생성 완료 작업을 체크한 뒤 작업 시작을 누르세요.');
+    setStep('claim', 'active', '발행 생성 작업 목록에서 진행할 글을 체크해 주세요.');
+    return;
+  }
+  await startSelectedJobs();
 }
 
 async function init() {
@@ -728,7 +760,7 @@ async function init() {
   $('reloadAccounts').addEventListener('click', () => loadAccounts().catch((err) => setText('loginText', err.message)));
   $('checkLogin').addEventListener('click', () => checkNaverLogin(true).catch((err) => setText('loginText', err.message)));
   $('detectChannel').addEventListener('click', () => discoverChannel().catch((err) => setText('loginText', err.message)));
-  $('runSelectedJobs').addEventListener('click', () => startSelectedJobs().catch((err) => setText('loginText', err.message)));
+  $('runSelectedJobs').addEventListener('click', () => openJobTabAndStart().catch((err) => setText('loginText', err.message)));
   $('reloadJobs').addEventListener('click', () => loadPublishJobs().catch((err) => setText('loginText', err.message)));
   $('selectAllJobs').addEventListener('click', () => selectAllVisibleJobs().catch((err) => setText('loginText', err.message)));
   $('clearSelectedJobs').addEventListener('click', () => clearSelectedJobs().catch((err) => setText('loginText', err.message)));
@@ -739,7 +771,6 @@ async function init() {
   $('openEditor').addEventListener('click', () => openEditorForJob().catch((err) => setText('loginText', err.message)));
   $('insertJob').addEventListener('click', () => insertIntoActiveTab().catch((err) => setText('loginText', err.message)));
   $('markPublished').addEventListener('click', () => markPublished().catch((err) => setText('loginText', err.message)));
-  $('requeueJob').addEventListener('click', () => requeueActiveJob().catch((err) => setText('loginText', err.message)));
   $('clearJob').addEventListener('click', () => clearJob().catch((err) => setText('loginText', err.message)));
 }
 
