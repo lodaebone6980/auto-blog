@@ -7,6 +7,7 @@
     "activeTab",
     "clipboardWrite",
     "cookies",
+    "sidePanel",
     "scripting",
     "storage",
     "tabs"
@@ -22,8 +23,10 @@
     "https://brunch.co.kr/*"
   ],
   "action": {
-    "default_title": "NaviWrite",
-    "default_popup": "popup.html"
+    "default_title": "NaviWrite"
+  },
+  "side_panel": {
+    "default_path": "popup.html"
   },
   "background": {
     "service_worker": "background.js"

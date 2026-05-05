@@ -14,7 +14,8 @@
 * { box-sizing: border-box; }
 
 body {
-  width: 400px;
+  width: 100%;
+  min-width: 360px;
   margin: 0;
   background: var(--bg);
   color: #101828;
@@ -256,6 +257,28 @@ button:disabled {
   padding: 9px;
   border-radius: 8px;
   background: #f8fafc;
+}
+
+.category-box {
+  max-height: 88px;
+  overflow: auto;
+  padding: 9px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.category-chip {
+  display: inline-grid;
+  place-items: center;
+  min-height: 24px;
+  margin: 0 5px 5px 0;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: #e8f1fa;
+  color: var(--primary);
+  font-size: 10px;
+  font-weight: 850;
 }
 
 .notice {

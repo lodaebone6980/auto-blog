@@ -2799,6 +2799,7 @@ function decryptCredentialSecret(row = {}) {
 }
 
 function publicAccountSlot(row = {}) {
+  const channelDiscovery = row.channel_discovery || {};
   return {
     id: row.slot_id,
     slotId: row.slot_id,
@@ -2816,7 +2817,9 @@ function publicAccountSlot(row = {}) {
     credentialUpdatedAt: row.credential_updated_at || null,
     credentialVerifiedAt: row.credential_verified_at || null,
     channelDiscoveredAt: row.channel_discovered_at || null,
-    channelDiscoveryOk: row.channel_discovery?.ok ?? null,
+    channelDiscoveryOk: channelDiscovery?.ok ?? null,
+    channelDiscovery,
+    categories: Array.isArray(channelDiscovery?.categories) ? channelDiscovery.categories : [],
     runnerProfileId: row.slot_id,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -4456,20 +4459,22 @@ router.post('/account-slots', async (req, res) => {
     const platform = normalizePlatform(body.platform || 'blog');
     const username = String(body.username || body.usernameHint || body.username_hint || '').trim();
     const targetUrl = String(body.targetUrl || body.target_url || body.memo || '').trim();
+    const channelDiscovery = body.channelDiscovery || body.channel_discovery || null;
     const password = String(body.password || '');
     if (!label) return res.status(400).json({ error: 'label is required' });
 
     const encrypted = password ? encryptCredentialSecret(password) : null;
     const { rows } = await pool.query(
-      `INSERT INTO account_slots (
-         tenant_id, slot_id, platform, label, username, target_url, login_status,
-         credential_mode, credential_cipher, credential_iv, credential_tag,
-         credential_updated_at, memo, updated_at
-       )
-       VALUES (
-         $1,$2,$3,$4,$5,$6,$7,'server-aes-256-gcm',$8,$9,$10,
-         CASE WHEN $8::text IS NULL THEN NULL ELSE NOW() END,$11,NOW()
-       )
+       `INSERT INTO account_slots (
+          tenant_id, slot_id, platform, label, username, target_url, login_status,
+          credential_mode, credential_cipher, credential_iv, credential_tag,
+          credential_updated_at, memo, channel_discovery, channel_discovered_at, updated_at
+        )
+        VALUES (
+          $1,$2,$3,$4,$5,$6,$7,'server-aes-256-gcm',$8,$9,$10,
+          CASE WHEN $8::text IS NULL THEN NULL ELSE NOW() END,$11,$12::jsonb,
+          CASE WHEN $12::jsonb IS NULL THEN NULL ELSE NOW() END,NOW()
+        )
        ON CONFLICT (tenant_id, slot_id) DO UPDATE SET
          platform = EXCLUDED.platform,
          label = EXCLUDED.label,
@@ -4480,13 +4485,21 @@ router.post('/account-slots', async (req, res) => {
          credential_cipher = COALESCE(EXCLUDED.credential_cipher, account_slots.credential_cipher),
          credential_iv = COALESCE(EXCLUDED.credential_iv, account_slots.credential_iv),
          credential_tag = COALESCE(EXCLUDED.credential_tag, account_slots.credential_tag),
-         credential_updated_at = CASE
-           WHEN EXCLUDED.credential_cipher IS NULL THEN account_slots.credential_updated_at
-           ELSE NOW()
-         END,
-         memo = COALESCE(NULLIF(EXCLUDED.memo, ''), account_slots.memo),
-         updated_at = NOW()
-       RETURNING *`,
+          credential_updated_at = CASE
+            WHEN EXCLUDED.credential_cipher IS NULL THEN account_slots.credential_updated_at
+            ELSE NOW()
+          END,
+          channel_discovery = CASE
+            WHEN EXCLUDED.channel_discovery IS NULL THEN account_slots.channel_discovery
+            ELSE EXCLUDED.channel_discovery
+          END,
+          channel_discovered_at = CASE
+            WHEN EXCLUDED.channel_discovery IS NULL THEN account_slots.channel_discovered_at
+            ELSE NOW()
+          END,
+          memo = COALESCE(NULLIF(EXCLUDED.memo, ''), account_slots.memo),
+          updated_at = NOW()
+        RETURNING *`,
       [
         tenantId,
         slotId,
@@ -4499,6 +4512,7 @@ router.post('/account-slots', async (req, res) => {
         encrypted?.iv || null,
         encrypted?.tag || null,
         targetUrl,
+        channelDiscovery ? JSON.stringify(channelDiscovery) : null,
       ]
     );
     res.json({ ok: true, account: publicAccountSlot(rows[0]) });

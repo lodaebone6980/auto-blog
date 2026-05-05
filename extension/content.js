@@ -68,7 +68,86 @@ function buildBody(job, images) {
   return `${body}\n\n---\n이미지 삽입 참고\n${imageNotes}`;
 }
 
+function currentBlogUrl() {
+  try {
+    const parsed = new URL(location.href);
+    if (!/blog\.naver\.com$/i.test(parsed.hostname) && !/m\.blog\.naver\.com$/i.test(parsed.hostname)) return '';
+    const parts = parsed.pathname.split('/').filter(Boolean);
+    const blogId = parts.find((part) => !['PostView.naver', 'PostList.naver', 'PostWriteForm.naver', 'MyBlog.naver'].includes(part));
+    return blogId ? `https://blog.naver.com/${blogId}` : '';
+  } catch {
+    return '';
+  }
+}
+
+function collectCategories() {
+  const found = new Map();
+  const selectors = [
+    'a[href*="categoryNo="]',
+    'a[href*="parentCategoryNo="]',
+    'button',
+    '[role="button"]',
+    'option',
+  ];
+  selectors.forEach((selector) => {
+    document.querySelectorAll(selector).forEach((node) => {
+      const text = (node.textContent || '').replace(/\s+/g, ' ').trim();
+      if (!text || text.length > 32) return;
+      if (/^(전체보기|목록열기|접기|펼치기|댓글|공감|이전|다음)$/.test(text)) return;
+      const href = node.getAttribute?.('href') || '';
+      const match = href.match(/categoryNo=(\d+)/);
+      const key = match?.[1] || text;
+      if (!found.has(key)) {
+        found.set(key, {
+          id: match?.[1] || '',
+          name: text,
+          href,
+        });
+      }
+    });
+  });
+  return Array.from(found.values()).slice(0, 40);
+}
+
+function selectCategoryByName(categoryName = '') {
+  const wanted = String(categoryName || '').trim();
+  if (!wanted) return false;
+  const normalized = wanted.replace(/\s+/g, '').toLowerCase();
+  const matches = (text = '') => text.replace(/\s+/g, '').toLowerCase().includes(normalized);
+
+  const select = Array.from(document.querySelectorAll('select')).find((node) =>
+    Array.from(node.options || []).some((option) => matches(option.textContent || option.label || ''))
+  );
+  if (select) {
+    const option = Array.from(select.options || []).find((item) => matches(item.textContent || item.label || ''));
+    if (option) {
+      select.value = option.value;
+      emitInput(select);
+      return true;
+    }
+  }
+
+  const clickable = Array.from(document.querySelectorAll('button, [role="button"], a, li, span'))
+    .filter(visible)
+    .find((node) => matches(node.textContent || ''));
+  if (clickable) {
+    clickable.click();
+    return true;
+  }
+  return false;
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type === 'NAVIWRITE_DETECT_CHANNEL') {
+    sendResponse({
+      ok: true,
+      channelUrl: currentBlogUrl(),
+      pageTitle: document.title || '',
+      categories: collectCategories(),
+    });
+    return true;
+  }
+
   if (message?.type === 'NAVIWRITE_ACTIVE_JOB') {
     const job = message.job || {};
     sendResponse({
@@ -95,12 +174,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  const categorySelected = selectCategoryByName(job.category || job.category_guess || job.target_category || '');
   if (titleTarget && title) setText(titleTarget, title);
   if (bodyTarget && body) setText(bodyTarget, body);
 
   sendResponse({
     ok: true,
-    note: `${titleTarget ? '제목' : ''}${titleTarget && bodyTarget ? '/' : ''}${bodyTarget ? '본문' : ''} 삽입 시도 완료`,
+    note: `${titleTarget ? '제목' : ''}${titleTarget && bodyTarget ? '/' : ''}${bodyTarget ? '본문' : ''} 삽입 시도 완료${categorySelected ? ' · 카테고리 선택 시도 완료' : ''}`,
   });
   return true;
 });

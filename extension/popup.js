@@ -2,6 +2,7 @@ const DEFAULT_API = 'https://web-production-184ff.up.railway.app';
 
 const STEPS = [
   ['login', '네이버 로그인 확인', '현재 Chrome 세션의 네이버 로그인을 확인합니다.'],
+  ['channel', '채널/카테고리 확인', '블로그 URL과 카테고리 후보를 감지해 서버에 저장합니다.'],
   ['claim', '발행 작업 점유', '서버 발행큐에서 겹치지 않게 다음 작업을 가져옵니다.'],
   ['images', '이미지 불러오기', '서버에 저장된 500x500 이미지 초안을 확인합니다.'],
   ['editor', '작성창 이동', '선택 계정의 플랫폼 작성 화면을 엽니다.'],
@@ -118,6 +119,111 @@ async function checkNaverLogin(updateServer = false) {
   return loggedIn;
 }
 
+async function getActiveTab() {
+  const tabs = await chromePromise((done) => chrome.tabs.query({ active: true, currentWindow: true }, done));
+  return tabs?.[0] || null;
+}
+
+function blogUrlFromLocation(url = '') {
+  try {
+    const parsed = new URL(url);
+    if (!/blog\.naver\.com$/i.test(parsed.hostname) && !/m\.blog\.naver\.com$/i.test(parsed.hostname)) return '';
+    const parts = parsed.pathname.split('/').filter(Boolean);
+    const blogId = parts.find((part) => !['PostView.naver', 'PostList.naver', 'PostWriteForm.naver', 'MyBlog.naver'].includes(part));
+    return blogId ? `https://blog.naver.com/${blogId}` : '';
+  } catch {
+    return '';
+  }
+}
+
+function candidateChannelUrl(account) {
+  if (account?.targetUrl) return account.targetUrl;
+  const username = String(account?.usernameHint || '').replace(/@naver\.com$/i, '').trim();
+  if (account?.platform === 'blog' && username) return `https://blog.naver.com/${username}`;
+  if (account?.platform === 'cafe') return accountTarget(account);
+  if (account?.platform === 'premium') return 'https://contents.premium.naver.com';
+  if (account?.platform === 'brunch' && username) return `https://brunch.co.kr/@${username}`;
+  return accountTarget(account);
+}
+
+async function waitForTabComplete(tabId, timeoutMs = 10000) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    const tab = await chromePromise((done) => chrome.tabs.get(tabId, done)).catch(() => null);
+    if (tab?.status === 'complete') return tab;
+    await new Promise((resolve) => setTimeout(resolve, 350));
+  }
+  return chromePromise((done) => chrome.tabs.get(tabId, done)).catch(() => null);
+}
+
+async function detectChannelInTab(tabId) {
+  return chrome.tabs.sendMessage(tabId, { type: 'NAVIWRITE_DETECT_CHANNEL' }).catch((err) => ({
+    ok: false,
+    error: err.message,
+  }));
+}
+
+function renderCategoryBox(account = selectedAccount()) {
+  const box = $('categoryBox');
+  const categories = account?.categories || account?.channelDiscovery?.categories || [];
+  if (!categories.length) {
+    box.textContent = '카테고리 후보는 채널 확인 후 표시됩니다.';
+    return;
+  }
+  box.innerHTML = categories
+    .slice(0, 20)
+    .map((category) => `<span class="category-chip">${escapeHtml(category.name || category.label || category.text || category)}</span>`)
+    .join('');
+}
+
+async function discoverChannel() {
+  const account = selectedAccount();
+  if (!account) throw new Error('계정 슬롯이 없습니다.');
+  setStep('channel', 'active', '블로그 URL과 카테고리 후보를 확인하는 중입니다.');
+
+  let tab = await getActiveTab();
+  let targetUrl = blogUrlFromLocation(tab?.url || '') || account.targetUrl || '';
+
+  if (!targetUrl) {
+    targetUrl = candidateChannelUrl(account);
+    tab = await chrome.tabs.create({ url: targetUrl, active: true });
+    tab = await waitForTabComplete(tab.id);
+  }
+
+  let detected = tab?.id ? await detectChannelInTab(tab.id) : { ok: false };
+  if (!detected?.ok && targetUrl) {
+    const opened = await chrome.tabs.create({ url: targetUrl, active: true });
+    tab = await waitForTabComplete(opened.id);
+    detected = await detectChannelInTab(tab.id);
+  }
+
+  const channelUrl = detected?.channelUrl || blogUrlFromLocation(tab?.url || '') || targetUrl;
+  const channelDiscovery = {
+    ok: Boolean(channelUrl),
+    source: detected?.ok ? 'extension_content_script' : 'extension_url_guess',
+    channelUrl,
+    pageTitle: detected?.pageTitle || tab?.title || '',
+    categories: detected?.categories || [],
+    detectedAt: new Date().toISOString(),
+  };
+
+  await api('/account-slots', {
+    method: 'POST',
+    body: JSON.stringify({
+      slotId: account.id,
+      platform: account.platform,
+      label: account.label,
+      usernameHint: account.usernameHint,
+      targetUrl: channelUrl,
+      loginStatus: account.loginStatus || '확장 로그인 확인 완료',
+      channelDiscovery,
+    }),
+  });
+  await loadAccounts();
+  renderCategoryBox();
+  setStep('channel', channelUrl ? 'done' : 'error', channelUrl ? `${channelUrl} 저장 완료` : '채널 URL을 확인하지 못했습니다.');
+}
+
 async function loadAccounts() {
   const data = await api('/account-slots');
   state.accounts = data.accounts || [];
@@ -177,6 +283,7 @@ function renderAccounts() {
   select.value = state.selectedAccountId || state.accounts[0].id;
   const account = selectedAccount();
   setText('accountHint', account ? `${account.label || account.id} · ${accountTarget(account)}` : '계정 슬롯을 선택하세요.');
+  renderCategoryBox(account);
 }
 
 function renderJob() {
@@ -261,6 +368,9 @@ async function copyJob() {
 async function openEditorForJob() {
   const account = selectedAccount();
   if (!account) throw new Error('계정 슬롯이 없습니다.');
+  if (!account.targetUrl && account.platform === 'blog') {
+    await discoverChannel();
+  }
   const bundle = { job: state.activeJob, images: state.images, account };
   await chromePromise((done) => chrome.storage.local.set({ activeJobBundle: bundle }, done));
   await chrome.tabs.create({ url: editorUrl(account) });
@@ -332,6 +442,7 @@ async function init() {
   $('openSite').addEventListener('click', () => chrome.tabs.create({ url: state.apiBase }));
   $('reloadAccounts').addEventListener('click', () => loadAccounts().catch((err) => setText('loginText', err.message)));
   $('checkLogin').addEventListener('click', () => checkNaverLogin(true).catch((err) => setText('loginText', err.message)));
+  $('detectChannel').addEventListener('click', () => discoverChannel().catch((err) => setText('loginText', err.message)));
   $('claimNext').addEventListener('click', () => claimNextJob().catch((err) => setText('loginText', err.message)));
   $('loadImages').addEventListener('click', () => loadJobImages().catch((err) => setText('loginText', err.message)));
   $('copyJob').addEventListener('click', () => copyJob().catch((err) => setText('loginText', err.message)));
