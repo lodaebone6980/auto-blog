@@ -3956,23 +3956,23 @@ function OperationsSettingsPanelLegacy() {
       <section style={{ ...cardStyle, padding: 18 }}>
         <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16, marginBottom: 12 }}>
           <div>
-            <h3 style={{ fontSize: 15, fontWeight: 850, color: COLORS.primary, marginBottom: 4 }}>Local Runner 연결</h3>
+            <h3 style={{ fontSize: 15, fontWeight: 850, color: COLORS.primary, marginBottom: 4 }}>확장프로그램 연결</h3>
             <p style={{ fontSize: 12, color: COLORS.textSecondary, lineHeight: 1.6 }}>
-              Runner가 계정별 브라우저 프로필, 로그인 세션, 인증 창 열기, VPN 명령 계획을 담당합니다.
+              계정 슬롯과 ID/PW는 서버에 암호화 저장하고, 네이버 로그인 확인과 실제 블로그/카페 발행은 확장프로그램이 진행합니다.
             </p>
           </div>
-          <StatusBadge value={runnerStatus.state === 'ok' ? '연결됨' : runnerStatus.state === 'fail' ? '오류' : '대기중'} />
+          <StatusBadge value="확장 중심" />
         </div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(220px, 1fr) 130px', gap: 8 }}>
-          <input
-            value={settings.runnerUrl}
-            onChange={(e) => saveSettings({ ...settings, runnerUrl: e.target.value })}
-            placeholder="http://127.0.0.1:39271"
-            style={{ ...inputStyle, marginBottom: 0 }}
-          />
-          <button type="button" onClick={testRunner} style={{ ...primaryButtonStyle, marginBottom: 0 }}>
-            연결 테스트
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 8 }}>
+          <a href="/downloads/naviwrite-extension.zip" style={{ ...primaryButtonStyle, marginBottom: 0, display: 'grid', placeItems: 'center', textDecoration: 'none' }}>
+            확장프로그램 다운로드
+          </a>
+          <button type="button" onClick={() => window.open('https://nid.naver.com/nidlogin.login', '_blank', 'noopener,noreferrer')} style={{ ...primaryButtonStyle, marginBottom: 0, background: COLORS.success }}>
+            네이버 로그인 열기
           </button>
+          <a href="/downloads/naviwrite-runner.zip" style={{ ...primaryButtonStyle, marginBottom: 0, display: 'grid', placeItems: 'center', textDecoration: 'none', background: '#64748b' }}>
+            Runner 선택 다운로드
+          </a>
         </div>
         {runnerStatus.message && (
           <p style={{
@@ -3985,7 +3985,7 @@ function OperationsSettingsPanelLegacy() {
           </p>
         )}
         <p style={{ marginTop: 8, fontSize: 10, color: COLORS.textMuted, lineHeight: 1.6 }}>
-          실행 명령: <code>node runner/server.js</code>. 이후 EXE 패키징으로 바꿀 수 있습니다.
+          일반 사용자는 확장프로그램만 설치하면 됩니다. Runner는 여러 크롬 프로필 분리, VPN, 워드프레스 API 발행처럼 PC 보조 기능이 필요할 때만 선택 설치합니다.
         </p>
       </section>
 
@@ -4079,7 +4079,7 @@ function AccountSlotList({ items, onRemove, onCreateProfile, onOpenLogin, onMark
                 {item.platform} · {item.loginStatus} · {item.runnerProfileId ? `Runner ${item.runnerProfileId}` : 'Runner 미연동'}
               </p>
               <p style={{ fontSize: 10, color: COLORS.textMuted, marginTop: 2 }}>
-                {item.credentialPolicy || 'Runner 로컬 DPAPI'} · {item.sessionPolicy || '6시간 체크 · 2시간 무활동 재확인'}
+                {item.credentialPolicy || '서버 AES-256 암호화'} · 확장프로그램 세션 확인
               </p>
             </div>
             <button type="button" onClick={() => onRemove(item.id)} style={{
@@ -4309,7 +4309,7 @@ function OperationsSettingsPanel() {
       const profileId = account.runnerProfileId || await ensureRunnerProfile(account);
       await runnerRequest(`/profiles/${profileId}/open-login`, { method: 'POST', body: '{}' });
       updateAccount(account.id, { loginStatus: '인증 진행 중', runnerProfileId: profileId });
-      setRunnerStatus({ state: 'ok', message: `${account.label} 인증 창을 열었습니다. 네이버 보안 확인을 끝낸 뒤 인증 완료 저장을 누르세요` });
+      setRunnerStatus({ state: 'ok', message: `${account.label} 인증 창을 열었습니다. 네이버 보안 확인을 끝낸 뒤 수동 확인 저장을 누르세요` });
     } catch (err) {
       setRunnerStatus({ state: 'fail', message: err instanceof Error ? err.message : '인증 창 열기 실패' });
     }
@@ -4332,6 +4332,57 @@ function OperationsSettingsPanel() {
       setRunnerStatus({ state: 'fail', message: err instanceof Error ? err.message : '채널 URL 확인 실패' });
     }
   };
+
+  const checkCloudAccountStatus = async (account) => {
+    setRunnerStatus({ state: 'testing', message: `${account.label} 서버 계정 슬롯 확인 중...` });
+    try {
+      const res = await fetch(`${API}/account-slots/${account.id}/credential-status`);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `API error (${res.status})`);
+      mergeAccountSlot(data.account);
+      setRunnerStatus({ state: 'ok', message: `${account.label} 서버 저장 상태를 확인했습니다` });
+    } catch (err) {
+      setRunnerStatus({ state: 'fail', message: err instanceof Error ? err.message : '서버 계정 슬롯 확인 실패' });
+    }
+  };
+
+  const openExtensionLogin = async (account) => {
+    const loginUrl = account.platform === 'brunch'
+      ? 'https://brunch.co.kr/signin'
+      : 'https://nid.naver.com/nidlogin.login';
+    window.open(loginUrl, '_blank', 'noopener,noreferrer');
+    updateAccount(account.id, { loginStatus: '로그인 진행 중' });
+    setRunnerStatus({ state: 'ok', message: `${account.label} 로그인 탭을 열었습니다. 로그인 후 확장프로그램에서 로그인 확인을 누르세요` });
+  };
+
+  const discoverCloudChannel = async (account) => {
+    const username = String(account.usernameHint || '').replace(/@naver\.com$/i, '').trim();
+    let targetUrl = account.memo || account.targetUrl || '';
+    if (!targetUrl && account.platform === 'blog' && username) targetUrl = `https://blog.naver.com/${username}`;
+    if (!targetUrl && account.platform === 'cafe') targetUrl = 'https://cafe.naver.com';
+    if (!targetUrl && account.platform === 'premium') targetUrl = 'https://contents.premium.naver.com';
+    if (!targetUrl && account.platform === 'brunch' && username) targetUrl = `https://brunch.co.kr/@${username}`;
+    if (!targetUrl) {
+      setRunnerStatus({ state: 'fail', message: '채널 URL을 자동 추정하려면 로그인 ID 또는 채널 URL이 필요합니다' });
+      return;
+    }
+    try {
+      await saveCloudAccountSlot({ ...account, memo: targetUrl, targetUrl, loginStatus: account.loginStatus || '인증 필요' });
+      setRunnerStatus({ state: 'ok', message: `${account.label} 채널 URL 저장: ${targetUrl}` });
+    } catch (err) {
+      setRunnerStatus({ state: 'fail', message: err instanceof Error ? err.message : '채널 URL 저장 실패' });
+    }
+  };
+
+  const markCloudLoginChecked = async (account) => {
+    try {
+      await saveCloudAccountSlot({ ...account, loginStatus: '수동 로그인 확인 완료' });
+      setRunnerStatus({ state: 'ok', message: `${account.label} 수동 로그인 확인 상태를 저장했습니다. 실제 자동발행 전에는 확장프로그램이 세션을 다시 확인합니다` });
+    } catch (err) {
+      setRunnerStatus({ state: 'fail', message: err instanceof Error ? err.message : '로그인 확인 저장 실패' });
+    }
+  };
+
 
   const markRunnerLoginChecked = async (account) => {
     setRunnerStatus({ state: 'testing', message: `${account.label} 인증 완료 저장 중...` });
@@ -4592,7 +4643,7 @@ function OperationsSettingsPanel() {
           <button type="button" onClick={addAccount} style={primaryButtonStyle}>새 계정 슬롯 만들기</button>
           <p style={{ marginTop: 6, fontSize: 10, color: COLORS.textMuted, lineHeight: 1.5 }}>
             처음 등록할 때는 위 입력칸을 채운 뒤 새 계정 슬롯 만들기를 누릅니다. 아래 계정 카드의 ID/PW 변경 저장은 이미 만든 슬롯의 비밀번호를 바꿀 때만 사용합니다.
-            네이버 계열 ID/PW 저장은 로그인 완료가 아닙니다. 저장 후 Runner 인증 창을 열어 보안 확인을 끝내고 인증 완료 저장까지 눌러야 합니다.
+            네이버 계열 ID/PW 저장은 로그인 완료가 아닙니다. 저장 후 확장프로그램에서 로그인 상태를 확인하고, 필요하면 네이버 로그인 탭에서 보안 확인을 완료합니다.
             IP 보안이나 2차 인증 설정 변경은 자동으로 끄지 않고, 열린 네이버 화면에서 사용자가 직접 결정합니다.
             워드프레스는 사이트 URL, 관리자 ID, Application Password를 저장하면 발행 큐에서 API 발행을 실행할 수 있습니다.
           </p>
@@ -4601,11 +4652,11 @@ function OperationsSettingsPanel() {
             drafts={credentialDrafts}
             onDraftChange={updateCredentialDraft}
             onRemove={removeAccount}
-            onCreateProfile={createRunnerProfile}
-            onCheckSession={checkRunnerSession}
-            onOpenLogin={openRunnerLogin}
-            onDiscoverChannel={discoverRunnerChannel}
-            onMarkChecked={markRunnerLoginChecked}
+            onCreateProfile={checkCloudAccountStatus}
+            onCheckSession={checkCloudAccountStatus}
+            onOpenLogin={openExtensionLogin}
+            onDiscoverChannel={discoverCloudChannel}
+            onMarkChecked={markCloudLoginChecked}
             onSaveCredential={saveRunnerCredential}
             onVerifyCredential={verifyRunnerCredential}
             onDeleteCredential={deleteRunnerCredential}
@@ -4704,7 +4755,7 @@ function AccountSlotListV2({
               <div style={{ flex: 1, minWidth: 0 }}>
                 <p style={{ fontSize: 13, fontWeight: 850, color: COLORS.textPrimary }}>{item.label}</p>
                 <p style={{ fontSize: 10, color: COLORS.textMuted, marginTop: 2 }}>
-                  {platformName[item.platform] || item.platform} · {item.loginStatus || '로그인 체크 필요'} · {item.runnerProfileId ? `Runner ${item.runnerProfileId}` : 'Runner 미연동'}
+                  {platformName[item.platform] || item.platform} · {item.loginStatus || '로그인 체크 필요'} · 슬롯 {item.id}
                 </p>
                 <p style={{ fontSize: 10, color: item.hasCredential ? COLORS.success : COLORS.textMuted, marginTop: 2 }}>
                   {item.hasCredential ? `자격증명 저장됨${item.credentialUpdatedAt ? ` · ${formatDate(item.credentialUpdatedAt)}` : ''}` : '자격증명 없음'} · {item.sessionPolicy || '6시간 체크 · 2시간 무활동 재확인'}
@@ -4734,10 +4785,10 @@ function AccountSlotListV2({
             </div>
 
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(92px, 1fr))', gap: 6, marginBottom: 10 }}>
-              <button type="button" onClick={() => onCreateProfile(item)} style={smallButtonStyle}>Runner 준비</button>
-              <button type="button" onClick={() => onCheckSession(item)} style={smallButtonStyle}>세션 체크</button>
+              <button type="button" onClick={() => onCreateProfile(item)} style={smallButtonStyle}>서버 확인</button>
+              <button type="button" onClick={() => onCheckSession(item)} style={smallButtonStyle}>저장 확인</button>
               <button type="button" onClick={() => onDiscoverChannel(item)} style={smallButtonStyle}>URL 자동확인</button>
-              <button type="button" onClick={() => onOpenLogin(item)} style={smallButtonStyle}>인증 창 열기</button>
+              <button type="button" onClick={() => onOpenLogin(item)} style={smallButtonStyle}>로그인 열기</button>
               <button type="button" onClick={() => onMarkChecked(item)} style={{ ...smallButtonStyle, background: COLORS.success, color: 'white', borderColor: COLORS.success }}>
                 인증 완료 저장
               </button>
