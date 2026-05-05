@@ -1464,9 +1464,29 @@ function titleIntentTail(keyword = '', topic = '', actionTerms = []) {
 function makeRewriteTitle(keyword, topic = '', platform = 'blog', pattern = {}) {
   const cleanKeyword = normalizeKeywordValue(keyword);
   const cleanTopic = normalizeKeywordValue(topic);
-  const subject = cleanTopic && !cleanTopic.includes(cleanKeyword) ? `${cleanKeyword} ${cleanTopic}` : cleanKeyword;
+  const cleanKeywordCompact = cleanKeyword.replace(/\s/g, '').toLowerCase();
+  const cleanTopicCompact = cleanTopic.replace(/\s/g, '').toLowerCase();
+  const subject = cleanTopic
+    && cleanTopicCompact !== cleanKeywordCompact
+    && !cleanTopicCompact.includes(cleanKeywordCompact)
+    && !cleanKeywordCompact.includes(cleanTopicCompact)
+    ? `${cleanKeyword} ${cleanTopic}`
+    : cleanKeyword;
   const actionTerms = Array.isArray(pattern.sourceActionTerms) ? pattern.sourceActionTerms : [];
-  const title = `${subject} ${titleIntentTail(cleanKeyword, cleanTopic, actionTerms)}`.replace(/\s+/g, ' ').trim();
+  const sourceKeywords = Array.isArray(pattern.sourceKeywords) ? pattern.sourceKeywords : [];
+  const keywordSignals = [
+    ...sourceKeywords,
+    ...actionTerms.map((term) => `${cleanKeyword} ${term}`),
+  ];
+  const keywordPhrases = buildTitleKeywordPhrases({
+    keyword: cleanKeyword,
+    keywordSignals,
+    actions: actionTerms,
+  });
+  const tail = keywordPhrases[0]
+    ? `${keywordPhrases[0]} 정리`
+    : titleIntentTail(cleanKeyword, cleanTopic, actionTerms);
+  const title = compactTitleCandidate(`${subject} ${tail}`);
   if (platform === 'cafe') return `${title} 실제 확인 후기`.slice(0, 76);
   return title.slice(0, 70);
 }

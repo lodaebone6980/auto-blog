@@ -2155,16 +2155,7 @@ function BenchmarkSettingsPanel() {
 function RewritePanel() {
   const [links, setLinks] = useState([]);
   const [jobs, setJobs] = useState([]);
-  const [rssItems, setRssItems] = useState([]);
   const [generationMode, setGenerationMode] = useState('direct');
-  const [selectedRssItemIds, setSelectedRssItemIds] = useState(() => {
-    try {
-      const saved = JSON.parse(localStorage.getItem('naviwrite.rewrite.selectedRssItemIds') || '[]');
-      return Array.isArray(saved) ? saved : [];
-    } catch {
-      return [];
-    }
-  });
   const [selectedSourceLinkIds, setSelectedSourceLinkIds] = useState(() => {
     try {
       const saved = JSON.parse(localStorage.getItem('naviwrite.rewrite.selectedSourceLinkIds') || '[]');
@@ -2196,7 +2187,6 @@ function RewritePanel() {
   const [creating, setCreating] = useState(false);
   const [queueing, setQueueing] = useState(false);
   const [benchmarking, setBenchmarking] = useState(false);
-  const [creatingRssJobs, setCreatingRssJobs] = useState(false);
   const [message, setMessage] = useState('');
 
   const parseArray = (value) => {
@@ -2212,15 +2202,13 @@ function RewritePanel() {
 
   const loadRewriteData = useCallback(async () => {
     setLoading(true);
-    const [linkRes, jobRes, rssItemRes] = await Promise.all([
+    const [linkRes, jobRes] = await Promise.all([
       safeFetch(`${API}/collections/links?limit=150`),
       safeFetch(`${API}/rewrite-jobs?limit=80`),
-      safeFetch(`${API}/rss-items?limit=160`),
     ]);
     setLoading(false);
     if (Array.isArray(linkRes)) setLinks(linkRes);
     if (Array.isArray(jobRes)) setJobs(jobRes);
-    if (Array.isArray(rssItemRes)) setRssItems(rssItemRes);
   }, []);
 
   useEffect(() => {
@@ -2242,10 +2230,6 @@ function RewritePanel() {
   }, [selectedSourceLinkIds]);
 
   useEffect(() => {
-    localStorage.setItem('naviwrite.rewrite.selectedRssItemIds', JSON.stringify(selectedRssItemIds));
-  }, [selectedRssItemIds]);
-
-  useEffect(() => {
     localStorage.setItem('naviwrite.rewrite.settings', JSON.stringify(rewriteSettings));
   }, [rewriteSettings]);
 
@@ -2264,23 +2248,6 @@ function RewritePanel() {
   const selectedRewriteLinks = useMemo(
     () => selectedSources.filter((link) => link.rewrite_job_id),
     [selectedSources]
-  );
-
-  const readyRssItems = useMemo(
-    () => rssItems.filter((item) => (
-      item.checked_for_publish
-      || item.status === '발행 생성 대기'
-      || item.rewrite_job_id
-      || selectedRssItemIds.includes(item.id)
-    )),
-    [rssItems, selectedRssItemIds]
-  );
-
-  const allRssItemsSelected = readyRssItems.length > 0 && readyRssItems.every((item) => selectedRssItemIds.includes(item.id));
-
-  const selectedRssItems = useMemo(
-    () => readyRssItems.filter((item) => selectedRssItemIds.includes(item.id)),
-    [readyRssItems, selectedRssItemIds]
   );
 
   const derivedSourceKeywords = useMemo(
@@ -2306,43 +2273,6 @@ function RewritePanel() {
 
   const toggleAllSources = () => {
     setSelectedSourceLinkIds(allSourcesSelected ? [] : collectedLinks.map((link) => link.id));
-  };
-
-  const toggleRssItem = (id) => {
-    setSelectedRssItemIds((prev) => (
-      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
-    ));
-  };
-
-  const toggleAllRssItems = () => {
-    setSelectedRssItemIds(allRssItemsSelected ? [] : readyRssItems.map((item) => item.id));
-  };
-
-  const createJobsFromSelectedRssItems = async () => {
-    if (selectedRssItems.length === 0) {
-      setMessage('발행 생성할 RSS 감지 글을 체크해 주세요.');
-      return;
-    }
-    setCreatingRssJobs(true);
-    setMessage(`RSS 감지 글 ${selectedRssItems.length}개를 발행 생성 중입니다.`);
-    const res = await safeFetch(`${API}/rss-items/to-rewrite-jobs`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        itemIds: selectedRssItems.map((item) => item.id),
-        useNaverQr: true,
-        useAiImages: true,
-        rewriteSettings,
-      }),
-    });
-    setCreatingRssJobs(false);
-    if (res?.ok) {
-      setMessage(`RSS 기반 발행 생성 완료 · ${res.created || 0}개`);
-      setSelectedRssItemIds([]);
-      await loadRewriteData();
-    } else {
-      setMessage(res?.error || 'RSS 기반 발행 생성에 실패했습니다.');
-    }
   };
 
   const saveCorrectedKeyword = async (link) => {
@@ -2941,114 +2871,6 @@ function RewritePanel() {
             </div>
           </div>
         )}
-
-        <div style={{
-          display: generationMode === 'benchmark' ? 'block' : 'none',
-          marginTop: 14,
-          padding: 14,
-          border: `1px solid ${COLORS.border}`,
-          borderRadius: 10,
-          background: '#ffffff',
-        }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap', marginBottom: 10 }}>
-            <div>
-              <h3 style={{ fontSize: 14, fontWeight: 900, color: COLORS.primary, marginBottom: 4 }}>RSS 검토 완료 글 기준 발행 생성</h3>
-              <p style={{ fontSize: 11, color: COLORS.textSecondary, lineHeight: 1.6 }}>
-                RSS 감지 메뉴에서 키워드를 검토하고 넘긴 RSS 글만 표시됩니다. 플랫폼과 카테고리는 각 RSS 행의 값을 우선 사용합니다.
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={createJobsFromSelectedRssItems}
-              disabled={selectedRssItems.length === 0 || creatingRssJobs}
-              style={{
-                height: 30,
-                padding: '0 12px',
-                borderRadius: 8,
-                border: 'none',
-                background: selectedRssItems.length === 0 || creatingRssJobs ? COLORS.textMuted : COLORS.success,
-                color: 'white',
-                fontSize: 11,
-                fontWeight: 850,
-                cursor: selectedRssItems.length === 0 || creatingRssJobs ? 'not-allowed' : 'pointer',
-              }}
-            >
-              {creatingRssJobs ? '발행 생성 중' : `선택 RSS 발행 생성 (${selectedRssItems.length})`}
-            </button>
-          </div>
-
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
-            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11, fontWeight: 900, color: COLORS.textSecondary }}>
-              <input type="checkbox" checked={allRssItemsSelected} onChange={toggleAllRssItems} />
-              전체 선택/해제
-            </label>
-            <span style={{ fontSize: 11, color: COLORS.textMuted, fontWeight: 800 }}>
-              준비된 RSS {readyRssItems.length}개
-            </span>
-          </div>
-
-          <div style={{ overflowX: 'auto', maxHeight: 220 }}>
-            {readyRssItems.length === 0 ? (
-              <div style={{ padding: 22, textAlign: 'center', color: COLORS.textMuted, fontSize: 12 }}>
-                아직 발행 생성 대기로 넘어온 RSS 글이 없습니다. RSS 감지 메뉴에서 RSS 글을 선택해 넘겨주세요.
-              </div>
-            ) : (
-              <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 860 }}>
-                <thead>
-                  <tr style={{ background: '#f8fafc', color: COLORS.textSecondary, fontSize: 11, textAlign: 'left' }}>
-                    {['선택', '검색량', '상태', '제목', '플랫폼', '선택 KW', '작업'].map((head) => (
-                      <th key={head} style={{ padding: '9px 10px', borderBottom: `1px solid ${COLORS.border}` }}>{head}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {readyRssItems.map((item) => {
-                    const band = volumeBandFor(item.volume_band || 'unknown');
-                    const dateBadge = rssDateBadgeStyle(item.published_at || item.detected_at);
-                    return (
-                      <tr key={item.id} style={{ fontSize: 12, borderBottom: `1px solid ${COLORS.border}` }}>
-                        <td style={{ padding: '9px 10px' }}>
-                          <input type="checkbox" checked={selectedRssItemIds.includes(item.id)} onChange={() => toggleRssItem(item.id)} />
-                        </td>
-                        <td style={{ padding: '9px 10px' }}>
-                          <span style={{ display: 'inline-flex', alignItems: 'center', height: 24, padding: '0 8px', borderRadius: 999, background: band.color, color: band.textColor, fontSize: 10, fontWeight: 900 }}>
-                            {item.search_volume != null ? Number(item.search_volume).toLocaleString() : band.label}
-                          </span>
-                        </td>
-                        <td style={{ padding: '9px 10px' }}><StatusBadge value={item.status} /></td>
-                        <td style={{ padding: '9px 10px', maxWidth: 320 }}>
-                          <a href={item.link} target="_blank" rel="noreferrer" style={{ fontWeight: 850, color: COLORS.textPrimary, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', display: 'block' }}>{item.title || '-'}</a>
-                          <div style={{ marginTop: 4, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                            <span style={{
-                              display: 'inline-flex',
-                              alignItems: 'center',
-                              height: 20,
-                              padding: '0 7px',
-                              borderRadius: 999,
-                              background: dateBadge.background,
-                              color: dateBadge.color,
-                              fontSize: 10,
-                              fontWeight: 900,
-                            }}>
-                              {dateBadge.label}
-                            </span>
-                            <span style={{ fontSize: 10, color: COLORS.textMuted }}>{formatDateTime(item.published_at || item.detected_at)}</span>
-                          </div>
-                        </td>
-                        <td style={{ padding: '9px 10px', color: COLORS.textSecondary }}>{platformLabel[item.platform] || item.platform || '-'}</td>
-                        <td style={{ padding: '9px 10px' }}>
-                          <p style={{ margin: 0, fontWeight: 850, color: COLORS.primary }}>{item.selected_keyword || item.main_keyword || '-'}</p>
-                          <p style={{ marginTop: 3, fontSize: 10, color: COLORS.textMuted }}>검색량 {formatSearchVolume(item.search_volume)}</p>
-                        </td>
-                        <td style={{ padding: '9px 10px', color: COLORS.textSecondary }}>{item.rewrite_job_id ? `#${item.rewrite_job_id}` : '-'}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            )}
-          </div>
-        </div>
 
         <div style={{
           marginTop: 14,
