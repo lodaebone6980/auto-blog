@@ -1587,6 +1587,7 @@ async function fetchNaverKeywordVolumes(keywords = [], credentials = null) {
     const searchVolume = (pc || 0) + (mobile || 0);
     const band = keywordVolumeBand(searchVolume);
     map.set(keyword.replace(/\s/g, '').toLowerCase(), {
+      keyword,
       searchVolume,
       monthlyPcQcCnt: pc,
       monthlyMobileQcCnt: mobile,
@@ -1663,18 +1664,27 @@ async function enrichKeywordCandidates(candidates = [], { body = {}, seedQuery =
 
   candidates.forEach((candidate) => add(candidate));
   autocompleteKeywords.forEach((keyword, index) => add({ keyword, score: Math.max(18, 34 - index * 2) }, 'naver_autocomplete'));
-  const merged = [...byKey.values()].sort((a, b) => Number(b.score || 0) - Number(a.score || 0)).slice(0, limit);
-
   const keywordToolCredentials = naverKeywordToolCredentials(body);
   let volumeMap = new Map();
   let keywordToolWarning = '';
   if (keywordToolCredentials) {
     try {
-      volumeMap = await fetchNaverKeywordVolumes(merged.map((item) => item.keyword), keywordToolCredentials);
+      const toolSeeds = [
+        ...byKey.values(),
+        ...keywordVariantSeeds(seed).map((keyword) => ({ keyword })),
+      ].map((item) => item.keyword);
+      volumeMap = await fetchNaverKeywordVolumes(toolSeeds, keywordToolCredentials);
+      for (const volume of volumeMap.values()) {
+        if (!volume.keyword) continue;
+        const score = Math.min(46, Math.log10(Number(volume.searchVolume || 0) + 1) * 8);
+        add({ keyword: volume.keyword, score }, 'naver_keyword_tool');
+      }
     } catch (err) {
       keywordToolWarning = err.message;
     }
   }
+
+  const merged = [...byKey.values()].sort((a, b) => Number(b.score || 0) - Number(a.score || 0)).slice(0, limit);
 
   return {
     hasKeywordTool: Boolean(keywordToolCredentials && !keywordToolWarning),
@@ -1761,6 +1771,23 @@ function titleRecommendationActions(text = '') {
   return [...new Set([...picked, ...inferTitleActionTerms(text)])].slice(0, 6);
 }
 
+function keywordVariantSeeds(seed = '') {
+  const keyword = normalizeKeywordValue(seed);
+  if (!keyword) return [];
+  const variants = [keyword];
+  const compact = keyword.replace(/\s/g, '');
+  if (compact !== keyword) variants.push(compact);
+  if (/^\d+차\s+/.test(keyword)) {
+    variants.push(keyword.replace(/^(\d+차)\s+(.+)$/, '$2 $1'));
+  }
+  if (/지원금/.test(keyword) && !/신청/.test(keyword)) variants.push(`${keyword} 신청`);
+  if (/지원금|정책|수당|급여|환급/.test(keyword)) {
+    variants.push(`${keyword} 대상`);
+    variants.push(`${keyword} 지급일`);
+  }
+  return [...new Set(variants.map(normalizeKeywordValue).filter(Boolean))].slice(0, 8);
+}
+
 function compactTitleCandidate(value = '') {
   return normalizeTitleValue(value)
     .replace(/\s+(정리|확인|방법|알아보기)\s+\1/g, ' $1')
@@ -1768,23 +1795,38 @@ function compactTitleCandidate(value = '') {
     .trim();
 }
 
-function generateTitleCandidates({ keyword, topic = '', platform = 'blog', category = '', analyses = [] }) {
+function generateTitleCandidates({ keyword, topic = '', platform = 'blog', category = '', analyses = [], keywordSignals = [] }) {
   const cleanKeyword = normalizeKeywordValue(keyword);
   const cleanTopic = normalizeTitleValue(topic);
+  const cleanKeywordCompact = cleanKeyword.replace(/\s/g, '').toLowerCase();
+  const cleanSignals = [...new Set(keywordSignals.map(normalizeKeywordValue).filter((item) => item && item !== cleanKeyword))]
+    .filter((item) => item.replace(/\s/g, '').toLowerCase() !== cleanKeywordCompact)
+    .slice(0, 5);
   const sourceTitles = analyses.map((row) => row.title).filter(Boolean);
   const sourceText = [
     ...sourceTitles,
     ...analyses.flatMap((row) => Array.isArray(row.subheadings) ? row.subheadings : []),
+    ...cleanSignals,
     category,
     cleanTopic,
   ].join(' ');
   const actions = titleRecommendationActions(sourceText);
   const tail = titleIntentTail(cleanKeyword, cleanTopic, actions);
   const subject = cleanTopic && !cleanTopic.includes(cleanKeyword) ? `${cleanKeyword} ${cleanTopic}` : cleanKeyword;
+  const signalActionTerms = cleanSignals
+    .flatMap((signal) => TITLE_RECOMMENDATION_ACTIONS.filter((term) => signal.includes(term)))
+    .filter((term) => !cleanKeyword.includes(term));
+  const actionBlend = [...new Set([...signalActionTerms, ...actions])].slice(0, 3);
   const candidates = [
     `${subject} ${tail}`,
-    `${cleanKeyword} ${actions.slice(0, 3).join(' ')} 정리`,
+    `${cleanKeyword} ${actionBlend.join(' ')} 정리`,
     `${cleanKeyword} ${cleanTopic || '핵심'} 확인 방법`,
+    ...cleanSignals.slice(0, 4).map((signal) => {
+      const tailFromSignal = signal.includes(cleanKeyword)
+        ? signal.replace(cleanKeyword, '').trim()
+        : titleRecommendationActions(signal).filter((term) => !cleanKeyword.includes(term)).join(' ');
+      return `${cleanKeyword} ${tailFromSignal || signal} 정리`;
+    }),
     `${cleanKeyword} 바로가기 링크 결과 정리`,
     `${cleanKeyword} 대상 기준 신청 방법`,
     `${cleanKeyword} 일정 예매 가격 확인`,
@@ -4310,8 +4352,9 @@ router.get('/rewrite-settings/benchmark', async (req, res) => {
 
 router.post('/keyword-recommendations', async (req, res) => {
   try {
-    const sourceAnalysisIds = normalizeIdList(req.body?.sourceAnalysisIds);
-    const sourceLinkIds = normalizeIdList(req.body?.sourceLinkIds);
+    const directKeywordMode = Boolean(req.body?.directKeywordMode || req.body?.direct_keyword_mode || req.body?.mode === 'direct');
+    const sourceAnalysisIds = directKeywordMode ? [] : normalizeIdList(req.body?.sourceAnalysisIds);
+    const sourceLinkIds = directKeywordMode ? [] : normalizeIdList(req.body?.sourceLinkIds);
     let resolvedSourceAnalysisIds = [...sourceAnalysisIds];
 
     if (sourceLinkIds.length > 0) {
@@ -4355,11 +4398,20 @@ router.post('/keyword-recommendations', async (req, res) => {
       };
       current.score += Number(score || 0);
       current.count += Number(extra.count || 0);
+      current.searchTotal = extra.searchTotal ?? current.searchTotal;
+      current.serpTopTitles = extra.serpTopTitles || current.serpTopTitles || [];
+      current.verificationScore = Number(extra.verificationScore || current.verificationScore || 0);
       if (source) current.sources.add(source);
       candidateMap.set(key, current);
     };
 
-    analyses.forEach((row) => {
+    if (directKeywordMode && topic) {
+      keywordVariantSeeds(topic).forEach((keyword, index) => {
+        addCandidate(keyword, index === 0 ? 96 : 72 - index * 4, index === 0 ? 'direct_seed' : 'direct_variant');
+      });
+    }
+
+    if (!directKeywordMode) analyses.forEach((row) => {
       addCandidate(row.corrected_main_keyword || row.main_keyword || row.keyword, 22, 'saved_main_keyword', { count: row.kw_count || 0 });
       parseJsonArray(row.keyword_candidates).forEach((item) => {
         addCandidate(item.keyword || item.term, Number(item.score || 0) * 0.45 + 8, 'saved_candidate', { count: item.count || 0 });
@@ -4415,6 +4467,32 @@ router.post('/keyword-recommendations', async (req, res) => {
     const credentials = naverSearchCredentials(req.body);
     let hasNaverSearch = Boolean(credentials);
     let naverWarning = '';
+    if (directKeywordMode && topic && credentials) {
+      try {
+        const seedSearch = await fetchNaverSearchResults({ query: topic, platform, credentials, display: 10 });
+        addCandidate(topic, Math.min(32, Math.log10(Number(seedSearch.total || 0) + 1) * 5), 'naver_search_seed', {
+          searchTotal: seedSearch.total,
+          serpTopTitles: seedSearch.items.map((item) => item.title).filter(Boolean).slice(0, 5),
+        });
+        inferKeywordCandidates({
+          title: topic,
+          text: seedSearch.items.map((item) => `${item.title}\n${item.description}`).join('\n'),
+          subheadings: [],
+          keywordSignals: [],
+        }).forEach((item) => {
+          const keyword = normalizeKeywordValue(item.keyword);
+          const compactTopic = topic.replace(/\s/g, '').toLowerCase();
+          const compactKeyword = keyword.replace(/\s/g, '').toLowerCase();
+          const isRelated = compactKeyword.includes(compactTopic.slice(0, Math.min(compactTopic.length, 4)))
+            || compactTopic.includes(compactKeyword.slice(0, Math.min(compactKeyword.length, 4)))
+            || TITLE_RECOMMENDATION_ACTIONS.some((term) => keyword.includes(term));
+          if (isRelated) addCandidate(keyword, Number(item.score || 0) * 0.38 + 10, 'naver_search_related', { count: item.count || 0 });
+        });
+      } catch (err) {
+        hasNaverSearch = false;
+        naverWarning = err.message;
+      }
+    }
     const candidates = [...candidateMap.values()]
       .map((item) => ({
         ...item,
@@ -4494,6 +4572,7 @@ router.post('/keyword-recommendations', async (req, res) => {
           platform,
           category,
           analyses,
+          keywordSignals: enriched.autocompleteKeywords || [],
         }).slice(0, 3),
       })),
     });
@@ -4504,8 +4583,9 @@ router.post('/keyword-recommendations', async (req, res) => {
 
 router.post('/title-recommendations', async (req, res) => {
   try {
-    const sourceAnalysisIds = normalizeIdList(req.body?.sourceAnalysisIds);
-    const sourceLinkIds = normalizeIdList(req.body?.sourceLinkIds);
+    const directKeywordMode = Boolean(req.body?.directKeywordMode || req.body?.direct_keyword_mode || req.body?.mode === 'direct');
+    const sourceAnalysisIds = directKeywordMode ? [] : normalizeIdList(req.body?.sourceAnalysisIds);
+    const sourceLinkIds = directKeywordMode ? [] : normalizeIdList(req.body?.sourceLinkIds);
     let resolvedSourceAnalysisIds = [...sourceAnalysisIds];
 
     if (sourceLinkIds.length > 0) {
@@ -4547,6 +4627,9 @@ router.post('/title-recommendations', async (req, res) => {
     let hasNaverSearch = Boolean(credentials);
     let naverWarning = '';
     let baseSearch = { total: null, items: [] };
+    let autocompleteKeywords = [];
+    let keywordToolWarning = '';
+    let keywordVolumeRows = [];
 
     if (credentials) {
       try {
@@ -4557,8 +4640,31 @@ router.post('/title-recommendations', async (req, res) => {
       }
     }
 
+    try {
+      autocompleteKeywords = await fetchNaverAutocompleteKeywords(keyword);
+    } catch {
+      autocompleteKeywords = [];
+    }
+
+    const keywordToolCredentials = naverKeywordToolCredentials(req.body);
+    if (keywordToolCredentials) {
+      try {
+        const volumeMap = await fetchNaverKeywordVolumes([keyword, ...autocompleteKeywords.slice(0, 12)], keywordToolCredentials);
+        keywordVolumeRows = [...volumeMap.values()]
+          .filter((row) => row.keyword)
+          .sort((a, b) => Number(b.searchVolume || 0) - Number(a.searchVolume || 0))
+          .slice(0, 12);
+      } catch (err) {
+        keywordToolWarning = err.message;
+      }
+    }
+
     const baseSerpTitles = baseSearch.items.map((item) => item.title).filter(Boolean);
-    const candidates = generateTitleCandidates({ keyword, topic, platform, category, analyses })
+    const keywordSignals = [
+      ...keywordVolumeRows.map((row) => row.keyword),
+      ...autocompleteKeywords,
+    ];
+    const candidates = generateTitleCandidates({ keyword, topic, platform, category, analyses, keywordSignals })
       .slice(0, clampNumber(parseInt(req.body?.limit || '8', 10) || 8, 4, 12));
 
     const scored = [];
@@ -4579,7 +4685,7 @@ router.post('/title-recommendations', async (req, res) => {
         title,
         keyword,
         topic,
-        actionTerms: sourceActionTerms,
+        actionTerms: [...new Set([...sourceActionTerms, ...titleRecommendationActions(keywordSignals.join(' '))])],
         sourceTitles,
         serpTitles,
         total: candidateSearch.total ?? baseSearch.total,
@@ -4605,6 +4711,10 @@ router.post('/title-recommendations', async (req, res) => {
       category,
       hasNaverSearch,
       naverWarning,
+      hasKeywordTool: Boolean(keywordToolCredentials && !keywordToolWarning),
+      keywordToolWarning,
+      autocompleteKeywords,
+      keywordVolumeRows,
       sourceActionTerms,
       serpTopTerms: titleRecommendationActions(baseSerpTitles.join(' ')),
       candidates: scored,

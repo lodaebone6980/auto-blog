@@ -2402,9 +2402,10 @@ function RewritePanel() {
       setMessage('제목 추천을 위해 메인 키워드나 수집 링크를 먼저 선택하세요.');
       return;
     }
+    const isDirectMode = generationMode === 'direct';
     const opsSettings = loadOpsSettings();
     setRecommendingTitle(true);
-    setMessage('네이버 검색 흐름과 수집 패턴으로 제목 조합을 계산 중입니다.');
+    setMessage(isDirectMode ? '네이버 자동완성/검색량 기준으로 제목 조합을 계산 중입니다.' : '네이버 검색 흐름과 수집 패턴으로 제목 조합을 계산 중입니다.');
     const res = await safeFetch(`${API}/title-recommendations`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -2413,16 +2414,24 @@ function RewritePanel() {
         topic: targetTopic,
         platform,
         category,
-        sourceLinkIds: selectedSourceLinkIds,
+        sourceLinkIds: isDirectMode ? [] : selectedSourceLinkIds,
+        directKeywordMode: isDirectMode,
         naverClientId: opsSettings.naverClientId,
         naverClientSecret: opsSettings.naverClientSecret,
+        customerId: opsSettings.customerId || opsSettings.naverCustomerId || opsSettings.naverSearchAdCustomerId,
+        accessLicense: opsSettings.accessLicense || opsSettings.naverAccessLicense || opsSettings.naverSearchAdAccessLicense,
+        secretKey: opsSettings.secretKey || opsSettings.naverSecretKey || opsSettings.naverSearchAdSecretKey,
         limit: 8,
       }),
     });
     setRecommendingTitle(false);
     if (res?.ok) {
       setTitleRecommendations(res);
-      const suffix = res.hasNaverSearch ? '네이버 검색 API 검증 포함' : 'API 키 없음, 내부 패턴 기준';
+      const suffix = [
+        res.hasNaverSearch ? '네이버 검색 API' : '검색 API 없음',
+        res.autocompleteKeywords?.length ? '자동완성 반영' : '',
+        res.hasKeywordTool ? '키워드도구 검색량 반영' : '',
+      ].filter(Boolean).join(' · ');
       setMessage(`제목 추천 완료 · ${suffix}`);
     } else {
       setTitleRecommendations(null);
@@ -2436,7 +2445,8 @@ function RewritePanel() {
   };
 
   const recommendKeywords = async () => {
-    const hasSource = selectedSourceLinkIds.length > 0;
+    const isDirectMode = generationMode === 'direct';
+    const hasSource = !isDirectMode && selectedSourceLinkIds.length > 0;
     const topic = targetTopic || keywordsText;
     if (!hasSource && !topic.trim()) {
       setMessage('키워드 추천을 위해 수집 링크를 선택하거나 주제를 입력하세요.');
@@ -2444,25 +2454,33 @@ function RewritePanel() {
     }
     const opsSettings = loadOpsSettings();
     setRecommendingKeywords(true);
-    setMessage('원문/주제에서 검색 키워드 후보를 검증 중입니다.');
+    setMessage(isDirectMode ? '네이버 자동완성/연관어와 키워드도구 검색량을 확인 중입니다.' : '원문/주제에서 검색 키워드 후보를 검증 중입니다.');
     const res = await safeFetch(`${API}/keyword-recommendations`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        sourceLinkIds: selectedSourceLinkIds,
-        sourceText: keywordsText,
+        sourceLinkIds: isDirectMode ? [] : selectedSourceLinkIds,
+        sourceText: isDirectMode ? '' : keywordsText,
         topic,
         platform,
         category,
+        directKeywordMode: isDirectMode,
         naverClientId: opsSettings.naverClientId,
         naverClientSecret: opsSettings.naverClientSecret,
+        customerId: opsSettings.customerId || opsSettings.naverCustomerId || opsSettings.naverSearchAdCustomerId,
+        accessLicense: opsSettings.accessLicense || opsSettings.naverAccessLicense || opsSettings.naverSearchAdAccessLicense,
+        secretKey: opsSettings.secretKey || opsSettings.naverSecretKey || opsSettings.naverSearchAdSecretKey,
         limit: 10,
       }),
     });
     setRecommendingKeywords(false);
     if (res?.ok) {
       setKeywordRecommendations(res);
-      const suffix = res.hasNaverSearch ? '네이버 검색 API 검증 포함' : '내부 신호 기준';
+      const suffix = [
+        res.hasNaverSearch ? '네이버 검색 API' : '검색 API 없음',
+        res.autocompleteKeywords?.length ? '자동완성 반영' : '',
+        res.hasKeywordTool ? '키워드도구 검색량 반영' : '',
+      ].filter(Boolean).join(' · ');
       setMessage(`키워드 추천 완료 · ${suffix}`);
     } else {
       setKeywordRecommendations(null);
@@ -2796,8 +2814,11 @@ function RewritePanel() {
               <div>
                 <h3 style={{ fontSize: 14, fontWeight: 900, color: COLORS.primary, marginBottom: 4 }}>AI 키워드 추천</h3>
                 <p style={{ fontSize: 11, color: COLORS.textSecondary, lineHeight: 1.55 }}>
-                  {keywordRecommendations.topic || '선택 소스'} · {keywordRecommendations.hasNaverSearch ? '네이버 검색 API 검증' : '내부 제목/태그/본문 신호 기준'}
+                  {keywordRecommendations.topic || '선택 소스'} · {keywordRecommendations.hasNaverSearch ? '네이버 검색 API' : '검색 API 없음'}
+                  {keywordRecommendations.autocompleteKeywords?.length ? ' · 자동완성 반영' : ''}
+                  {keywordRecommendations.hasKeywordTool ? ' · 키워드도구 검색량 반영' : ''}
                   {keywordRecommendations.naverWarning ? ` · ${keywordRecommendations.naverWarning}` : ''}
+                  {keywordRecommendations.keywordToolWarning ? ` · ${keywordRecommendations.keywordToolWarning}` : ''}
                 </p>
               </div>
             </div>
@@ -2866,8 +2887,11 @@ function RewritePanel() {
               <div>
                 <h3 style={{ fontSize: 14, fontWeight: 900, color: COLORS.primary, marginBottom: 4 }}>AI 제목 추천</h3>
                 <p style={{ fontSize: 11, color: COLORS.textSecondary, lineHeight: 1.55 }}>
-                  {titleRecommendations.keyword} · {titleRecommendations.hasNaverSearch ? '네이버 검색 API 검증' : '내부 수집 패턴 기준'}
+                  {titleRecommendations.keyword} · {titleRecommendations.hasNaverSearch ? '네이버 검색 API' : '검색 API 없음'}
+                  {titleRecommendations.autocompleteKeywords?.length ? ' · 자동완성 반영' : ''}
+                  {titleRecommendations.hasKeywordTool ? ' · 키워드도구 검색량 반영' : ''}
                   {titleRecommendations.naverWarning ? ` · ${titleRecommendations.naverWarning}` : ''}
+                  {titleRecommendations.keywordToolWarning ? ` · ${titleRecommendations.keywordToolWarning}` : ''}
                 </p>
               </div>
               <p style={{ fontSize: 11, color: COLORS.textMuted, fontWeight: 800 }}>
