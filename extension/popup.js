@@ -3,7 +3,7 @@ const DEFAULT_API = 'https://web-production-184ff.up.railway.app';
 const STEPS = [
   ['login', '네이버 로그인 확인', '현재 Chrome 세션의 네이버 로그인을 확인합니다.'],
   ['channel', '채널/카테고리 확인', '블로그 URL과 카테고리 후보를 감지해 서버에 저장합니다.'],
-  ['claim', '발행 작업 점유', '서버 발행큐에서 겹치지 않게 다음 작업을 가져옵니다.'],
+  ['claim', '선택 작업 준비', '체크한 작업 중 하나를 겹치지 않게 점유합니다.'],
   ['images', '이미지 불러오기', '서버에 저장된 500x500 이미지 초안을 확인합니다.'],
   ['editor', '작성창 이동', '선택 계정의 플랫폼 작성 화면을 엽니다.'],
   ['insert', '원고 삽입', '현재 작성 화면에 제목과 본문을 삽입합니다.'],
@@ -14,6 +14,8 @@ const state = {
   apiBase: DEFAULT_API,
   accounts: [],
   selectedAccountId: '',
+  jobs: [],
+  selectedJobIds: [],
   activeJob: null,
   images: [],
   loggedIn: false,
@@ -88,9 +90,10 @@ function selectTab(name) {
 }
 
 async function loadSettings() {
-  const saved = await chromePromise((done) => chrome.storage.local.get(['apiBase', 'selectedAccountId', 'activeJob', 'images'], done));
+  const saved = await chromePromise((done) => chrome.storage.local.get(['apiBase', 'selectedAccountId', 'selectedJobIds', 'activeJob', 'images'], done));
   state.apiBase = saved.apiBase || DEFAULT_API;
   state.selectedAccountId = saved.selectedAccountId || '';
+  state.selectedJobIds = Array.isArray(saved.selectedJobIds) ? saved.selectedJobIds : [];
   state.activeJob = saved.activeJob || null;
   state.images = saved.images || [];
   $('apiBase').value = state.apiBase;
@@ -128,6 +131,8 @@ function blogUrlFromLocation(url = '') {
   try {
     const parsed = new URL(url);
     if (!/blog\.naver\.com$/i.test(parsed.hostname) && !/m\.blog\.naver\.com$/i.test(parsed.hostname)) return '';
+    const queryBlogId = parsed.searchParams.get('blogId');
+    if (queryBlogId) return `https://blog.naver.com/${queryBlogId}`;
     const parts = parsed.pathname.split('/').filter(Boolean);
     const blogId = parts.find((part) => !['PostView.naver', 'PostList.naver', 'PostWriteForm.naver', 'MyBlog.naver'].includes(part));
     return blogId ? `https://blog.naver.com/${blogId}` : '';
@@ -138,8 +143,10 @@ function blogUrlFromLocation(url = '') {
 
 function candidateChannelUrl(account) {
   if (account?.targetUrl) return account.targetUrl;
+  const discoveredUrl = account?.channelDiscovery?.channelUrl;
+  if (discoveredUrl) return discoveredUrl;
   const username = String(account?.usernameHint || '').replace(/@naver\.com$/i, '').trim();
-  if (account?.platform === 'blog' && username) return `https://blog.naver.com/${username}`;
+  if (account?.platform === 'blog') return 'https://blog.naver.com/MyBlog.naver';
   if (account?.platform === 'cafe') return accountTarget(account);
   if (account?.platform === 'premium') return 'https://contents.premium.naver.com';
   if (account?.platform === 'brunch' && username) return `https://brunch.co.kr/@${username}`;
@@ -154,6 +161,41 @@ async function waitForTabComplete(tabId, timeoutMs = 10000) {
     await new Promise((resolve) => setTimeout(resolve, 350));
   }
   return chromePromise((done) => chrome.tabs.get(tabId, done)).catch(() => null);
+}
+
+async function clickWriteButtonInTab(tabId) {
+  const results = await chrome.scripting.executeScript({
+    target: { tabId, allFrames: true },
+    func: () => {
+      const visible = (node) => {
+        const rect = node.getBoundingClientRect();
+        const style = window.getComputedStyle(node);
+        return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+      };
+      const textMatches = (text = '') => /^(글쓰기|글 쓰기|새 글쓰기|새글쓰기|포스트쓰기|포스트 쓰기|작성하기)$/.test(text.replace(/\s+/g, ' ').trim());
+      const selectors = ['a[href*="PostWriteForm.naver"]', 'a[href*="postwrite"]', 'a[href*="Write"]', 'button', '[role="button"]', 'a'];
+      for (const selector of selectors) {
+        const node = Array.from(document.querySelectorAll(selector))
+          .filter(visible)
+          .find((item) => {
+            const href = item.getAttribute?.('href') || '';
+            const text = item.textContent || item.getAttribute?.('aria-label') || item.getAttribute?.('title') || '';
+            return /PostWriteForm\.naver|postwrite|Write/i.test(href) || textMatches(text);
+          });
+        if (node) {
+          const href = node.getAttribute?.('href') || '';
+          node.scrollIntoView?.({ block: 'center', inline: 'center' });
+          node.click();
+          if (href && !href.startsWith('javascript:')) {
+            setTimeout(() => { location.href = href; }, 150);
+          }
+          return { ok: true, href, text: node.textContent || node.getAttribute?.('aria-label') || node.getAttribute?.('title') || '' };
+        }
+      }
+      return { ok: false };
+    },
+  }).catch(() => []);
+  return results.find((item) => item.result?.ok)?.result || { ok: false };
 }
 
 async function detectChannelInTab(tabId) {
@@ -238,8 +280,9 @@ function selectedAccount() {
 
 function accountTarget(account) {
   if (account?.targetUrl || account?.memo) return account.targetUrl || account.memo;
+  if (account?.channelDiscovery?.channelUrl) return account.channelDiscovery.channelUrl;
   const username = String(account?.usernameHint || '').replace(/@naver\.com$/i, '');
-  if (account?.platform === 'blog' && username) return `https://blog.naver.com/${username}`;
+  if (account?.platform === 'blog') return 'https://blog.naver.com/MyBlog.naver';
   if (account?.platform === 'cafe') return 'https://cafe.naver.com';
   if (account?.platform === 'premium') return 'https://contents.premium.naver.com';
   if (account?.platform === 'brunch' && username) return `https://brunch.co.kr/@${username}`;
@@ -250,7 +293,7 @@ function editorUrl(account) {
   if (account?.platform === 'cafe') return accountTarget(account);
   if (account?.platform === 'premium') return 'https://contents.premium.naver.com';
   if (account?.platform === 'brunch') return 'https://brunch.co.kr/write';
-  return 'https://blog.naver.com/PostWriteForm.naver';
+  return accountTarget(account);
 }
 
 async function updateLoginStatus(account, status) {
@@ -284,6 +327,7 @@ function renderAccounts() {
   const account = selectedAccount();
   setText('accountHint', account ? `${account.label || account.id} · ${accountTarget(account)}` : '계정 슬롯을 선택하세요.');
   renderCategoryBox(account);
+  renderJobList();
 }
 
 function renderJob() {
@@ -313,6 +357,50 @@ function renderImages() {
   }).join('');
 }
 
+function publishWaitingJobs() {
+  const account = selectedAccount();
+  return state.jobs.filter((job) => {
+    const statusOk = ['자동발행대기', '발행대기', '예약대기'].includes(job.publish_status);
+    const accountOk = !account?.platform || job.platform === account.platform || job.publish_account_platform === account.platform;
+    return statusOk && accountOk;
+  });
+}
+
+function renderJobList() {
+  const box = $('jobList');
+  const jobs = publishWaitingJobs();
+  state.selectedJobIds = state.selectedJobIds.filter((id) => jobs.some((job) => job.id === id));
+  chrome.storage.local.set({ selectedJobIds: state.selectedJobIds });
+  setText('selectedJobCount', `선택 ${state.selectedJobIds.length}개 / 대기 ${jobs.length}개`);
+  if (!jobs.length) {
+    box.textContent = '현재 선택 계정으로 진행 가능한 자동발행 대기 작업이 없습니다.';
+    box.classList.add('muted');
+    return;
+  }
+  box.classList.remove('muted');
+  box.innerHTML = jobs.map((job) => {
+    const checked = state.selectedJobIds.includes(job.id) ? 'checked' : '';
+    const meta = `#${job.id} · ${job.platform || '-'} · ${job.publish_status || '-'} · ${Number(job.char_count || 0).toLocaleString()}자 · 이미지 ${job.generated_image_count || job.image_count || 0}`;
+    return `<label class="job-choice">
+      <input type="checkbox" data-job-id="${job.id}" ${checked} />
+      <span>
+        <strong>${escapeHtml(job.title || job.keyword || '제목 없음')}</strong>
+        <span>${escapeHtml(meta)}</span>
+      </span>
+    </label>`;
+  }).join('');
+  box.querySelectorAll('input[data-job-id]').forEach((input) => {
+    input.addEventListener('change', async () => {
+      const id = Number(input.dataset.jobId);
+      state.selectedJobIds = input.checked
+        ? [...new Set([...state.selectedJobIds, id])]
+        : state.selectedJobIds.filter((item) => item !== id);
+      await chromePromise((done) => chrome.storage.local.set({ selectedJobIds: state.selectedJobIds }, done));
+      renderJobList();
+    });
+  });
+}
+
 function escapeHtml(value) {
   return String(value || '')
     .replace(/&/g, '&amp;')
@@ -320,6 +408,14 @@ function escapeHtml(value) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#039;');
+}
+
+async function loadPublishJobs() {
+  setStep('claim', 'active', '대시보드 자동발행 대기 작업을 불러오는 중입니다.');
+  const jobs = await api('/publish-queue?limit=120');
+  state.jobs = Array.isArray(jobs) ? jobs : [];
+  renderJobList();
+  setStep('claim', 'done', `대기 작업 ${publishWaitingJobs().length}개 확인`);
 }
 
 async function claimNextJob() {
@@ -341,6 +437,40 @@ async function claimNextJob() {
   renderImages();
   setStep('claim', state.activeJob ? 'done' : 'error', state.activeJob ? '작업 점유 완료' : '지금 발행 가능한 작업이 없습니다.');
   if (state.activeJob) selectTab('job');
+}
+
+async function claimSelectedJob(jobId) {
+  const account = selectedAccount();
+  if (!account) throw new Error('계정 슬롯이 없습니다.');
+  const data = await api(`/publish-queue/${jobId}/claim`, {
+    method: 'POST',
+    body: JSON.stringify({
+      platform: account.platform,
+      publishAccountId: account.id,
+      publishAccountLabel: account.label,
+    }),
+  });
+  return data.job || null;
+}
+
+async function startSelectedJobs() {
+  if (!state.selectedJobIds.length) throw new Error('작업 탭에서 진행할 작업을 체크해 주세요.');
+  setStep('claim', 'active', `선택 작업 ${state.selectedJobIds.length}개 중 첫 작업을 점유합니다.`);
+  const nextId = state.selectedJobIds[0];
+  const job = await claimSelectedJob(nextId);
+  if (!job) throw new Error('선택한 작업을 점유하지 못했습니다.');
+  state.activeJob = job;
+  state.selectedJobIds = state.selectedJobIds.filter((id) => id !== job.id);
+  state.images = [];
+  await chromePromise((done) => chrome.storage.local.set({
+    activeJob: state.activeJob,
+    images: state.images,
+    selectedJobIds: state.selectedJobIds,
+  }, done));
+  renderJob();
+  renderImages();
+  await loadPublishJobs().catch(() => {});
+  setStep('claim', 'done', `#${job.id} 선택 작업 점유 완료 · 남은 선택 ${state.selectedJobIds.length}개`);
 }
 
 async function loadJobImages() {
@@ -368,13 +498,20 @@ async function copyJob() {
 async function openEditorForJob() {
   const account = selectedAccount();
   if (!account) throw new Error('계정 슬롯이 없습니다.');
+  if (!state.activeJob) throw new Error('작업 탭에서 진행할 작업을 먼저 선택해 주세요.');
   if (!account.targetUrl && account.platform === 'blog') {
     await discoverChannel();
   }
   const bundle = { job: state.activeJob, images: state.images, account };
   await chromePromise((done) => chrome.storage.local.set({ activeJobBundle: bundle }, done));
-  await chrome.tabs.create({ url: editorUrl(account) });
-  setStep('editor', 'done', '작성창을 열었습니다. 로딩 후 현재 탭 삽입을 누르세요.');
+  let tab = await chrome.tabs.create({ url: editorUrl(account), active: true });
+  tab = await waitForTabComplete(tab.id, 15000);
+  if (account.platform === 'blog' && tab?.id) {
+    const clicked = await clickWriteButtonInTab(tab.id);
+    setStep('editor', clicked?.ok ? 'done' : 'active', clicked?.ok ? '블로그 탭에서 글쓰기 버튼을 눌렀습니다. 로딩 후 현재 탭 삽입을 누르세요.' : '블로그 탭을 열었습니다. 글쓰기 버튼을 직접 누른 뒤 현재 탭 삽입을 누르세요.');
+    return;
+  }
+  setStep('editor', 'done', '작성 화면을 열었습니다. 로딩 후 현재 탭 삽입을 누르세요.');
 }
 
 async function insertIntoActiveTab() {
@@ -428,14 +565,17 @@ async function init() {
   renderImages();
   await checkNaverLogin(false);
   await loadAccounts().catch((err) => setText('loginText', err.message));
+  await loadPublishJobs().catch((err) => setText('loginText', err.message));
 
   document.querySelectorAll('.tab').forEach((tab) => {
     tab.addEventListener('click', () => selectTab(tab.dataset.tab));
   });
   $('accountSelect').addEventListener('change', async () => {
     state.selectedAccountId = $('accountSelect').value;
-    await chromePromise((done) => chrome.storage.local.set({ selectedAccountId: state.selectedAccountId }, done));
+    state.selectedJobIds = [];
+    await chromePromise((done) => chrome.storage.local.set({ selectedAccountId: state.selectedAccountId, selectedJobIds: [] }, done));
     renderAccounts();
+    await loadPublishJobs().catch((err) => setText('loginText', err.message));
   });
   $('saveApi').addEventListener('click', () => saveSettings().catch((err) => setText('loginText', err.message)));
   $('openLogin').addEventListener('click', () => chrome.tabs.create({ url: 'https://nid.naver.com/nidlogin.login' }));
@@ -443,7 +583,8 @@ async function init() {
   $('reloadAccounts').addEventListener('click', () => loadAccounts().catch((err) => setText('loginText', err.message)));
   $('checkLogin').addEventListener('click', () => checkNaverLogin(true).catch((err) => setText('loginText', err.message)));
   $('detectChannel').addEventListener('click', () => discoverChannel().catch((err) => setText('loginText', err.message)));
-  $('claimNext').addEventListener('click', () => claimNextJob().catch((err) => setText('loginText', err.message)));
+  $('reloadJobs').addEventListener('click', () => loadPublishJobs().catch((err) => setText('loginText', err.message)));
+  $('startSelectedJobs').addEventListener('click', () => startSelectedJobs().catch((err) => setText('loginText', err.message)));
   $('loadImages').addEventListener('click', () => loadJobImages().catch((err) => setText('loginText', err.message)));
   $('copyJob').addEventListener('click', () => copyJob().catch((err) => setText('loginText', err.message)));
   $('openEditor').addEventListener('click', () => openEditorForJob().catch((err) => setText('loginText', err.message)));

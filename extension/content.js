@@ -72,12 +72,53 @@ function currentBlogUrl() {
   try {
     const parsed = new URL(location.href);
     if (!/blog\.naver\.com$/i.test(parsed.hostname) && !/m\.blog\.naver\.com$/i.test(parsed.hostname)) return '';
+    const queryBlogId = parsed.searchParams.get('blogId');
+    if (queryBlogId) return `https://blog.naver.com/${queryBlogId}`;
     const parts = parsed.pathname.split('/').filter(Boolean);
     const blogId = parts.find((part) => !['PostView.naver', 'PostList.naver', 'PostWriteForm.naver', 'MyBlog.naver'].includes(part));
     return blogId ? `https://blog.naver.com/${blogId}` : '';
   } catch {
     return '';
   }
+}
+
+function findWriteButton() {
+  const selectors = [
+    'a[href*="PostWriteForm.naver"]',
+    'a[href*="postwrite"]',
+    'a[href*="Write"]',
+    'button',
+    '[role="button"]',
+    'a',
+  ];
+  const textMatches = (text = '') => /^(글쓰기|글 쓰기|새 글쓰기|새글쓰기|포스트쓰기|포스트 쓰기|작성하기)$/.test(text.replace(/\s+/g, ' ').trim());
+  for (const selector of selectors) {
+    const node = Array.from(document.querySelectorAll(selector))
+      .filter(visible)
+      .find((item) => {
+        const href = item.getAttribute?.('href') || '';
+        const text = item.textContent || item.getAttribute?.('aria-label') || item.getAttribute?.('title') || '';
+        return /PostWriteForm\.naver|postwrite|Write/i.test(href) || textMatches(text);
+      });
+    if (node) return node;
+  }
+  return null;
+}
+
+function openWriteFromChannel() {
+  const button = findWriteButton();
+  if (!button) return { ok: false, error: '블로그 화면에서 글쓰기 버튼을 찾지 못했습니다.' };
+  const href = button.getAttribute?.('href');
+  button.scrollIntoView?.({ block: 'center', inline: 'center' });
+  button.click();
+  if (href && !href.startsWith('javascript:')) {
+    setTimeout(() => {
+      try {
+        location.href = href;
+      } catch {}
+    }, 200);
+  }
+  return { ok: true, note: '글쓰기 버튼 클릭 시도 완료' };
 }
 
 function collectCategories() {
@@ -145,6 +186,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       pageTitle: document.title || '',
       categories: collectCategories(),
     });
+    return true;
+  }
+
+  if (message?.type === 'NAVIWRITE_OPEN_WRITE_FROM_CHANNEL') {
+    sendResponse(openWriteFromChannel());
     return true;
   }
 

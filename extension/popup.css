@@ -236,6 +236,49 @@ button:disabled {
   line-height: 1.5;
 }
 
+.job-list {
+  display: grid;
+  gap: 7px;
+  max-height: 220px;
+  overflow: auto;
+  padding: 9px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #f8fafc;
+}
+
+.job-choice {
+  display: grid;
+  grid-template-columns: 24px 1fr;
+  gap: 7px;
+  align-items: start;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.job-choice input {
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+}
+
+.job-choice strong {
+  display: block;
+  color: #111827;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.job-choice span {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
 .job strong {
   display: block;
   margin-bottom: 4px;

@@ -6401,6 +6401,46 @@ router.post('/publish-queue/claim-next', async (req, res) => {
   }
 });
 
+router.post('/publish-queue/:id/claim', async (req, res) => {
+  try {
+    const tenantId = tenantIdFromReq(req);
+    const jobId = parseInt(req.params.id, 10);
+    const platform = req.body?.platform || null;
+    const publishAccountId = req.body?.publishAccountId || req.body?.publish_account_id || null;
+    const publishAccountLabel = req.body?.publishAccountLabel || req.body?.publish_account_label || null;
+    await resetStalePublishingJobs({
+      tenantId,
+      minutes: req.body?.staleMinutes || req.body?.stale_minutes,
+      reason: 'claim_selected',
+    });
+    const { rows } = await pool.query(
+      `UPDATE content_jobs
+       SET publish_status = '발행중',
+           publish_account_id = COALESCE($4, publish_account_id),
+           publish_account_label = COALESCE($5, publish_account_label),
+           updated_at = NOW()
+       WHERE id = $1
+         AND COALESCE(tenant_id, 'owner') = $2
+         AND publish_status IN ('자동발행대기', '발행대기', '예약대기')
+         AND (scheduled_at IS NULL OR scheduled_at <= NOW())
+         AND ($3::text IS NULL OR platform = $3 OR publish_account_platform = $3)
+       RETURNING *`,
+      [jobId, tenantId, platform, publishAccountId, publishAccountLabel]
+    );
+    if (rows.length === 0) {
+      return res.status(409).json({ error: '이미 다른 PC가 점유했거나 지금 발행 가능한 상태가 아닙니다.' });
+    }
+    await addJobEvent(rows[0].id, 'publish_selected_claimed', '확장프로그램이 선택한 작업을 점유했습니다', {
+      platform,
+      publishAccountId,
+      publishAccountLabel,
+    });
+    res.json({ ok: true, job: rows[0] });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.get('/publish-queue', async (req, res) => {
   try {
     const tenantId = tenantIdFromReq(req);
