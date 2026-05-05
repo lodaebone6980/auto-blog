@@ -347,7 +347,7 @@ function guessPlatform(sourceUrl, fallback = 'blog') {
 
 function normalizePlatform(value, sourceUrl) {
   const guessed = guessPlatform(sourceUrl, 'web');
-  const allowed = new Set(['blog', 'cafe', 'premium', 'brunch', 'web']);
+  const allowed = new Set(['blog', 'cafe', 'premium', 'brunch', 'web', 'wordpress']);
   return allowed.has(value) ? value : guessed;
 }
 
@@ -2758,6 +2758,81 @@ function tenantIdFromReq(req) {
   return normalizeTenantId(req.headers['x-naviwrite-tenant'] || req.query.tenantId || req.body?.tenantId || 'owner');
 }
 
+function normalizeSlotId(value = '') {
+  return String(value || `acc_${Date.now()}`).trim().replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 80) || `acc_${Date.now()}`;
+}
+
+function credentialMasterKey() {
+  const secret = process.env.CREDENTIAL_MASTER_KEY
+    || process.env.NAVIWRITE_CREDENTIAL_KEY
+    || process.env.DATABASE_URL
+    || (process.env.NODE_ENV === 'production' ? '' : 'naviwrite-dev-credential-key');
+  if (!secret) {
+    throw new Error('CREDENTIAL_MASTER_KEY 환경변수가 필요합니다.');
+  }
+  return crypto.createHash('sha256').update(String(secret)).digest();
+}
+
+function encryptCredentialSecret(secret = '') {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', credentialMasterKey(), iv);
+  const encrypted = Buffer.concat([cipher.update(String(secret), 'utf8'), cipher.final()]);
+  return {
+    cipher: encrypted.toString('base64'),
+    iv: iv.toString('base64'),
+    tag: cipher.getAuthTag().toString('base64'),
+  };
+}
+
+function decryptCredentialSecret(row = {}) {
+  if (!row.credential_cipher || !row.credential_iv || !row.credential_tag) return '';
+  const decipher = crypto.createDecipheriv(
+    'aes-256-gcm',
+    credentialMasterKey(),
+    Buffer.from(row.credential_iv, 'base64')
+  );
+  decipher.setAuthTag(Buffer.from(row.credential_tag, 'base64'));
+  return Buffer.concat([
+    decipher.update(Buffer.from(row.credential_cipher, 'base64')),
+    decipher.final(),
+  ]).toString('utf8');
+}
+
+function publicAccountSlot(row = {}) {
+  return {
+    id: row.slot_id,
+    slotId: row.slot_id,
+    tenantId: row.tenant_id,
+    platform: row.platform || 'blog',
+    label: row.label || row.slot_id,
+    usernameHint: row.username || '',
+    memo: row.target_url || row.memo || '',
+    targetUrl: row.target_url || '',
+    loginStatus: row.login_status || '인증 필요',
+    credentialMode: row.credential_mode || 'server-aes-256-gcm',
+    credentialPolicy: '서버 AES-256 암호화',
+    sessionPolicy: '6시간 체크 · 2시간 무활동 재확인',
+    hasCredential: Boolean(row.credential_cipher),
+    credentialUpdatedAt: row.credential_updated_at || null,
+    credentialVerifiedAt: row.credential_verified_at || null,
+    channelDiscoveredAt: row.channel_discovered_at || null,
+    channelDiscoveryOk: row.channel_discovery?.ok ?? null,
+    runnerProfileId: row.slot_id,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+async function loadAccountSlot({ tenantId, slotId }) {
+  const { rows } = await pool.query(
+    `SELECT * FROM account_slots
+     WHERE tenant_id = $1 AND slot_id = $2
+     LIMIT 1`,
+    [tenantId, slotId]
+  );
+  return rows[0] || null;
+}
+
 function normalizePublishMode(value = '') {
   const mode = String(value || '').toLowerCase();
   if (['now', 'immediate', '즉시발행'].includes(mode)) return 'immediate';
@@ -4351,6 +4426,161 @@ router.patch('/benchmark-settings', async (req, res) => {
     };
     const saved = await setAppSetting('benchmark_settings', next);
     res.json({ ok: true, settings: saved });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/account-slots', async (req, res) => {
+  try {
+    const tenantId = tenantIdFromReq(req);
+    const { rows } = await pool.query(
+      `SELECT *
+       FROM account_slots
+       WHERE tenant_id = $1
+       ORDER BY created_at ASC, id ASC`,
+      [tenantId]
+    );
+    res.json({ ok: true, accounts: rows.map(publicAccountSlot) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/account-slots', async (req, res) => {
+  try {
+    const tenantId = tenantIdFromReq(req);
+    const body = req.body || {};
+    const slotId = normalizeSlotId(body.slotId || body.slot_id || body.id);
+    const label = String(body.label || slotId).trim();
+    const platform = normalizePlatform(body.platform || 'blog');
+    const username = String(body.username || body.usernameHint || body.username_hint || '').trim();
+    const targetUrl = String(body.targetUrl || body.target_url || body.memo || '').trim();
+    const password = String(body.password || '');
+    if (!label) return res.status(400).json({ error: 'label is required' });
+
+    const encrypted = password ? encryptCredentialSecret(password) : null;
+    const { rows } = await pool.query(
+      `INSERT INTO account_slots (
+         tenant_id, slot_id, platform, label, username, target_url, login_status,
+         credential_mode, credential_cipher, credential_iv, credential_tag,
+         credential_updated_at, memo, updated_at
+       )
+       VALUES (
+         $1,$2,$3,$4,$5,$6,$7,'server-aes-256-gcm',$8,$9,$10,
+         CASE WHEN $8::text IS NULL THEN NULL ELSE NOW() END,$11,NOW()
+       )
+       ON CONFLICT (tenant_id, slot_id) DO UPDATE SET
+         platform = EXCLUDED.platform,
+         label = EXCLUDED.label,
+         username = COALESCE(NULLIF(EXCLUDED.username, ''), account_slots.username),
+         target_url = COALESCE(NULLIF(EXCLUDED.target_url, ''), account_slots.target_url),
+         login_status = EXCLUDED.login_status,
+         credential_mode = 'server-aes-256-gcm',
+         credential_cipher = COALESCE(EXCLUDED.credential_cipher, account_slots.credential_cipher),
+         credential_iv = COALESCE(EXCLUDED.credential_iv, account_slots.credential_iv),
+         credential_tag = COALESCE(EXCLUDED.credential_tag, account_slots.credential_tag),
+         credential_updated_at = CASE
+           WHEN EXCLUDED.credential_cipher IS NULL THEN account_slots.credential_updated_at
+           ELSE NOW()
+         END,
+         memo = COALESCE(NULLIF(EXCLUDED.memo, ''), account_slots.memo),
+         updated_at = NOW()
+       RETURNING *`,
+      [
+        tenantId,
+        slotId,
+        platform,
+        label,
+        username,
+        targetUrl,
+        password ? '서버 저장됨 · 인증 필요' : (body.loginStatus || body.login_status || '인증 필요'),
+        encrypted?.cipher || null,
+        encrypted?.iv || null,
+        encrypted?.tag || null,
+        targetUrl,
+      ]
+    );
+    res.json({ ok: true, account: publicAccountSlot(rows[0]) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/account-slots/:slotId/credential-status', async (req, res) => {
+  try {
+    const tenantId = tenantIdFromReq(req);
+    const slot = await loadAccountSlot({ tenantId, slotId: normalizeSlotId(req.params.slotId) });
+    if (!slot) return res.status(404).json({ error: 'account slot not found' });
+    res.json({
+      ok: true,
+      account: publicAccountSlot(slot),
+      credential: {
+        hasCredential: Boolean(slot.credential_cipher),
+        username: slot.username || '',
+        mode: slot.credential_mode || 'server-aes-256-gcm',
+        updatedAt: slot.credential_updated_at || null,
+        verifiedAt: slot.credential_verified_at || null,
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/account-slots/:slotId/credentials/verify', async (req, res) => {
+  try {
+    const tenantId = tenantIdFromReq(req);
+    const slotId = normalizeSlotId(req.params.slotId);
+    const slot = await loadAccountSlot({ tenantId, slotId });
+    if (!slot) return res.status(404).json({ error: 'account slot not found' });
+    if (!slot.credential_cipher) return res.status(404).json({ error: 'credential not found' });
+    decryptCredentialSecret(slot);
+    const { rows } = await pool.query(
+      `UPDATE account_slots
+       SET credential_verified_at = NOW(), updated_at = NOW()
+       WHERE tenant_id = $1 AND slot_id = $2
+       RETURNING *`,
+      [tenantId, slotId]
+    );
+    res.json({ ok: true, account: publicAccountSlot(rows[0]) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.delete('/account-slots/:slotId/credentials', async (req, res) => {
+  try {
+    const tenantId = tenantIdFromReq(req);
+    const slotId = normalizeSlotId(req.params.slotId);
+    const { rows } = await pool.query(
+      `UPDATE account_slots
+       SET credential_cipher = NULL,
+           credential_iv = NULL,
+           credential_tag = NULL,
+           credential_updated_at = NULL,
+           credential_verified_at = NULL,
+           login_status = '자격증명 삭제됨',
+           updated_at = NOW()
+       WHERE tenant_id = $1 AND slot_id = $2
+       RETURNING *`,
+      [tenantId, slotId]
+    );
+    if (!rows[0]) return res.status(404).json({ error: 'account slot not found' });
+    res.json({ ok: true, account: publicAccountSlot(rows[0]) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.delete('/account-slots/:slotId', async (req, res) => {
+  try {
+    const tenantId = tenantIdFromReq(req);
+    const { rowCount } = await pool.query(
+      'DELETE FROM account_slots WHERE tenant_id = $1 AND slot_id = $2',
+      [tenantId, normalizeSlotId(req.params.slotId)]
+    );
+    res.json({ ok: true, deleted: rowCount });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

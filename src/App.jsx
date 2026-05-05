@@ -3949,7 +3949,7 @@ function OperationsSettingsPanelLegacy() {
       <section style={{ ...cardStyle, padding: 20 }}>
         <h2 style={{ fontSize: 18, fontWeight: 850, color: COLORS.primary, marginBottom: 5 }}>운영 설정</h2>
         <p style={{ fontSize: 12, color: COLORS.textSecondary }}>
-          서버 DB에는 비밀번호를 저장하지 않습니다. 계정 세션과 필요 시 ID/PW는 Local Runner가 PC 안에서만 관리합니다.
+          ID/PW는 사이트 계정에 서버 암호화 저장하고, 계정 세션은 Local Runner가 PC 안에서 관리합니다.
         </p>
       </section>
 
@@ -3958,7 +3958,7 @@ function OperationsSettingsPanelLegacy() {
           <div>
             <h3 style={{ fontSize: 15, fontWeight: 850, color: COLORS.primary, marginBottom: 4 }}>Local Runner 연결</h3>
             <p style={{ fontSize: 12, color: COLORS.textSecondary, lineHeight: 1.6 }}>
-              Runner가 계정별 브라우저 프로필, 로그인 세션, 로컬 암호화 자격증명, VPN 명령 계획을 담당합니다.
+              Runner가 계정별 브라우저 프로필, 로그인 세션, 인증 창 열기, VPN 명령 계획을 담당합니다.
             </p>
           </div>
           <StatusBadge value={runnerStatus.state === 'ok' ? '연결됨' : runnerStatus.state === 'fail' ? '오류' : '대기중'} />
@@ -4055,7 +4055,7 @@ function OperationsSettingsPanelLegacy() {
 
       <section style={{ ...cardStyle, padding: 16, background: '#fff7ed', borderColor: '#fed7aa' }}>
         <p style={{ fontSize: 12, color: '#9a3412', lineHeight: 1.65 }}>
-          운영 기준: 서버는 작업과 상태만 저장합니다. 로그인 세션과 암호화된 자격증명은 Runner PC에만 저장하고,
+          운영 기준: 서버는 작업, 상태, 암호화된 계정 자격증명을 저장합니다. 로그인 세션은 Runner PC에 저장하고,
           발행 전에는 6시간 체크 또는 2시간 무활동 기준으로 로그인 재확인을 요구합니다.
         </p>
       </section>
@@ -4156,6 +4156,61 @@ function OperationsSettingsPanel() {
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || `Runner error (${res.status})`);
     return data;
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadCloudAccounts = async () => {
+      try {
+        const res = await fetch(`${API}/account-slots`);
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || `API error (${res.status})`);
+        if (cancelled || !Array.isArray(data.accounts)) return;
+        setSettings((prev) => {
+          const next = { ...prev, accounts: data.accounts };
+          localStorage.setItem('naviwrite.opsSettings', JSON.stringify(next));
+          return next;
+        });
+      } catch (err) {
+        setRunnerStatus({
+          state: 'fail',
+          message: err instanceof Error ? `서버 계정 슬롯 불러오기 실패: ${err.message}` : '서버 계정 슬롯 불러오기 실패',
+        });
+      }
+    };
+    loadCloudAccounts();
+    return () => { cancelled = true; };
+  }, []);
+
+  const mergeAccountSlot = (account) => {
+    const normalized = { ...account, id: account.id || account.slotId };
+    saveSettings({
+      ...settings,
+      accounts: [
+        ...settings.accounts.filter((item) => item.id !== normalized.id),
+        normalized,
+      ],
+    });
+    return normalized;
+  };
+
+  const saveCloudAccountSlot = async (account, password = '') => {
+    const res = await fetch(`${API}/account-slots`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        slotId: account.id || account.slotId,
+        platform: account.platform,
+        label: account.label,
+        usernameHint: account.usernameHint,
+        targetUrl: account.memo || account.targetUrl || '',
+        password,
+        loginStatus: account.loginStatus || '인증 필요',
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `API error (${res.status})`);
+    return mergeAccountSlot(data.account);
   };
 
   const updateAccount = (id, patch) => {
@@ -4296,28 +4351,28 @@ function OperationsSettingsPanel() {
       setRunnerStatus({ state: 'fail', message: 'ID와 비밀번호를 모두 입력해야 합니다' });
       return;
     }
-    setRunnerStatus({ state: 'testing', message: `${account.label} 자격증명 로컬 저장 중...` });
+    setRunnerStatus({ state: 'testing', message: `${account.label} 자격증명 서버 암호화 저장 중...` });
     try {
-      const profileId = account.runnerProfileId || await ensureRunnerProfile(account);
-      const data = await runnerRequest(`/profiles/${profileId}/credentials`, {
-        method: 'POST',
-        body: JSON.stringify({ username: draft.username, password: draft.password }),
-      });
-      applyRunnerState(account, data);
+      await saveCloudAccountSlot({
+        ...account,
+        usernameHint: draft.username,
+        loginStatus: '서버 저장됨 · 인증 필요',
+      }, draft.password);
       setCredentialDrafts({ ...credentialDrafts, [account.id]: { username: draft.username, password: '' } });
-      setRunnerStatus({ state: 'ok', message: `${account.label} ID/PW를 Runner PC에만 암호화 저장했습니다` });
+      setRunnerStatus({ state: 'ok', message: `${account.label} ID/PW를 사이트 계정에 암호화 저장했습니다` });
     } catch (err) {
       setRunnerStatus({ state: 'fail', message: err instanceof Error ? err.message : '자격증명 저장 실패' });
     }
   };
 
   const verifyRunnerCredential = async (account) => {
-    setRunnerStatus({ state: 'testing', message: `${account.label} 로컬 자격증명 검증 중...` });
+    setRunnerStatus({ state: 'testing', message: `${account.label} 서버 자격증명 검증 중...` });
     try {
-      const profileId = account.runnerProfileId || await ensureRunnerProfile(account);
-      const data = await runnerRequest(`/profiles/${profileId}/credentials/verify`, { method: 'POST', body: '{}' });
-      applyRunnerState(account, { ...data, profile: { id: profileId } });
-      setRunnerStatus({ state: 'ok', message: `${account.label} 로컬 자격증명을 읽을 수 있습니다` });
+      const res = await fetch(`${API}/account-slots/${account.id}/credentials/verify`, { method: 'POST' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `API error (${res.status})`);
+      mergeAccountSlot(data.account);
+      setRunnerStatus({ state: 'ok', message: `${account.label} 서버 암호화 자격증명을 정상 확인했습니다` });
     } catch (err) {
       setRunnerStatus({ state: 'fail', message: err instanceof Error ? err.message : '자격증명 검증 실패' });
     }
@@ -4326,11 +4381,12 @@ function OperationsSettingsPanel() {
   const deleteRunnerCredential = async (account) => {
     setRunnerStatus({ state: 'testing', message: `${account.label} 자격증명 삭제 중...` });
     try {
-      const profileId = account.runnerProfileId || await ensureRunnerProfile(account);
-      const data = await runnerRequest(`/profiles/${profileId}/credentials`, { method: 'DELETE' });
-      applyRunnerState(account, data);
+      const res = await fetch(`${API}/account-slots/${account.id}/credentials`, { method: 'DELETE' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `API error (${res.status})`);
+      mergeAccountSlot(data.account);
       setCredentialDrafts({ ...credentialDrafts, [account.id]: { username: '', password: '' } });
-      setRunnerStatus({ state: 'ok', message: `${account.label} 로컬 자격증명을 삭제했습니다` });
+      setRunnerStatus({ state: 'ok', message: `${account.label} 서버 자격증명을 삭제했습니다` });
     } catch (err) {
       setRunnerStatus({ state: 'fail', message: err instanceof Error ? err.message : '자격증명 삭제 실패' });
     }
@@ -4370,7 +4426,7 @@ function OperationsSettingsPanel() {
         credentialUpdatedAt: credential.updatedAt || new Date().toISOString(),
         credentialVerifiedAt: credential.verifiedAt || null,
         runnerPlan: plan.recommendedAction || '',
-        runnerReason: 'ID/PW는 저장됐습니다. 네이버 IP 보안/2차 인증 확인을 위해 인증 창에서 최초 로그인을 완료해 주세요.',
+        runnerReason: 'ID/PW는 사이트 계정에 저장됐습니다. 네이버 IP 보안/2차 인증 확인을 위해 인증 창에서 최초 로그인을 완료해 주세요.',
         runnerSyncedAt: new Date().toISOString(),
       } : item),
     });
@@ -4388,35 +4444,29 @@ function OperationsSettingsPanel() {
       id: `acc_${Date.now()}`,
       ...safeAccountForm,
       runnerProfileId: '',
-      credentialPolicy: 'Runner 로컬 DPAPI',
+      credentialPolicy: '서버 AES-256 암호화',
       sessionPolicy: '6시간 체크 · 2시간 무활동 재확인',
-      loginStatus: password ? 'ID/PW 저장 중' : 'ID/PW 미저장',
+      loginStatus: password ? '서버 저장 중' : 'ID/PW 미저장',
       hasCredential: false,
       lastCheckedAt: null,
     };
-    const nextSettings = {
-      ...settings,
-      accounts: [...settings.accounts, newAccount],
-    };
 
-    saveSettings(nextSettings);
-    setAccountForm({ platform: 'blog', label: '', memo: '', usernameHint: '', password: '' });
-
-    if (!password) {
-      setRunnerStatus({ state: 'idle', message: '계정 슬롯을 저장했습니다. ID/PW는 아래 계정 카드에서 나중에 저장할 수 있습니다' });
-      return;
-    }
-
-    setRunnerStatus({ state: 'testing', message: `${newAccount.label} ID/PW를 Runner에 저장 중...` });
+    setRunnerStatus({ state: 'testing', message: `${newAccount.label} 계정 슬롯을 서버에 저장 중...` });
     try {
-      await saveInitialCredential(newAccount, nextSettings, password);
-      setRunnerStatus({ state: 'ok', message: `${newAccount.label} ID/PW 저장 완료. 이제 인증 창을 열어 네이버 보안 확인을 완료하세요` });
+      await saveCloudAccountSlot(newAccount, password);
+      setAccountForm({ platform: 'blog', label: '', memo: '', usernameHint: '', password: '' });
+      setRunnerStatus({
+        state: 'ok',
+        message: password
+          ? `${newAccount.label} ID/PW를 사이트 계정에 암호화 저장했습니다. 이제 인증 창을 열어 네이버 보안 확인을 완료하세요`
+          : `${newAccount.label} 계정 슬롯을 사이트 계정에 저장했습니다. ID/PW는 아래 계정 카드에서 나중에 저장할 수 있습니다`,
+      });
     } catch (err) {
       setRunnerStatus({
         state: 'fail',
         message: err instanceof Error
-          ? `${err.message} · 계정 슬롯은 저장됐지만 ID/PW는 저장되지 않았습니다. Runner 실행 후 다시 저장하세요.`
-          : 'ID/PW 저장 실패 · Runner 실행 후 다시 저장하세요.',
+          ? `${err.message} · 계정 슬롯 저장에 실패했습니다.`
+          : '계정 슬롯 저장에 실패했습니다.',
       });
     }
   };
@@ -4453,6 +4503,18 @@ function OperationsSettingsPanel() {
     saveSettings({ ...settings, [key]: settings[key].filter((item) => item.id !== id) });
   };
 
+  const removeAccount = async (id) => {
+    setRunnerStatus({ state: 'testing', message: '계정 슬롯 삭제 중...' });
+    try {
+      await fetch(`${API}/account-slots/${id}`, { method: 'DELETE' });
+      removeItem('accounts', id);
+      setRunnerStatus({ state: 'ok', message: '계정 슬롯을 삭제했습니다' });
+    } catch (err) {
+      removeItem('accounts', id);
+      setRunnerStatus({ state: 'fail', message: err instanceof Error ? err.message : '서버 계정 슬롯 삭제 실패' });
+    }
+  };
+
   const updateCredentialDraft = (id, patch) => {
     setCredentialDrafts({
       ...credentialDrafts,
@@ -4465,7 +4527,7 @@ function OperationsSettingsPanel() {
       <section style={{ ...cardStyle, padding: 20 }}>
         <h2 style={{ fontSize: 18, fontWeight: 850, color: COLORS.primary, marginBottom: 5 }}>운영 설정</h2>
         <p style={{ fontSize: 12, color: COLORS.textSecondary, lineHeight: 1.65 }}>
-          이 화면은 발행 계정, QR 계정, VPN 프로필을 로컬 기준으로 준비하는 곳입니다. ID/PW는 Runner PC에만 암호화 저장하고,
+          이 화면은 발행 계정, QR 계정, VPN 프로필을 준비하는 곳입니다. ID/PW는 사이트 계정에 서버 암호화 저장하고,
           네이버 IP 보안, 2차 인증, 새 환경 확인은 인증 창에서 직접 완료한 뒤 발행 준비 상태로 저장합니다.
         </p>
       </section>
@@ -4475,7 +4537,7 @@ function OperationsSettingsPanel() {
           <div>
             <h3 style={{ fontSize: 15, fontWeight: 850, color: COLORS.primary, marginBottom: 4 }}>Local Runner 연결</h3>
             <p style={{ fontSize: 12, color: COLORS.textSecondary, lineHeight: 1.6 }}>
-            Runner가 계정별 브라우저 세션, 로컬 암호화 ID/PW, 인증 창 열기, VPN 명령 계획을 담당합니다.
+            Runner는 계정별 브라우저 세션, 인증 창 열기, 발행창 열기, VPN 명령 계획을 담당합니다. ID/PW는 사이트 계정에 암호화 저장합니다.
             </p>
           </div>
           <StatusBadge value={runnerStatus.state === 'ok' ? '연결됨' : runnerStatus.state === 'fail' ? '오류' : '대기중'} />
@@ -4523,11 +4585,11 @@ function OperationsSettingsPanel() {
             <input value={accountForm.label} onChange={(e) => setAccountForm({ ...accountForm, label: e.target.value })} placeholder="예: 네이버 블로그 계정 1" style={inputStyle} />
           </div>
           <input value={accountForm.usernameHint} onChange={(e) => setAccountForm({ ...accountForm, usernameHint: e.target.value })} placeholder="로그인 ID" style={inputStyle} />
-          <input type="password" value={accountForm.password} onChange={(e) => setAccountForm({ ...accountForm, password: e.target.value })} placeholder="비밀번호, Runner PC에만 암호화 저장" style={inputStyle} />
+          <input type="password" value={accountForm.password} onChange={(e) => setAccountForm({ ...accountForm, password: e.target.value })} placeholder="비밀번호, 사이트 계정에 암호화 저장" style={inputStyle} />
           <input value={accountForm.memo} onChange={(e) => setAccountForm({ ...accountForm, memo: e.target.value })} placeholder="발행 채널 URL. 비우면 블로그는 ID로 자동 확인" style={inputStyle} />
-          <button type="button" onClick={addAccount} style={primaryButtonStyle}>계정 저장 + ID/PW 로컬 저장</button>
+          <button type="button" onClick={addAccount} style={primaryButtonStyle}>계정 저장 + ID/PW 서버 저장</button>
           <p style={{ marginTop: 6, fontSize: 10, color: COLORS.textMuted, lineHeight: 1.5 }}>
-            네이버 계열 ID/PW 저장은 로그인 완료가 아닙니다. 저장 후 인증 창을 열어 보안 확인을 끝내고 인증 완료 저장까지 눌러야 합니다.
+            네이버 계열 ID/PW 저장은 로그인 완료가 아닙니다. 저장 후 Runner 인증 창을 열어 보안 확인을 끝내고 인증 완료 저장까지 눌러야 합니다.
             IP 보안이나 2차 인증 설정 변경은 자동으로 끄지 않고, 열린 네이버 화면에서 사용자가 직접 결정합니다.
             워드프레스는 사이트 URL, 관리자 ID, Application Password를 저장하면 발행 큐에서 API 발행을 실행할 수 있습니다.
           </p>
@@ -4535,7 +4597,7 @@ function OperationsSettingsPanel() {
             items={settings.accounts}
             drafts={credentialDrafts}
             onDraftChange={updateCredentialDraft}
-            onRemove={(id) => removeItem('accounts', id)}
+            onRemove={removeAccount}
             onCreateProfile={createRunnerProfile}
             onCheckSession={checkRunnerSession}
             onOpenLogin={openRunnerLogin}
@@ -4689,12 +4751,12 @@ function AccountSlotListV2({
                 type="password"
                 value={draft.password || ''}
                 onChange={(e) => onDraftChange(item.id, { password: e.target.value })}
-                placeholder="비밀번호, Runner에만 저장"
+                placeholder="비밀번호, 사이트 계정에 저장"
                 style={{ ...inputStyle, marginBottom: 0, height: 34 }}
               />
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(105px, 1fr))', gap: 6, marginTop: 6 }}>
-              <button type="button" onClick={() => onSaveCredential(item)} style={{ ...smallButtonStyle, background: COLORS.primary, color: 'white', borderColor: COLORS.primary }}>자격증명 저장</button>
+              <button type="button" onClick={() => onSaveCredential(item)} style={{ ...smallButtonStyle, background: COLORS.primary, color: 'white', borderColor: COLORS.primary }}>서버 저장</button>
               <button type="button" onClick={() => onVerifyCredential(item)} style={smallButtonStyle}>저장 확인</button>
               <button type="button" onClick={() => onDeleteCredential(item)} style={{ ...smallButtonStyle, color: COLORS.danger }}>자격증명 삭제</button>
             </div>

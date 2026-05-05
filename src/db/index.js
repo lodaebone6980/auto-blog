@@ -515,6 +515,29 @@ export async function initDB() {
       VALUES ('owner', 'NaviWrite Owner', TRUE)
       ON CONFLICT (id) DO NOTHING;
 
+      CREATE TABLE IF NOT EXISTS account_slots (
+        id SERIAL PRIMARY KEY,
+        tenant_id TEXT DEFAULT 'owner',
+        slot_id TEXT NOT NULL,
+        platform TEXT DEFAULT 'blog',
+        label TEXT NOT NULL,
+        username TEXT,
+        target_url TEXT,
+        login_status TEXT DEFAULT '인증 필요',
+        credential_mode TEXT DEFAULT 'server-aes-256-gcm',
+        credential_cipher TEXT,
+        credential_iv TEXT,
+        credential_tag TEXT,
+        credential_updated_at TIMESTAMPTZ,
+        credential_verified_at TIMESTAMPTZ,
+        channel_discovery JSONB DEFAULT '{}',
+        channel_discovered_at TIMESTAMPTZ,
+        memo TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE(tenant_id, slot_id)
+      );
+
       CREATE TABLE IF NOT EXISTS generated_images (
         id SERIAL PRIMARY KEY,
         tenant_id TEXT DEFAULT 'owner',
@@ -590,6 +613,22 @@ export async function initDB() {
       ALTER TABLE content_jobs ADD COLUMN IF NOT EXISTS published_at TIMESTAMPTZ;
       ALTER TABLE content_jobs ADD COLUMN IF NOT EXISTS obsidian_export_status TEXT DEFAULT '관리자전용';
       ALTER TABLE content_jobs ADD COLUMN IF NOT EXISTS runner_plan JSONB DEFAULT '{}';
+      ALTER TABLE account_slots ADD COLUMN IF NOT EXISTS tenant_id TEXT DEFAULT 'owner';
+      ALTER TABLE account_slots ADD COLUMN IF NOT EXISTS slot_id TEXT;
+      ALTER TABLE account_slots ADD COLUMN IF NOT EXISTS platform TEXT DEFAULT 'blog';
+      ALTER TABLE account_slots ADD COLUMN IF NOT EXISTS label TEXT;
+      ALTER TABLE account_slots ADD COLUMN IF NOT EXISTS username TEXT;
+      ALTER TABLE account_slots ADD COLUMN IF NOT EXISTS target_url TEXT;
+      ALTER TABLE account_slots ADD COLUMN IF NOT EXISTS login_status TEXT DEFAULT '인증 필요';
+      ALTER TABLE account_slots ADD COLUMN IF NOT EXISTS credential_mode TEXT DEFAULT 'server-aes-256-gcm';
+      ALTER TABLE account_slots ADD COLUMN IF NOT EXISTS credential_cipher TEXT;
+      ALTER TABLE account_slots ADD COLUMN IF NOT EXISTS credential_iv TEXT;
+      ALTER TABLE account_slots ADD COLUMN IF NOT EXISTS credential_tag TEXT;
+      ALTER TABLE account_slots ADD COLUMN IF NOT EXISTS credential_updated_at TIMESTAMPTZ;
+      ALTER TABLE account_slots ADD COLUMN IF NOT EXISTS credential_verified_at TIMESTAMPTZ;
+      ALTER TABLE account_slots ADD COLUMN IF NOT EXISTS channel_discovery JSONB DEFAULT '{}';
+      ALTER TABLE account_slots ADD COLUMN IF NOT EXISTS channel_discovered_at TIMESTAMPTZ;
+      ALTER TABLE account_slots ADD COLUMN IF NOT EXISTS memo TEXT;
 
       -- Content Job Event Log
       CREATE TABLE IF NOT EXISTS content_job_events (
@@ -615,6 +654,9 @@ export async function initDB() {
       CREATE INDEX IF NOT EXISTS idx_content_jobs_qr_status ON content_jobs(qr_status);
       CREATE INDEX IF NOT EXISTS idx_content_jobs_sheet_sync_status ON content_jobs(sheet_sync_status);
       CREATE INDEX IF NOT EXISTS idx_content_job_events_job_id ON content_job_events(job_id);
+      CREATE INDEX IF NOT EXISTS idx_account_slots_tenant ON account_slots(tenant_id);
+      CREATE INDEX IF NOT EXISTS idx_account_slots_platform ON account_slots(platform);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_account_slots_tenant_slot_unique ON account_slots(tenant_id, slot_id);
       CREATE INDEX IF NOT EXISTS idx_source_analyses_created_at ON source_analyses(created_at);
       CREATE INDEX IF NOT EXISTS idx_source_analyses_keyword ON source_analyses(keyword);
       CREATE INDEX IF NOT EXISTS idx_source_analyses_source_link_id ON source_analyses(source_link_id);
