@@ -4175,12 +4175,15 @@ function OperationsSettingsPanel() {
     updateAccount(account.id, {
       runnerProfileId: profile.id || plan.profileId || account.runnerProfileId || account.id,
       usernameHint: credential.username || profile.usernameHint || account.usernameHint || '',
+      memo: profile.targetUrl || account.memo || '',
       loginStatus: session.needsLoginCheck ? '로그인 재확인 필요' : session.loginStatus || account.loginStatus || '로그인 체크 필요',
       hasCredential: Boolean(credential.hasCredential ?? profile.hasCredential ?? account.hasCredential),
       credentialUpdatedAt: credential.updatedAt || account.credentialUpdatedAt || null,
       credentialVerifiedAt: credential.verifiedAt || account.credentialVerifiedAt || null,
       runnerPlan: plan.recommendedAction || account.runnerPlan || '',
       runnerReason: plan.reason || account.runnerReason || '',
+      channelDiscoveredAt: profile.channelDiscoveredAt || account.channelDiscoveredAt || null,
+      channelDiscoveryOk: profile.channelDiscovery?.ok ?? account.channelDiscoveryOk ?? null,
       lastCheckedAt: session.lastLoginCheckedAt || account.lastCheckedAt || null,
       runnerSyncedAt: new Date().toISOString(),
     });
@@ -4253,6 +4256,24 @@ function OperationsSettingsPanel() {
       setRunnerStatus({ state: 'ok', message: `${account.label} 인증 창을 열었습니다. 네이버 보안 확인을 끝낸 뒤 인증 완료 저장을 누르세요` });
     } catch (err) {
       setRunnerStatus({ state: 'fail', message: err instanceof Error ? err.message : '인증 창 열기 실패' });
+    }
+  };
+
+  const discoverRunnerChannel = async (account) => {
+    setRunnerStatus({ state: 'testing', message: `${account.label} 채널 URL 자동 확인 중...` });
+    try {
+      const profileId = account.runnerProfileId || await ensureRunnerProfile(account);
+      const data = await runnerRequest(`/profiles/${profileId}/discover-channel`, { method: 'POST', body: '{}' });
+      applyRunnerState(account, data);
+      const foundUrl = data.discovery?.url || data.profile?.targetUrl || '';
+      setRunnerStatus({
+        state: data.ok ? 'ok' : 'fail',
+        message: data.ok
+          ? `${account.label} 채널 URL 확인 완료: ${foundUrl}`
+          : `${account.label} 후보 URL을 확인했지만 공개 페이지 응답을 확정하지 못했습니다. 필요하면 채널 URL을 직접 입력하세요.`,
+      });
+    } catch (err) {
+      setRunnerStatus({ state: 'fail', message: err instanceof Error ? err.message : '채널 URL 확인 실패' });
     }
   };
 
@@ -4503,10 +4524,11 @@ function OperationsSettingsPanel() {
           </div>
           <input value={accountForm.usernameHint} onChange={(e) => setAccountForm({ ...accountForm, usernameHint: e.target.value })} placeholder="로그인 ID" style={inputStyle} />
           <input type="password" value={accountForm.password} onChange={(e) => setAccountForm({ ...accountForm, password: e.target.value })} placeholder="비밀번호, Runner PC에만 암호화 저장" style={inputStyle} />
-          <input value={accountForm.memo} onChange={(e) => setAccountForm({ ...accountForm, memo: e.target.value })} placeholder="발행 채널 URL 또는 워드프레스 사이트 URL" style={inputStyle} />
+          <input value={accountForm.memo} onChange={(e) => setAccountForm({ ...accountForm, memo: e.target.value })} placeholder="발행 채널 URL. 비우면 블로그는 ID로 자동 확인" style={inputStyle} />
           <button type="button" onClick={addAccount} style={primaryButtonStyle}>계정 저장 + ID/PW 로컬 저장</button>
           <p style={{ marginTop: 6, fontSize: 10, color: COLORS.textMuted, lineHeight: 1.5 }}>
             네이버 계열 ID/PW 저장은 로그인 완료가 아닙니다. 저장 후 인증 창을 열어 보안 확인을 끝내고 인증 완료 저장까지 눌러야 합니다.
+            IP 보안이나 2차 인증 설정 변경은 자동으로 끄지 않고, 열린 네이버 화면에서 사용자가 직접 결정합니다.
             워드프레스는 사이트 URL, 관리자 ID, Application Password를 저장하면 발행 큐에서 API 발행을 실행할 수 있습니다.
           </p>
           <AccountSlotListV2
@@ -4517,6 +4539,7 @@ function OperationsSettingsPanel() {
             onCreateProfile={createRunnerProfile}
             onCheckSession={checkRunnerSession}
             onOpenLogin={openRunnerLogin}
+            onDiscoverChannel={discoverRunnerChannel}
             onMarkChecked={markRunnerLoginChecked}
             onSaveCredential={saveRunnerCredential}
             onVerifyCredential={verifyRunnerCredential}
@@ -4587,6 +4610,7 @@ function AccountSlotListV2({
   onCreateProfile,
   onCheckSession,
   onOpenLogin,
+  onDiscoverChannel,
   onMarkChecked,
   onSaveCredential,
   onVerifyCredential,
@@ -4623,6 +4647,11 @@ function AccountSlotListV2({
                 {item.runnerReason && (
                   <p style={{ fontSize: 10, color: COLORS.warning, marginTop: 4, lineHeight: 1.45 }}>{item.runnerReason}</p>
                 )}
+                {item.memo && (
+                  <p style={{ fontSize: 10, color: COLORS.accent, marginTop: 4, lineHeight: 1.45, wordBreak: 'break-all' }}>
+                    채널 URL: {item.memo}
+                  </p>
+                )}
               </div>
               <button type="button" onClick={() => onRemove(item.id)} style={{
                 height: 28,
@@ -4642,6 +4671,7 @@ function AccountSlotListV2({
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(92px, 1fr))', gap: 6, marginBottom: 10 }}>
               <button type="button" onClick={() => onCreateProfile(item)} style={smallButtonStyle}>Runner 준비</button>
               <button type="button" onClick={() => onCheckSession(item)} style={smallButtonStyle}>세션 체크</button>
+              <button type="button" onClick={() => onDiscoverChannel(item)} style={smallButtonStyle}>URL 자동확인</button>
               <button type="button" onClick={() => onOpenLogin(item)} style={smallButtonStyle}>인증 창 열기</button>
               <button type="button" onClick={() => onMarkChecked(item)} style={{ ...smallButtonStyle, background: COLORS.success, color: 'white', borderColor: COLORS.success }}>
                 인증 완료 저장

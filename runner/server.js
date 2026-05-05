@@ -107,6 +107,101 @@ function normalizeUrl(value = '') {
   return /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
 }
 
+function normalizedUsername(value = '') {
+  return String(value || '')
+    .trim()
+    .replace(/^https?:\/\//i, '')
+    .replace(/^blog\.naver\.com\//i, '')
+    .replace(/^m\.blog\.naver\.com\//i, '')
+    .replace(/\/.*$/, '')
+    .replace(/@naver\.com$/i, '')
+    .replace(/[^a-zA-Z0-9_.-]/g, '');
+}
+
+function channelCandidatesFor(profile = {}, credential = {}) {
+  const candidates = [];
+  const add = (url, reason) => {
+    const normalized = normalizeUrl(url);
+    if (normalized && !candidates.some((item) => item.url === normalized)) {
+      candidates.push({ url: normalized, reason });
+    }
+  };
+  const platform = profile.platform || 'blog';
+  const username = normalizedUsername(credential.username || profile.usernameHint || '');
+  add(profile.targetUrl, 'saved_target_url');
+  if (platform === 'blog' && username) {
+    add(`https://blog.naver.com/${username}`, 'naver_blog_id_candidate');
+    add(`https://m.blog.naver.com/${username}`, 'naver_mobile_blog_candidate');
+  } else if (platform === 'cafe') {
+    add('https://cafe.naver.com', 'naver_cafe_home');
+  } else if (platform === 'premium') {
+    add('https://contents.premium.naver.com', 'naver_premium_home');
+  } else if (platform === 'brunch' && username) {
+    add(`https://brunch.co.kr/@${username}`, 'brunch_writer_candidate');
+  } else if (platform === 'wordpress') {
+    add(profile.targetUrl, 'wordpress_site_url');
+  }
+  return candidates;
+}
+
+async function probeChannelUrl(url) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 8000);
+  try {
+    const response = await fetch(url, {
+      redirect: 'follow',
+      signal: controller.signal,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 NaviWriteRunner/0.2.2',
+        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      },
+    });
+    const text = await response.text().catch(() => '');
+    const title = text.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1]
+      ?.replace(/\s+/g, ' ')
+      ?.trim()
+      ?.slice(0, 120) || '';
+    return {
+      ok: response.status >= 200 && response.status < 400,
+      status: response.status,
+      finalUrl: response.url || url,
+      title,
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function discoverChannel(profile = {}) {
+  const credential = await credentialStatus(profile.id);
+  const candidates = channelCandidatesFor(profile, credential);
+  const checked = [];
+  for (const candidate of candidates) {
+    try {
+      const result = await probeChannelUrl(candidate.url);
+      checked.push({ ...candidate, ...result });
+      if (result.ok) {
+        return {
+          ok: true,
+          url: result.finalUrl || candidate.url,
+          title: result.title,
+          source: candidate.reason,
+          candidates: checked,
+        };
+      }
+    } catch (err) {
+      checked.push({ ...candidate, ok: false, error: err.message || 'probe failed' });
+    }
+  }
+  return {
+    ok: false,
+    url: candidates[0]?.url || '',
+    title: '',
+    source: candidates[0]?.reason || 'none',
+    candidates: checked.length ? checked : candidates,
+  };
+}
+
 function editorUrlFor(profile = {}, job = {}) {
   const target = normalizeUrl(profile.targetUrl || '');
   if (target) return target;
@@ -493,7 +588,7 @@ async function router(req, res) {
       return send(res, 200, {
         status: 'ok',
         service: 'naviwrite-runner',
-        version: '0.2.1',
+        version: '0.2.2',
         dataDir: DATA_DIR,
         profileDir: PROFILE_DIR,
         browserFound: Boolean(findBrowserExecutable()),
@@ -727,6 +822,25 @@ async function router(req, res) {
         ], { detached: true, stdio: 'ignore', windowsHide: false });
         child.unref();
         return send(res, 200, { ok: true, profileId: id, openedUrl: loginUrlFor(profile) });
+      }
+
+      if (req.method === 'POST' && parts[2] === 'discover-channel') {
+        const profile = await readProfile(id);
+        if (!profile) return send(res, 404, { error: 'profile not found' });
+        const discovery = await discoverChannel(profile);
+        const patch = {
+          channelDiscovery: discovery,
+          channelDiscoveredAt: nowIso(),
+        };
+        if (discovery.url) patch.targetUrl = discovery.url;
+        const updated = await updateProfile(id, patch);
+        return send(res, 200, {
+          ok: discovery.ok,
+          profileId: id,
+          discovery,
+          profile: updated ? await profilePayload(updated) : null,
+          plan: updated ? await loginPlanFor(updated) : await loginPlanFor(profile),
+        });
       }
 
       if (req.method === 'POST' && parts[2] === 'mark-login-checked') {

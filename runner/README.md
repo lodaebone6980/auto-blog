@@ -23,6 +23,8 @@ http://127.0.0.1:39271
 - ID/PW를 저장하는 경우 Windows DPAPI로 암호화해 현재 Windows 사용자 계정 안에만 보관합니다.
 - 대시보드는 비밀번호 원문을 볼 수 없고, 저장 여부와 마지막 확인 시각만 확인합니다.
 - QR 생성과 발행은 기본적으로 사용자 화면이 열리는 확인형 자동화로 시작합니다.
+- 네이버 IP 보안, 2차 인증, 새 환경 확인 같은 계정 보안 설정은 Runner가 자동으로 끄지 않습니다. 열린 네이버 화면에서 사용자가 직접 결정하고 완료한 뒤 대시보드에서 인증 완료를 저장합니다.
+- 네이버 블로그는 저장된 ID를 기준으로 공개 블로그 URL 후보를 확인해 계정 슬롯에 자동 저장할 수 있습니다.
 
 ## 주요 API
 
@@ -35,6 +37,7 @@ PATCH  /profiles/:id
 GET    /profiles/:id/session-status
 GET    /profiles/:id/login-plan
 POST   /profiles/:id/open-login
+POST   /profiles/:id/discover-channel
 POST   /profiles/:id/mark-login-checked
 POST   /profiles/:id/activity
 GET    /profiles/:id/credential-status
