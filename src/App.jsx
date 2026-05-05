@@ -34,6 +34,8 @@ const SORT_OPTIONS = [
 
 const DEFAULT_REWRITE_SETTINGS = {
   contentSkillKey: 'adsense_traffic',
+  generatorMode: 'openai',
+  openaiModel: 'gpt-4.1-mini',
   targetCharCount: 2200,
   sectionCharCount: 300,
   sectionCount: 7,
@@ -139,6 +141,13 @@ function formatCompactCount(value) {
   if (numeric >= 100000000) return `${(numeric / 100000000).toFixed(1).replace(/\.0$/, '')}억`;
   if (numeric >= 10000) return `${(numeric / 10000).toFixed(1).replace(/\.0$/, '')}만`;
   return numeric.toLocaleString();
+}
+
+function formatUsd(value) {
+  const numeric = Number(value || 0);
+  if (!Number.isFinite(numeric)) return '$0.0000';
+  if (Math.abs(numeric) >= 1) return `$${numeric.toFixed(2)}`;
+  return `$${numeric.toFixed(4)}`;
 }
 
 function keywordDemandBadge(candidate) {
@@ -2241,6 +2250,7 @@ function RewritePanel() {
   const [queueing, setQueueing] = useState(false);
   const [benchmarking, setBenchmarking] = useState(false);
   const [message, setMessage] = useState('');
+  const [openAiEstimate, setOpenAiEstimate] = useState(null);
 
   const parseArray = (value) => {
     if (Array.isArray(value)) return value;
@@ -2336,6 +2346,25 @@ function RewritePanel() {
   );
   const rewriteJobCount = generationMode === 'direct' ? directKeywordCount : selectedSources.length;
   const canCreateGenerationJobs = generationMode === 'direct' ? directKeywordCount > 0 : selectedSources.length > 0;
+  const selectedCostCount = selectedCompletedRewriteJobs.length || rewriteJobCount || 1;
+
+  useEffect(() => {
+    let alive = true;
+    safeFetch(`${API}/openai/estimate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        count: selectedCostCount,
+        targetCharCount: rewriteSettings.targetCharCount,
+        sourceCount: generationMode === 'direct' ? 0 : selectedSources.length,
+        sectionCount: rewriteSettings.sectionCount,
+        model: rewriteSettings.openaiModel,
+      }),
+    }).then((res) => {
+      if (alive && res?.estimate) setOpenAiEstimate(res);
+    });
+    return () => { alive = false; };
+  }, [selectedCostCount, rewriteSettings.targetCharCount, rewriteSettings.sectionCount, rewriteSettings.openaiModel, generationMode, selectedSources.length]);
 
   const toggleSource = (id) => {
     setSelectedSourceLinkIds((prev) => (
@@ -2384,7 +2413,7 @@ function RewritePanel() {
   const updateRewriteSetting = (key, value) => {
     setRewriteSettings((prev) => ({
       ...prev,
-      [key]: key === 'benchmarkUrl' ? value : Number(value) || 0,
+      [key]: ['benchmarkUrl', 'generatorMode', 'openaiModel', 'contentSkillKey'].includes(key) ? value : Number(value) || 0,
     }));
   };
 
@@ -3110,6 +3139,54 @@ function RewritePanel() {
               background: 'white',
             }}
           />
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10, marginTop: 10 }}>
+            <label style={{ display: 'grid', gap: 5 }}>
+              <span style={{ fontSize: 11, color: COLORS.textSecondary, fontWeight: 800 }}>원고 생성 방식</span>
+              <select
+                value={rewriteSettings.generatorMode || 'openai'}
+                onChange={(e) => updateRewriteSetting('generatorMode', e.target.value)}
+                style={{ ...inputStyle, height: 36, marginBottom: 0 }}
+              >
+                <option value="openai">OpenAI 원고 생성</option>
+                <option value="server_template">서버 템플릿 테스트</option>
+              </select>
+            </label>
+            <label style={{ display: 'grid', gap: 5 }}>
+              <span style={{ fontSize: 11, color: COLORS.textSecondary, fontWeight: 800 }}>OpenAI 모델</span>
+              <select
+                value={rewriteSettings.openaiModel || 'gpt-4.1-mini'}
+                onChange={(e) => updateRewriteSetting('openaiModel', e.target.value)}
+                style={{ ...inputStyle, height: 36, marginBottom: 0 }}
+              >
+                <option value="gpt-4.1-mini">gpt-4.1-mini · 저비용</option>
+                <option value="gpt-4.1">gpt-4.1 · 고품질</option>
+                <option value="gpt-5-mini">gpt-5-mini · 최신 저비용</option>
+              </select>
+            </label>
+          </div>
+          <div style={{
+            marginTop: 10,
+            padding: 10,
+            borderRadius: 9,
+            border: `1px solid ${COLORS.border}`,
+            background: '#fff',
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            gap: 10,
+            flexWrap: 'wrap',
+          }}>
+            <div>
+              <p style={{ fontSize: 11, color: COLORS.textSecondary, fontWeight: 800 }}>선택/생성 예상 OpenAI 비용</p>
+              <p style={{ marginTop: 3, fontSize: 17, color: COLORS.primary, fontWeight: 950 }}>
+                {formatUsd(openAiEstimate?.estimate?.estimatedCostUsd || 0)}
+              </p>
+            </div>
+            <p style={{ fontSize: 11, color: COLORS.textMuted, lineHeight: 1.5 }}>
+              {selectedCostCount}개 · {openAiEstimate?.estimate?.totalTokens?.toLocaleString?.() || 0} tokens 예상
+              <br />실제 과금은 OpenAI 응답 usage 기준으로 저장됩니다.
+            </p>
+          </div>
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginTop: 14 }}>
@@ -3431,6 +3508,9 @@ function RewritePanel() {
                         <p>{Number(job.char_count || 0).toLocaleString()}자</p>
                         <p style={{ marginTop: 4 }}>KW {job.kw_count || 0} · 이미지 {job.image_count || 0}</p>
                         <p style={{ marginTop: 4, fontSize: 10, color: COLORS.textMuted }}>인용구 {job.quote_count || 0}</p>
+                        <p style={{ marginTop: 4, fontSize: 10, color: job.generator_mode === 'openai' ? COLORS.success : COLORS.textMuted, fontWeight: 850 }}>
+                          {job.generator_mode === 'openai' ? `OpenAI ${formatUsd(job.openai_estimated_cost_usd || 0)}` : '템플릿'}
+                        </p>
                       </td>
                       <td style={{ padding: '12px', minWidth: 150, color: COLORS.textSecondary }}>
                         <p>SEO {Number(job.seo_score || 0).toFixed(0)} · GEO {Number(job.geo_score || 0).toFixed(0)} · AEO {Number(job.aeo_score || 0).toFixed(0)}</p>
@@ -3787,6 +3867,8 @@ function OperationsSettingsPanelLegacy() {
     runnerUrl: 'http://127.0.0.1:39271',
     naverClientId: '',
     naverClientSecret: '',
+    openAiModel: 'gpt-4.1-mini',
+    openAiMonthlyBudgetUsd: 20,
     accounts: [],
     qrAccounts: [],
     vpnProfiles: [],
@@ -4003,6 +4085,52 @@ function OperationsSettingsPanelLegacy() {
         </p>
       </section>
 
+      <section style={{ ...cardStyle, padding: 18 }}>
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16, marginBottom: 12 }}>
+          <div>
+            <h3 style={{ fontSize: 15, fontWeight: 850, color: COLORS.primary, marginBottom: 4 }}>OpenAI 원고 생성</h3>
+            <p style={{ fontSize: 12, color: COLORS.textSecondary, lineHeight: 1.6 }}>
+              API 키는 서버에 암호화 저장하고, 확장프로그램에는 전달하지 않습니다. 남은 금액은 실제 OpenAI 잔액이 아니라 설정한 월 예산 기준 추정값입니다.
+            </p>
+          </div>
+          <StatusBadge value={openAiForm.hasApiKey ? `키 저장됨 · ${openAiForm.keySource}` : '키 필요'} />
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(220px, 1.4fr) minmax(150px, .8fr) minmax(130px, .6fr) 150px', gap: 8 }}>
+          <input
+            type="password"
+            value={openAiForm.apiKey}
+            onChange={(e) => setOpenAiForm({ ...openAiForm, apiKey: e.target.value })}
+            placeholder={openAiForm.hasApiKey ? '새 키로 바꿀 때만 입력' : 'OPENAI_API_KEY'}
+            style={{ ...inputStyle, marginBottom: 0 }}
+          />
+          <select
+            value={openAiForm.model}
+            onChange={(e) => setOpenAiForm({ ...openAiForm, model: e.target.value })}
+            style={{ ...inputStyle, marginBottom: 0 }}
+          >
+            <option value="gpt-4.1-mini">gpt-4.1-mini</option>
+            <option value="gpt-4.1">gpt-4.1</option>
+            <option value="gpt-5-mini">gpt-5-mini</option>
+          </select>
+          <input
+            type="number"
+            min="1"
+            value={openAiForm.monthlyBudgetUsd}
+            onChange={(e) => setOpenAiForm({ ...openAiForm, monthlyBudgetUsd: e.target.value })}
+            placeholder="월 예산 USD"
+            style={{ ...inputStyle, marginBottom: 0 }}
+          />
+          <button
+            type="button"
+            onClick={saveOpenAiSettings}
+            disabled={openAiSaving}
+            style={{ ...primaryButtonStyle, marginBottom: 0 }}
+          >
+            {openAiSaving ? '저장 중' : 'OpenAI 저장'}
+          </button>
+        </div>
+      </section>
+
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 14 }}>
         <section style={{ ...cardStyle, padding: 18 }}>
           <h3 style={{ fontSize: 15, fontWeight: 850, color: COLORS.primary, marginBottom: 12 }}>Naver Search API</h3>
@@ -4151,6 +4279,8 @@ function OperationsSettingsPanel() {
   const [qrForm, setQrForm] = useState({ label: '', naverIdHint: '', dailyLimit: 100 });
   const [vpnForm, setVpnForm] = useState({ label: '', provider: 'nordvpn', target: '', mode: '수동 확인' });
   const [credentialDrafts, setCredentialDrafts] = useState({});
+  const [openAiForm, setOpenAiForm] = useState({ apiKey: '', model: 'gpt-4.1-mini', monthlyBudgetUsd: 20, hasApiKey: false, keySource: 'missing' });
+  const [openAiSaving, setOpenAiSaving] = useState(false);
 
   const saveSettings = (next) => {
     setSettings(next);
@@ -4196,6 +4326,49 @@ function OperationsSettingsPanel() {
     loadCloudAccounts();
     return () => { cancelled = true; };
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    safeFetch(`${API}/openai/settings`).then((res) => {
+      if (cancelled || !res?.settings) return;
+      setOpenAiForm((prev) => ({
+        ...prev,
+        apiKey: '',
+        model: res.settings.model || 'gpt-4.1-mini',
+        monthlyBudgetUsd: res.settings.monthlyBudgetUsd || 20,
+        hasApiKey: Boolean(res.settings.hasApiKey),
+        keySource: res.settings.keySource || 'missing',
+      }));
+    });
+    return () => { cancelled = true; };
+  }, []);
+
+  const saveOpenAiSettings = async () => {
+    setOpenAiSaving(true);
+    const res = await safeFetch(`${API}/openai/settings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        apiKey: openAiForm.apiKey,
+        model: openAiForm.model,
+        monthlyBudgetUsd: openAiForm.monthlyBudgetUsd,
+      }),
+    });
+    setOpenAiSaving(false);
+    if (res?.settings) {
+      setOpenAiForm((prev) => ({
+        ...prev,
+        apiKey: '',
+        model: res.settings.model,
+        monthlyBudgetUsd: res.settings.monthlyBudgetUsd,
+        hasApiKey: Boolean(res.settings.hasApiKey),
+        keySource: res.settings.keySource,
+      }));
+      setRunnerStatus({ state: 'ok', message: 'OpenAI 설정을 서버에 저장했습니다.' });
+    } else {
+      setRunnerStatus({ state: 'fail', message: res?.error || 'OpenAI 설정 저장에 실패했습니다.' });
+    }
+  };
 
   const mergeAccountSlot = (account) => {
     const normalized = { ...account, id: account.id || account.slotId };
@@ -5317,6 +5490,34 @@ function PublishQueuePanel() {
   );
 }
 
+function OpenAiUsagePill({ summary }) {
+  const usage = summary?.usage || {};
+  const settings = summary?.settings || {};
+  return (
+    <div style={{
+      display: 'grid',
+      gap: 2,
+      minWidth: 210,
+      minHeight: 42,
+      padding: '7px 10px',
+      borderRadius: 9,
+      background: '#f0f7ff',
+      border: `1px solid #c7ddf2`,
+      color: COLORS.primary,
+    }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 10, fontWeight: 900 }}>
+        <span>OpenAI {settings.hasApiKey ? settings.model : '키 필요'}</span>
+        <span>잔여 {formatUsd(usage.remainingBudgetUsd || 0)}</span>
+      </div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 10, color: COLORS.textSecondary, fontWeight: 800 }}>
+        <span>오늘 {formatUsd(usage.todayUsd || 0)}</span>
+        <span>7일 {formatUsd(usage.sevenDaysUsd || 0)}</span>
+        <span>30일 {formatUsd(usage.thirtyDaysUsd || 0)}</span>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [health, setHealth] = useState(null);
   const [stats, setStats] = useState(null);
@@ -5324,6 +5525,7 @@ export default function App() {
   const [contentJobs, setContentJobs] = useState([]);
   const [dashboard, setDashboard] = useState(null);
   const [alerts, setAlerts] = useState([]);
+  const [openAiUsage, setOpenAiUsage] = useState(null);
   const [period, setPeriod] = useState('week');
   const [loading, setLoading] = useState(true);
   const [currentTime, setCurrentTime] = useState(new Date());
@@ -5353,18 +5555,20 @@ export default function App() {
   // Fetch main data
   const fetchData = useCallback(async () => {
     setLoading(true);
-    const [s, p, j, d, a] = await Promise.all([
+    const [s, p, j, d, a, o] = await Promise.all([
       safeFetch(`${API}/stats`),
       safeFetch(`${API}/posts`),
       safeFetch(`${API}/content-jobs?limit=80`),
       safeFetch(`${API}/track/dashboard?period=${period}`),
       safeFetch(`${API}/track/alerts`),
+      safeFetch(`${API}/openai/usage-summary`),
     ]);
     if (s) setStats(s);
     if (p) setPosts(Array.isArray(p) ? p : []);
     if (j) setContentJobs(Array.isArray(j) ? j : []);
     if (d) setDashboard(d);
     if (a) setAlerts(Array.isArray(a) ? a : []);
+    if (o) setOpenAiUsage(o);
     setLoading(false);
   }, [period]);
 
@@ -5547,6 +5751,7 @@ export default function App() {
               </p>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+              <OpenAiUsagePill summary={openAiUsage} />
               <button
                 type="button"
                 onClick={() => setGuideOpen(true)}

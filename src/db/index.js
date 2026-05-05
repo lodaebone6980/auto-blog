@@ -283,6 +283,22 @@ export async function initDB() {
         created_at TIMESTAMPTZ DEFAULT NOW()
       );
 
+      CREATE TABLE IF NOT EXISTS openai_usage_logs (
+        id SERIAL PRIMARY KEY,
+        tenant_id TEXT DEFAULT 'owner',
+        feature TEXT DEFAULT 'rewrite',
+        operation TEXT DEFAULT 'article_generation',
+        model TEXT NOT NULL,
+        rewrite_job_id INTEGER REFERENCES rewrite_jobs(id) ON DELETE SET NULL,
+        content_job_id INTEGER,
+        prompt_tokens INTEGER DEFAULT 0,
+        completion_tokens INTEGER DEFAULT 0,
+        total_tokens INTEGER DEFAULT 0,
+        estimated_cost_usd NUMERIC(12, 6) DEFAULT 0,
+        request_meta JSONB DEFAULT '{}',
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+
       -- Simple server-side feature settings used by schedulers and dashboard screens.
       CREATE TABLE IF NOT EXISTS app_settings (
         key TEXT PRIMARY KEY,
@@ -362,6 +378,14 @@ export async function initDB() {
       ALTER TABLE rewrite_jobs ADD COLUMN IF NOT EXISTS source_kind TEXT DEFAULT 'collected';
       ALTER TABLE rewrite_jobs ADD COLUMN IF NOT EXISTS source_item_id INTEGER;
       ALTER TABLE rewrite_jobs ADD COLUMN IF NOT EXISTS publish_spec JSONB DEFAULT '{}';
+      ALTER TABLE rewrite_jobs ADD COLUMN IF NOT EXISTS generator_mode TEXT DEFAULT 'server_template';
+      ALTER TABLE rewrite_jobs ADD COLUMN IF NOT EXISTS openai_model TEXT;
+      ALTER TABLE rewrite_jobs ADD COLUMN IF NOT EXISTS openai_prompt_tokens INTEGER DEFAULT 0;
+      ALTER TABLE rewrite_jobs ADD COLUMN IF NOT EXISTS openai_completion_tokens INTEGER DEFAULT 0;
+      ALTER TABLE rewrite_jobs ADD COLUMN IF NOT EXISTS openai_total_tokens INTEGER DEFAULT 0;
+      ALTER TABLE rewrite_jobs ADD COLUMN IF NOT EXISTS openai_estimated_cost_usd NUMERIC(12, 6) DEFAULT 0;
+      ALTER TABLE rewrite_jobs ADD COLUMN IF NOT EXISTS elapsed_ms INTEGER DEFAULT 0;
+      ALTER TABLE rewrite_jobs ADD COLUMN IF NOT EXISTS variant_index INTEGER DEFAULT 0;
       ALTER TABLE rss_sources ADD COLUMN IF NOT EXISTS collected_blog_id INTEGER REFERENCES collected_blogs(id) ON DELETE SET NULL;
       ALTER TABLE rss_sources ADD COLUMN IF NOT EXISTS continuous_monitor BOOLEAN DEFAULT TRUE;
 
@@ -675,6 +699,9 @@ export async function initDB() {
       CREATE INDEX IF NOT EXISTS idx_rewrite_jobs_status ON rewrite_jobs(status);
       CREATE INDEX IF NOT EXISTS idx_rewrite_jobs_keyword ON rewrite_jobs(target_keyword);
       CREATE INDEX IF NOT EXISTS idx_rewrite_job_events_job_id ON rewrite_job_events(rewrite_job_id);
+      CREATE INDEX IF NOT EXISTS idx_openai_usage_created_at ON openai_usage_logs(created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_openai_usage_tenant ON openai_usage_logs(tenant_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_openai_usage_rewrite_job ON openai_usage_logs(rewrite_job_id);
       CREATE INDEX IF NOT EXISTS idx_rss_sources_status ON rss_sources(status);
       CREATE INDEX IF NOT EXISTS idx_rss_source_items_source ON rss_source_items(rss_source_id);
       CREATE INDEX IF NOT EXISTS idx_rss_source_items_status ON rss_source_items(status);

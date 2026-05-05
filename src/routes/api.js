@@ -1194,6 +1194,8 @@ function clampNumber(value, min, max) {
 
 const DEFAULT_REWRITE_SETTINGS = {
   contentSkillKey: 'adsense_traffic',
+  generatorMode: 'openai',
+  openaiModel: 'gpt-4.1-mini',
   targetCharCount: 2200,
   sectionCharCount: 300,
   sectionCount: 7,
@@ -1276,6 +1278,8 @@ function parseRewriteSettings(input = {}) {
     ...DEFAULT_REWRITE_SETTINGS,
     ...raw,
     contentSkillKey: raw.contentSkillKey || raw.content_skill_key || DEFAULT_REWRITE_SETTINGS.contentSkillKey,
+    generatorMode: raw.generatorMode || raw.generator_mode || DEFAULT_REWRITE_SETTINGS.generatorMode,
+    openaiModel: raw.openaiModel || raw.openai_model || DEFAULT_REWRITE_SETTINGS.openaiModel,
     targetCharCount: clampNumber(parseInt(raw.targetCharCount ?? raw.target_char_count ?? DEFAULT_REWRITE_SETTINGS.targetCharCount, 10) || DEFAULT_REWRITE_SETTINGS.targetCharCount, 1200, 5000),
     sectionCharCount: clampNumber(parseInt(raw.sectionCharCount ?? raw.section_char_count ?? DEFAULT_REWRITE_SETTINGS.sectionCharCount, 10) || DEFAULT_REWRITE_SETTINGS.sectionCharCount, 150, 700),
     sectionCount: clampNumber(parseInt(raw.sectionCount ?? raw.section_count ?? DEFAULT_REWRITE_SETTINGS.sectionCount, 10) || DEFAULT_REWRITE_SETTINGS.sectionCount, 3, 10),
@@ -2426,6 +2430,200 @@ function buildRewriteDraft({ keyword, topic, platform, ctaUrl, useNaverQr, useAi
   };
 }
 
+function safeJsonFromModelText(text = '') {
+  const raw = String(text || '').trim();
+  if (!raw) throw new Error('OpenAI 응답이 비어 있습니다.');
+  try {
+    return JSON.parse(raw);
+  } catch {
+    const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    if (fenced?.[1]) return JSON.parse(fenced[1]);
+    const start = raw.indexOf('{');
+    const end = raw.lastIndexOf('}');
+    if (start >= 0 && end > start) return JSON.parse(raw.slice(start, end + 1));
+    throw new Error('OpenAI 응답 JSON 파싱에 실패했습니다.');
+  }
+}
+
+function buildOpenAiRewritePrompt({ job, analyses = [], pattern = {}, settings = {}, variantIndex = 0 }) {
+  const keyword = job.target_keyword;
+  const topic = job.target_topic || keyword;
+  const sourceSummaries = analyses.slice(0, 4).map((row, index) => ({
+    index: index + 1,
+    title: row.title || '',
+    mainKeyword: row.corrected_main_keyword || row.main_keyword || row.keyword || '',
+    category: row.category_guess || row.category || '',
+    charCount: row.char_count || row.charCount || 0,
+    kwCount: row.kw_count || row.kwCount || 0,
+    imageCount: row.image_count || row.imageCount || 0,
+    quoteBlocks: parseJsonArray(row.quote_blocks).slice(0, 8),
+    repeatedTerms: parseJsonArray(row.repeated_terms).slice(0, 10),
+    textSample: String(row.plain_text || row.source_text_preview || '').slice(0, 1600),
+  }));
+  const imageCount = pattern.imageCount || settings.imageCount || DEFAULT_REWRITE_SETTINGS.imageCount;
+  const sectionCount = pattern.sectionCount || settings.sectionCount || DEFAULT_REWRITE_SETTINGS.sectionCount;
+  const targetCharCount = pattern.targetCharCount || settings.targetCharCount || DEFAULT_REWRITE_SETTINGS.targetCharCount;
+  const targetKwCount = pattern.targetKwCount || settings.targetKwCount || DEFAULT_REWRITE_SETTINGS.targetKwCount;
+  const cta = job.cta_url || '[글별 CTA 링크 입력 필요]';
+  const qrInstruction = job.use_naver_qr
+    ? '도입 CTA 직후 또는 두 번째 섹션 뒤에 [네이버 QR 삽입: CTA 링크] 표기를 넣어라.'
+    : 'CTA 링크는 도입부 직후와 마무리 직전에 자연스럽게 넣어라.';
+  return {
+    system: [
+      '너는 한국어 네이버 블로그/카페 SEO 원고를 쓰는 전문 에디터다.',
+      '제공된 원문을 복사하지 말고 주제와 검색 의도만 학습해 완전히 새 구성과 새 문장으로 작성한다.',
+      '유사문서 위험을 낮추기 위해 원문 문장, 문단 순서, 소제목 표현을 그대로 쓰지 않는다.',
+      '응답은 반드시 JSON object 하나로만 한다. 마크다운 코드블록을 쓰지 않는다.',
+    ].join('\n'),
+    user: JSON.stringify({
+      task: 'NaviWrite article rewrite/generation',
+      platform: job.platform || 'blog',
+      category: job.category || 'general',
+      keyword,
+      topic,
+      customTitle: job.custom_title || '',
+      variantIndex,
+      target: {
+        charCount: targetCharCount,
+        sectionCount,
+        sectionCharCount: settings.sectionCharCount || DEFAULT_REWRITE_SETTINGS.sectionCharCount,
+        keywordRepeatCount: targetKwCount,
+        imageCount,
+        quoteHeadingPerSection: true,
+        imageSize: '500x500 center aligned',
+        similarityRisk: 'very_low',
+      },
+      structureRules: [
+        'title은 SEO/AEO/GEO 기준으로 메인키워드와 행동유도 보조어를 자연스럽게 포함한다.',
+        'body 첫 줄에는 title을 한 번 넣고, 이후 도입부 3문단을 쓴다.',
+        `도입 CTA에는 ${cta}를 넣는다.`,
+        qrInstruction,
+        '네이버 블로그는 각 소제목을 > 인용구 형식으로 표시한다.',
+        '각 소제목 뒤에는 이미지 자리 표시자를 [이미지 n 500x500 중앙정렬: 소제목] 형식으로 넣는다.',
+        '본문은 검색자가 바로 확인해야 할 기준, 대상, 방법, 주의사항, 요약 순서로 읽히게 한다.',
+        '마무리에서는 핵심을 다시 정리하되 과장된 보장 표현은 피한다.',
+      ],
+      sourceBenchmarks: sourceSummaries,
+      requiredJsonShape: {
+        title: 'string',
+        body: 'string with title, intro, CTA, quote headings, image placeholders, conclusion',
+        sectionTitles: ['string'],
+        imageCards: [{ label: '대표 또는 섹션명', title: '이미지 제목', subtitle: '이미지 보조문구' }],
+      },
+    }, null, 2),
+  };
+}
+
+async function buildOpenAiRewriteDraft({ tenantId, job, analyses, pattern, settings, variantIndex }) {
+  const openAi = await getOpenAiSettings(tenantId);
+  if (!openAi.hasApiKey) {
+    throw new Error('OPENAI_API_KEY가 설정되어 있지 않습니다. 운영 설정에서 OpenAI API 키를 저장하거나 Railway 환경변수에 추가해 주세요.');
+  }
+  const model = normalizeOpenAiModel(settings.openaiModel || openAi.model);
+  const prompt = buildOpenAiRewritePrompt({ job, analyses, pattern, settings, variantIndex });
+  const response = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${openAi.apiKey}`,
+    },
+    body: JSON.stringify({
+      model,
+      temperature: 0.72,
+      max_tokens: clampNumber(Math.ceil((settings.targetCharCount || DEFAULT_REWRITE_SETTINGS.targetCharCount) * 1.8), 2500, 9000),
+      response_format: { type: 'json_object' },
+      messages: [
+        { role: 'system', content: prompt.system },
+        { role: 'user', content: prompt.user },
+      ],
+    }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(data.error?.message || `OpenAI API 오류 ${response.status}`);
+  }
+  const content = data.choices?.[0]?.message?.content || '';
+  const parsed = safeJsonFromModelText(content);
+  const fallbackTitle = normalizeTitleValue(job.custom_title) || makeRewriteTitle(job.target_keyword, job.target_topic, job.platform, pattern);
+  const title = normalizeTitleValue(parsed.title || fallbackTitle);
+  let body = String(parsed.body || '').trim();
+  if (!body.includes(title)) body = `${title}\n\n${body}`;
+  const sectionTitles = Array.isArray(parsed.sectionTitles) && parsed.sectionTitles.length
+    ? parsed.sectionTitles.map((item) => String(item || '').replace(/^>\s*/, '').trim()).filter(Boolean)
+    : makeSectionTitles(job.target_keyword, job.target_topic, Math.max(1, (pattern.sectionCount || settings.sectionCount || 7) - 1), variantIndex);
+  sectionTitles.forEach((section, index) => {
+    if (!body.includes(`[이미지 ${index + 1}`)) {
+      body += `\n\n[이미지 ${index + 1} 500x500 중앙정렬: ${section}]`;
+    }
+  });
+  const plainText = body
+    .replace(/\[(?:대표이미지|이미지|보조 이미지|네이버 QR)[^\]]+\]/g, '')
+    .replace(/^>\s*/gm, '')
+    .trim();
+  const charCount = plainText.replace(/\s/g, '').length;
+  const kwCount = (plainText.match(new RegExp(escapeRegExp(job.target_keyword), 'gi')) || []).length;
+  const requiredImageCount = Math.max(
+    pattern.imageCount || settings.imageCount || 0,
+    1 + sectionTitles.length
+  );
+  const cards = Array.isArray(parsed.imageCards) ? parsed.imageCards : [];
+  const images = job.use_ai_images
+    ? Array.from({ length: requiredImageCount }, (_, index) => {
+        const card = cards[index] || {};
+        const section = index === 0 ? title : sectionTitles[(index - 1) % Math.max(sectionTitles.length, 1)] || title;
+        return makeTemplateImage({
+          keyword: job.target_keyword,
+          section: card.title || card.label || section,
+          subtitle: card.subtitle || (index === 0 ? '핵심 요약' : `${index}번째 포인트`),
+          index,
+          platform: job.platform,
+        });
+      })
+    : [];
+  const usage = data.usage || {
+    prompt_tokens: estimateTokensFromText(`${prompt.system}\n${prompt.user}`),
+    completion_tokens: estimateTokensFromText(content),
+  };
+  const costUsd = estimateOpenAiCostUsd({
+    model,
+    promptTokens: usage.prompt_tokens || 0,
+    completionTokens: usage.completion_tokens || 0,
+  });
+  await saveOpenAiUsage({
+    tenantId,
+    model,
+    rewriteJobId: job.id,
+    usage,
+    costUsd,
+    meta: {
+      keyword: job.target_keyword,
+      platform: job.platform,
+      targetCharCount: settings.targetCharCount,
+      actualCharCount: charCount,
+      sourceAnalysisCount: analyses.length,
+    },
+  });
+  return {
+    title,
+    body,
+    plainText,
+    charCount,
+    kwCount,
+    imageCount: images.length,
+    quoteCount: (body.match(/^>\s*/gm) || []).length || sectionTitles.length,
+    images,
+    publishSpec: buildPublishSpec(job.platform, settings, { hasCtaUrl: Boolean(job.cta_url), useNaverQr: job.use_naver_qr }),
+    generatorMode: 'openai',
+    openaiModel: model,
+    openaiUsage: {
+      promptTokens: usage.prompt_tokens || 0,
+      completionTokens: usage.completion_tokens || 0,
+      totalTokens: usage.total_tokens || ((usage.prompt_tokens || 0) + (usage.completion_tokens || 0)),
+      estimatedCostUsd: costUsd,
+    },
+  };
+}
+
 function scoreRewriteOutput(output, pattern) {
   const charFit = 100 - Math.min(60, Math.abs(output.charCount - pattern.targetCharCount) / Math.max(pattern.targetCharCount, 1) * 100);
   const kwFit = 100 - Math.min(50, Math.abs(output.kwCount - pattern.targetKwCount) * 5);
@@ -2495,6 +2693,7 @@ async function processRewriteJob(jobId, options = {}) {
     : [];
   const settings = parseRewriteSettings(job.settings_json);
   const pattern = buildRewritePattern(analyses, settings);
+  const tenantId = options.tenantId || 'owner';
 
   await pool.query(
     "UPDATE rewrite_jobs SET status = '초안 생성중', pattern_json = $2, updated_at = NOW() WHERE id = $1",
@@ -2502,17 +2701,42 @@ async function processRewriteJob(jobId, options = {}) {
   );
     await addRewriteEvent(jobId, 'draft_started', '발행 생성 초안을 생성합니다', { pattern });
 
-  const output = buildRewriteDraft({
-    keyword: job.target_keyword,
-    topic: job.target_topic,
-    platform: job.platform,
-    ctaUrl: job.cta_url,
-    useNaverQr: job.use_naver_qr,
-    useAiImages: job.use_ai_images,
-    pattern,
-    customTitle: job.custom_title,
-    variantIndex,
-  });
+  const shouldUseOpenAi = (options.generatorMode || settings.generatorMode || DEFAULT_REWRITE_SETTINGS.generatorMode) !== 'server_template';
+  let output;
+  if (shouldUseOpenAi) {
+    await addRewriteEvent(jobId, 'openai_started', 'OpenAI로 유사도 낮은 원고 생성을 시작합니다', {
+      model: settings.openaiModel,
+      targetCharCount: settings.targetCharCount,
+    });
+    output = await buildOpenAiRewriteDraft({
+      tenantId,
+      job,
+      analyses,
+      pattern,
+      settings,
+      variantIndex,
+    });
+  } else {
+    output = buildRewriteDraft({
+      keyword: job.target_keyword,
+      topic: job.target_topic,
+      platform: job.platform,
+      ctaUrl: job.cta_url,
+      useNaverQr: job.use_naver_qr,
+      useAiImages: job.use_ai_images,
+      pattern,
+      customTitle: job.custom_title,
+      variantIndex,
+    });
+    output.generatorMode = 'server_template';
+    output.openaiModel = null;
+    output.openaiUsage = {
+      promptTokens: 0,
+      completionTokens: 0,
+      totalTokens: 0,
+      estimatedCostUsd: 0,
+    };
+  }
 
   await pool.query("UPDATE rewrite_jobs SET status = '이미지 생성중', updated_at = NOW() WHERE id = $1", [jobId]);
   await addRewriteEvent(jobId, 'images_generated', '템플릿 이미지 세트를 생성했습니다', { count: output.images.length });
@@ -2534,11 +2758,19 @@ async function processRewriteJob(jobId, options = {}) {
          geo_score = $11,
          aeo_score = $12,
          total_score = $13,
-         similarity_risk = $14,
-         images_json = $15,
-         publish_spec = $16,
-         error_message = NULL,
-         updated_at = NOW()
+          similarity_risk = $14,
+          images_json = $15,
+          publish_spec = $16,
+          generator_mode = $17,
+          openai_model = $18,
+          openai_prompt_tokens = $19,
+          openai_completion_tokens = $20,
+          openai_total_tokens = $21,
+          openai_estimated_cost_usd = $22,
+          elapsed_ms = $23,
+          variant_index = $24,
+          error_message = NULL,
+          updated_at = NOW()
      WHERE id = $1
      RETURNING *`,
     [
@@ -2558,6 +2790,14 @@ async function processRewriteJob(jobId, options = {}) {
       similarityRisk,
       JSON.stringify(output.images.map((url, index) => ({ index, type: 'template-svg', url }))),
       JSON.stringify(output.publishSpec || buildPublishSpec(job.platform, settings)),
+      output.generatorMode || 'server_template',
+      output.openaiModel || null,
+      output.openaiUsage?.promptTokens || 0,
+      output.openaiUsage?.completionTokens || 0,
+      output.openaiUsage?.totalTokens || 0,
+      output.openaiUsage?.estimatedCostUsd || 0,
+      Date.now() - startedAt,
+      variantIndex,
     ]
   );
 
@@ -2567,10 +2807,11 @@ async function processRewriteJob(jobId, options = {}) {
     scores,
     similarityRisk,
     elapsedMs,
-    generatorMode: 'server_template',
+    generatorMode: output.generatorMode || 'server_template',
+    openai: output.openaiUsage || null,
     variantIndex,
   });
-  return { ...rows[0], generator_mode: 'server_template', elapsed_ms: elapsedMs, variant_index: variantIndex };
+  return { ...rows[0], generator_mode: output.generatorMode || 'server_template', elapsed_ms: elapsedMs, variant_index: variantIndex };
 }
 
 async function mapLimit(items, limit, mapper) {
@@ -2890,6 +3131,120 @@ async function setAppSetting(key, value = {}) {
     [key, JSON.stringify(value || {})]
   );
   return rows[0]?.value || value || {};
+}
+
+const OPENAI_PRICING_USD_PER_1M = {
+  'gpt-4.1-mini': { input: 0.40, output: 1.60, label: 'GPT-4.1 mini' },
+  'gpt-4.1': { input: 2.00, output: 8.00, label: 'GPT-4.1' },
+  'gpt-5-mini': { input: 0.25, output: 2.00, label: 'GPT-5 mini' },
+  'gpt-5.4-mini': { input: 0.75, output: 4.50, label: 'GPT-5.4 mini' },
+  'gpt-5.4': { input: 2.50, output: 15.00, label: 'GPT-5.4' },
+  'gpt-5.5': { input: 5.00, output: 30.00, label: 'GPT-5.5' },
+};
+
+function normalizeOpenAiModel(model = '') {
+  const value = String(model || '').trim();
+  return value || process.env.OPENAI_WRITER_MODEL || DEFAULT_REWRITE_SETTINGS.openaiModel;
+}
+
+function openAiPricingFor(model = '') {
+  return OPENAI_PRICING_USD_PER_1M[normalizeOpenAiModel(model)] || OPENAI_PRICING_USD_PER_1M[DEFAULT_REWRITE_SETTINGS.openaiModel];
+}
+
+function estimateTokensFromText(text = '') {
+  const compact = String(text || '').replace(/\s+/g, '');
+  const latin = (compact.match(/[a-zA-Z0-9]/g) || []).length;
+  const hangul = compact.length - latin;
+  return Math.max(1, Math.ceil(hangul * 0.9 + latin * 0.35));
+}
+
+function estimateOpenAiCostUsd({ model, promptTokens = 0, completionTokens = 0 }) {
+  const pricing = openAiPricingFor(model);
+  return Number((((promptTokens * pricing.input) + (completionTokens * pricing.output)) / 1000000).toFixed(6));
+}
+
+function estimateRewriteOpenAiUsage({ model, count = 1, targetCharCount = 2200, sourceCount = 0, sectionCount = 7 }) {
+  const safeCount = clampNumber(parseInt(count, 10) || 1, 1, 500);
+  const safeChars = clampNumber(parseInt(targetCharCount, 10) || DEFAULT_REWRITE_SETTINGS.targetCharCount, 1200, 5000);
+  const promptTokensPerJob = 1200 + Math.min(5, Number(sourceCount || 0)) * 650 + Number(sectionCount || 7) * 45;
+  const completionTokensPerJob = Math.ceil(safeChars * 1.08) + 500;
+  const promptTokens = safeCount * promptTokensPerJob;
+  const completionTokens = safeCount * completionTokensPerJob;
+  return {
+    model: normalizeOpenAiModel(model),
+    count: safeCount,
+    promptTokens,
+    completionTokens,
+    totalTokens: promptTokens + completionTokens,
+    estimatedCostUsd: estimateOpenAiCostUsd({ model, promptTokens, completionTokens }),
+  };
+}
+
+function openAiSettingKey(tenantId = 'owner') {
+  return `openai:${tenantId || 'owner'}`;
+}
+
+async function getOpenAiSettings(tenantId = 'owner') {
+  const stored = await getAppSetting(openAiSettingKey(tenantId), {});
+  const model = normalizeOpenAiModel(stored.model || process.env.OPENAI_WRITER_MODEL || DEFAULT_REWRITE_SETTINGS.openaiModel);
+  let siteApiKey = '';
+  try {
+    siteApiKey = stored.apiKeyCipher ? decryptCredentialSecret({
+      credential_cipher: stored.apiKeyCipher,
+      credential_iv: stored.apiKeyIv,
+      credential_tag: stored.apiKeyTag,
+    }) : '';
+  } catch {
+    siteApiKey = '';
+  }
+  const envApiKey = process.env.OPENAI_API_KEY || '';
+  return {
+    model,
+    monthlyBudgetUsd: Number(stored.monthlyBudgetUsd ?? stored.monthly_budget_usd ?? process.env.OPENAI_MONTHLY_BUDGET_USD ?? 20) || 20,
+    apiKey: siteApiKey || envApiKey,
+    keySource: siteApiKey ? 'site_encrypted' : envApiKey ? 'railway_env' : 'missing',
+    hasApiKey: Boolean(siteApiKey || envApiKey),
+    updatedAt: stored.updatedAt || null,
+  };
+}
+
+function publicOpenAiSettings(settings = {}) {
+  return {
+    model: settings.model,
+    monthlyBudgetUsd: settings.monthlyBudgetUsd,
+    hasApiKey: settings.hasApiKey,
+    keySource: settings.keySource,
+    pricing: openAiPricingFor(settings.model),
+    pricingSource: 'OpenAI API pricing page, standard text token rates',
+  };
+}
+
+async function saveOpenAiUsage({ tenantId = 'owner', feature = 'rewrite', operation = 'article_generation', model, rewriteJobId = null, contentJobId = null, usage = {}, costUsd = 0, meta = {} }) {
+  const promptTokens = Number(usage.prompt_tokens ?? usage.promptTokens ?? 0) || 0;
+  const completionTokens = Number(usage.completion_tokens ?? usage.completionTokens ?? 0) || 0;
+  const totalTokens = Number(usage.total_tokens ?? usage.totalTokens ?? promptTokens + completionTokens) || 0;
+  const { rows } = await pool.query(
+    `INSERT INTO openai_usage_logs (
+       tenant_id, feature, operation, model, rewrite_job_id, content_job_id,
+       prompt_tokens, completion_tokens, total_tokens, estimated_cost_usd, request_meta
+     )
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+     RETURNING *`,
+    [
+      tenantId,
+      feature,
+      operation,
+      normalizeOpenAiModel(model),
+      rewriteJobId,
+      contentJobId,
+      promptTokens,
+      completionTokens,
+      totalTokens,
+      Number(costUsd || 0),
+      JSON.stringify(meta || {}),
+    ]
+  );
+  return rows[0];
 }
 
 function normalizeJobInput(body = {}) {
@@ -4971,6 +5326,7 @@ router.post('/rss-items/:id/research', async (req, res) => {
 
 router.post('/rss-items/to-rewrite-jobs', async (req, res) => {
   try {
+    const tenantId = tenantIdFromReq(req);
     const ids = normalizeIdList(req.body?.itemIds || req.body?.rssItemIds);
     if (ids.length === 0) return res.status(400).json({ error: 'itemIds is required' });
     const { rows: items } = await pool.query(
@@ -5009,7 +5365,7 @@ router.post('/rss-items/to-rewrite-jobs', async (req, res) => {
           JSON.stringify(buildPublishSpec(normalizePlatform(req.body?.platform || item.platform || 'blog', item.link), settings)),
         ]
       );
-      const processed = await processRewriteJob(rows[0].id);
+      const processed = await processRewriteJob(rows[0].id, { tenantId });
       await pool.query(
         `UPDATE rss_source_items
          SET rewrite_job_id = $2,
@@ -5280,6 +5636,98 @@ router.get('/content-skills', async (req, res) => {
   });
 });
 
+router.get('/openai/settings', async (req, res) => {
+  try {
+    const settings = await getOpenAiSettings(tenantIdFromReq(req));
+    res.json({ ok: true, settings: publicOpenAiSettings(settings), models: Object.keys(OPENAI_PRICING_USD_PER_1M) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/openai/settings', async (req, res) => {
+  try {
+    const tenantId = tenantIdFromReq(req);
+    const current = await getAppSetting(openAiSettingKey(tenantId), {});
+    const apiKey = String(req.body?.apiKey || req.body?.api_key || '').trim();
+    let encrypted = null;
+    if (apiKey) encrypted = encryptCredentialSecret(apiKey);
+    const value = {
+      ...current,
+      model: normalizeOpenAiModel(req.body?.model || current.model || DEFAULT_REWRITE_SETTINGS.openaiModel),
+      monthlyBudgetUsd: Number(req.body?.monthlyBudgetUsd ?? req.body?.monthly_budget_usd ?? current.monthlyBudgetUsd ?? 20) || 20,
+      updatedAt: new Date().toISOString(),
+    };
+    if (encrypted) {
+      value.apiKeyCipher = encrypted.cipher;
+      value.apiKeyIv = encrypted.iv;
+      value.apiKeyTag = encrypted.tag;
+      value.apiKeyUpdatedAt = new Date().toISOString();
+    }
+    await setAppSetting(openAiSettingKey(tenantId), value);
+    const settings = await getOpenAiSettings(tenantId);
+    res.json({ ok: true, settings: publicOpenAiSettings(settings) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/openai/estimate', async (req, res) => {
+  try {
+    const settings = await getOpenAiSettings(tenantIdFromReq(req));
+    const usage = estimateRewriteOpenAiUsage({
+      model: req.body?.model || settings.model,
+      count: req.body?.count || 1,
+      targetCharCount: req.body?.targetCharCount || req.body?.target_char_count || DEFAULT_REWRITE_SETTINGS.targetCharCount,
+      sourceCount: req.body?.sourceCount || req.body?.source_count || 0,
+      sectionCount: req.body?.sectionCount || req.body?.section_count || DEFAULT_REWRITE_SETTINGS.sectionCount,
+    });
+    res.json({ ok: true, estimate: usage, pricing: openAiPricingFor(usage.model) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/openai/usage-summary', async (req, res) => {
+  try {
+    const tenantId = tenantIdFromReq(req);
+    const settings = await getOpenAiSettings(tenantId);
+    const { rows } = await pool.query(
+      `SELECT
+         COALESCE(SUM(estimated_cost_usd) FILTER (WHERE (created_at AT TIME ZONE 'Asia/Seoul')::date = (NOW() AT TIME ZONE 'Asia/Seoul')::date), 0)::float AS today_usd,
+         COALESCE(SUM(estimated_cost_usd) FILTER (WHERE created_at >= NOW() - INTERVAL '7 days'), 0)::float AS seven_days_usd,
+         COALESCE(SUM(estimated_cost_usd) FILTER (WHERE created_at >= NOW() - INTERVAL '30 days'), 0)::float AS thirty_days_usd,
+         COALESCE(SUM(estimated_cost_usd) FILTER (WHERE date_trunc('month', created_at AT TIME ZONE 'Asia/Seoul') = date_trunc('month', NOW() AT TIME ZONE 'Asia/Seoul')), 0)::float AS month_usd,
+         COALESCE(SUM(prompt_tokens) FILTER (WHERE created_at >= NOW() - INTERVAL '30 days'), 0)::int AS thirty_days_prompt_tokens,
+         COALESCE(SUM(completion_tokens) FILTER (WHERE created_at >= NOW() - INTERVAL '30 days'), 0)::int AS thirty_days_completion_tokens,
+         COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '30 days')::int AS thirty_days_requests
+       FROM openai_usage_logs
+       WHERE tenant_id = $1`,
+      [tenantId]
+    );
+    const usage = rows[0] || {};
+    const monthlyBudgetUsd = settings.monthlyBudgetUsd;
+    const remainingBudgetUsd = Number((monthlyBudgetUsd - Number(usage.month_usd || 0)).toFixed(6));
+    res.json({
+      ok: true,
+      settings: publicOpenAiSettings(settings),
+      usage: {
+        todayUsd: Number(usage.today_usd || 0),
+        sevenDaysUsd: Number(usage.seven_days_usd || 0),
+        thirtyDaysUsd: Number(usage.thirty_days_usd || 0),
+        monthUsd: Number(usage.month_usd || 0),
+        remainingBudgetUsd,
+        thirtyDaysPromptTokens: usage.thirty_days_prompt_tokens || 0,
+        thirtyDaysCompletionTokens: usage.thirty_days_completion_tokens || 0,
+        thirtyDaysRequests: usage.thirty_days_requests || 0,
+      },
+      note: '남은 금액은 OpenAI 실제 계정 잔액이 아니라 사이트에 설정한 월 예산에서 NaviWrite가 기록한 사용액을 뺀 추정값입니다.',
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.post('/title-recommendations', async (req, res) => {
   try {
     const directKeywordMode = Boolean(req.body?.directKeywordMode || req.body?.direct_keyword_mode || req.body?.mode === 'direct');
@@ -5463,6 +5911,7 @@ router.get('/rewrite-jobs/:id', async (req, res) => {
 
 router.post('/rewrite-jobs', async (req, res) => {
   try {
+    const tenantId = tenantIdFromReq(req);
     const rawKeywordInput = req.body?.targetKeywords || req.body?.keywordsText || req.body?.keyword || '';
     let keywords = parseTargetKeywords(rawKeywordInput);
     const hasExplicitKeywords = keywords.length > 0;
@@ -5568,7 +6017,7 @@ router.post('/rewrite-jobs', async (req, res) => {
     const concurrency = clampNumber(parseInt(req.body?.concurrency || '3', 10) || 3, 1, 5);
     const processed = await mapLimit(insertedJobs, concurrency, async (job) => {
       try {
-        return await processRewriteJob(job.id);
+        return await processRewriteJob(job.id, { tenantId });
       } catch (err) {
         const failed = await pool.query(
           `UPDATE rewrite_jobs
@@ -5598,14 +6047,18 @@ router.post('/rewrite-jobs', async (req, res) => {
 
 router.post('/rewrite-jobs/:id/process', async (req, res) => {
   try {
-    const job = await processRewriteJob(req.params.id, { forceVariant: Boolean(req.body?.forceVariant || req.body?.force_variant) });
+    const job = await processRewriteJob(req.params.id, {
+      tenantId: tenantIdFromReq(req),
+      forceVariant: Boolean(req.body?.forceVariant || req.body?.force_variant),
+      generatorMode: req.body?.generatorMode || req.body?.generator_mode,
+    });
     res.json({
       ok: true,
       job,
       generatorMode: job.generator_mode || 'server_template',
       elapsedMs: job.elapsed_ms || null,
       variantIndex: job.variant_index || 0,
-      note: '현재 서버 발행 생성은 AI API가 아니라 애드센스용 규칙 템플릿 생성기입니다.',
+      note: job.generator_mode === 'openai' ? 'OpenAI로 원고를 생성했습니다.' : '서버 템플릿 생성기로 원고를 생성했습니다.',
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
