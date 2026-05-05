@@ -1702,6 +1702,8 @@ async function enrichKeywordCandidates(candidates = [], { body = {}, seedQuery =
     } catch (err) {
       keywordToolWarning = err.message;
     }
+  } else {
+    keywordToolWarning = '키워드도구 미설정: SearchAd Customer ID, 액세스라이선스, 비밀키가 필요합니다.';
   }
 
   const merged = [...byKey.values()].sort((a, b) => Number(b.score || 0) - Number(a.score || 0)).slice(0, limit);
@@ -1733,6 +1735,43 @@ async function enrichKeywordCandidates(candidates = [], { body = {}, seedQuery =
       return Number(b.score || 0) - Number(a.score || 0);
     }),
   };
+}
+
+const KEYWORD_DEMAND_ACTION_TERMS = [
+  '신청', '신청기간', '기간', '대상', '지급일', '방법', '기준', '조건',
+  '금액', '사용처', '조회', '지역', '서류', '홈페이지', '바로가기',
+];
+
+function rankKeywordRecommendations(candidates = [], { seedQuery = '', hasKeywordTool = false } = {}) {
+  const seed = normalizeKeywordValue(seedQuery);
+  const seedCompact = seed.replace(/\s/g, '').toLowerCase();
+  const scoreCandidate = (candidate) => {
+    const keyword = normalizeKeywordValue(candidate.keyword || '');
+    const compact = keyword.replace(/\s/g, '').toLowerCase();
+    const searchVolume = normalizeSearchVolumeNumber(candidate.searchVolume);
+    const searchTotal = Number(candidate.searchTotal || 0);
+    const hasVolume = searchVolume !== null;
+    const containsSeed = seedCompact && compact.includes(seedCompact);
+    const seedContainsKeyword = seedCompact && seedCompact.includes(compact);
+    const exactSeed = seedCompact && compact === seedCompact;
+    const hasStrongAction = KEYWORD_DEMAND_ACTION_TERMS.some((term) => keyword.includes(term) && !seed.includes(term));
+    const verifiedDemand = hasVolume || searchTotal > 0;
+    const demandValue = hasVolume ? searchVolume : searchTotal;
+    const relevanceBase = containsSeed ? 1_000_000_000 : seedContainsKeyword ? 240_000_000 : 0;
+    const actionBoost = hasStrongAction && verifiedDemand ? 420_000_000 : 0;
+    const exactPenalty = exactSeed && !hasKeywordTool ? 160_000_000 : 0;
+    const weakRelationPenalty = !containsSeed && !seedContainsKeyword ? 260_000_000 : 0;
+    return relevanceBase + actionBoost - exactPenalty - weakRelationPenalty + demandValue;
+  };
+
+  return [...candidates].sort((a, b) => {
+    const rankDiff = scoreCandidate(b) - scoreCandidate(a);
+    if (rankDiff !== 0) return rankDiff;
+    const av = normalizeSearchVolumeNumber(a.searchVolume) ?? Number(a.searchTotal || 0);
+    const bv = normalizeSearchVolumeNumber(b.searchVolume) ?? Number(b.searchTotal || 0);
+    if (av !== bv) return bv - av;
+    return Number(b.score || 0) - Number(a.score || 0);
+  });
 }
 
 async function researchKeywordsFromText({ title = '', text = '', sourceUrl = '', platform = 'blog', category = 'general', body = {}, limit = 12 }) {
@@ -4618,6 +4657,10 @@ router.post('/keyword-recommendations', async (req, res) => {
       seedQuery: topic || title || candidates[0]?.keyword || '',
       limit: clampNumber(parseInt(req.body?.limit || '10', 10) || 10, 3, 20),
     });
+    const rankedCandidates = rankKeywordRecommendations(enriched.candidates, {
+      seedQuery: topic || title,
+      hasKeywordTool: enriched.hasKeywordTool,
+    });
 
     res.json({
       ok: true,
@@ -4629,7 +4672,7 @@ router.post('/keyword-recommendations', async (req, res) => {
       hasKeywordTool: enriched.hasKeywordTool,
       keywordToolWarning: enriched.keywordToolWarning,
       autocompleteKeywords: enriched.autocompleteKeywords,
-      candidates: enriched.candidates.map((candidate) => ({
+      candidates: rankedCandidates.map((candidate) => ({
         ...candidate,
         suggestedTitles: generateTitleCandidates({
           keyword: candidate.keyword,

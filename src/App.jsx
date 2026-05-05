@@ -114,6 +114,36 @@ function formatSearchVolume(value) {
   return Number.isFinite(numeric) ? numeric.toLocaleString() : '미확인';
 }
 
+function formatCompactCount(value) {
+  const numeric = Number(value || 0);
+  if (!Number.isFinite(numeric)) return '미확인';
+  if (numeric >= 100000000) return `${(numeric / 100000000).toFixed(1).replace(/\.0$/, '')}억`;
+  if (numeric >= 10000) return `${(numeric / 10000).toFixed(1).replace(/\.0$/, '')}만`;
+  return numeric.toLocaleString();
+}
+
+function keywordDemandBadge(candidate) {
+  if (candidate?.searchVolume !== null && candidate?.searchVolume !== undefined) {
+    return {
+      label: Number(candidate.searchVolume || 0).toLocaleString(),
+      background: candidate.volumeBandColor || volumeBandFor(candidate.volumeBand).color,
+      color: candidate.volumeBandTextColor || volumeBandFor(candidate.volumeBand).textColor,
+    };
+  }
+  if (candidate?.searchTotal !== null && candidate?.searchTotal !== undefined) {
+    return {
+      label: `검색결과 ${formatCompactCount(candidate.searchTotal)}`,
+      background: '#dbeafe',
+      color: '#1e40af',
+    };
+  }
+  return {
+    label: candidate?.volumeBandLabel || '미확인',
+    background: volumeBandFor(candidate?.volumeBand).color,
+    color: volumeBandFor(candidate?.volumeBand).textColor,
+  };
+}
+
 function keywordCandidateVolume(candidate) {
   if (!candidate || typeof candidate !== 'object') return null;
   const pc = Number(candidate.monthlyPcQcCnt ?? candidate.monthly_pc_qc_cnt ?? '');
@@ -2757,10 +2787,12 @@ function RewritePanel() {
               </div>
             </div>
             <div style={{ display: 'grid', gap: 8 }}>
-              {keywordRecommendations.candidates.slice(0, 6).map((item, index) => (
+              {keywordRecommendations.candidates.slice(0, 6).map((item, index) => {
+                const demandBadge = keywordDemandBadge(item);
+                return (
                 <div key={item.keyword} style={{
                   display: 'grid',
-                  gridTemplateColumns: '34px minmax(0, 1fr) 88px 86px',
+                  gridTemplateColumns: '34px minmax(0, 1fr) 118px 86px',
                   gap: 10,
                   alignItems: 'center',
                   padding: 10,
@@ -2788,13 +2820,13 @@ function RewritePanel() {
                     alignItems: 'center',
                     padding: '0 8px',
                     borderRadius: 999,
-                    background: item.volumeBandColor || volumeBandFor(item.volumeBand).color,
-                    color: item.volumeBandTextColor || volumeBandFor(item.volumeBand).textColor,
+                    background: demandBadge.background,
+                    color: demandBadge.color,
                     fontSize: 10,
                     fontWeight: 900,
                     whiteSpace: 'nowrap',
                   }}>
-                    {item.searchVolume != null ? Number(item.searchVolume).toLocaleString() : (item.volumeBandLabel || '미확인')}
+                    {demandBadge.label}
                   </span>
                   <button
                     type="button"
@@ -2804,7 +2836,8 @@ function RewritePanel() {
                     적용
                   </button>
                 </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         )}
