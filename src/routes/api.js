@@ -1789,10 +1789,14 @@ function keywordVariantSeeds(seed = '') {
 }
 
 function compactTitleCandidate(value = '') {
-  return normalizeTitleValue(value)
+  let title = normalizeTitleValue(value)
     .replace(/\s+(정리|확인|방법|알아보기)\s+\1/g, ' $1')
     .replace(/\s+/g, ' ')
     .trim();
+  for (let i = 0; i < 3; i += 1) {
+    title = title.replace(/(^|\s)([^\s]+)\s+\2(?=\s|$)/g, '$1$2');
+  }
+  return title;
 }
 
 function generateTitleCandidates({ keyword, topic = '', platform = 'blog', category = '', analyses = [], keywordSignals = [] }) {
