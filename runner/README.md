@@ -10,10 +10,23 @@ node server.js
 
 또는 Windows에서 `start-runner.cmd`를 더블클릭합니다.
 
+처음 설치할 때는 `install-startup.cmd`를 한 번 실행하는 것을 권장합니다.
+
+- Windows 로그인 시 Runner가 자동 실행되도록 작업 스케줄러에 등록합니다.
+- 설치 직후 Runner를 바로 실행합니다.
+- 해제하려면 `uninstall-startup.cmd`를 실행합니다.
+- 연결 확인은 `check-runner.cmd` 또는 아래 주소로 확인합니다.
+
 기본 주소:
 
 ```text
 http://127.0.0.1:39271
+```
+
+브라우저에서 다음 주소가 열리면 정상입니다.
+
+```text
+http://127.0.0.1:39271/health
 ```
 
 ## 원칙

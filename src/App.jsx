@@ -4568,7 +4568,8 @@ function OperationsSettingsPanel() {
           </p>
         )}
         <p style={{ marginTop: 8, fontSize: 10, color: COLORS.textMuted, lineHeight: 1.6 }}>
-          실행 방식: Runner ZIP을 풀고 <code>start-runner.cmd</code>를 실행합니다. 기본 주소는 <code>http://127.0.0.1:39271</code>입니다.
+          설치 방식: Runner ZIP을 풀고 <code>install-startup.cmd</code>를 한 번 실행하면 Windows 로그인 시 자동 실행됩니다.
+          바로 확인하려면 <code>check-runner.cmd</code> 또는 <code>http://127.0.0.1:39271/health</code>를 열어보세요.
         </p>
       </section>
 
@@ -4588,8 +4589,9 @@ function OperationsSettingsPanel() {
           <input value={accountForm.usernameHint} onChange={(e) => setAccountForm({ ...accountForm, usernameHint: e.target.value })} placeholder="로그인 ID" style={inputStyle} />
           <input type="password" value={accountForm.password} onChange={(e) => setAccountForm({ ...accountForm, password: e.target.value })} placeholder="비밀번호, 사이트 계정에 암호화 저장" style={inputStyle} />
           <input value={accountForm.memo} onChange={(e) => setAccountForm({ ...accountForm, memo: e.target.value })} placeholder="발행 채널 URL. 비우면 블로그는 ID로 자동 확인" style={inputStyle} />
-          <button type="button" onClick={addAccount} style={primaryButtonStyle}>계정 저장 + ID/PW 서버 저장</button>
+          <button type="button" onClick={addAccount} style={primaryButtonStyle}>새 계정 슬롯 만들기</button>
           <p style={{ marginTop: 6, fontSize: 10, color: COLORS.textMuted, lineHeight: 1.5 }}>
+            처음 등록할 때는 위 입력칸을 채운 뒤 새 계정 슬롯 만들기를 누릅니다. 아래 계정 카드의 ID/PW 변경 저장은 이미 만든 슬롯의 비밀번호를 바꿀 때만 사용합니다.
             네이버 계열 ID/PW 저장은 로그인 완료가 아닙니다. 저장 후 Runner 인증 창을 열어 보안 확인을 끝내고 인증 완료 저장까지 눌러야 합니다.
             IP 보안이나 2차 인증 설정 변경은 자동으로 끄지 않고, 열린 네이버 화면에서 사용자가 직접 결정합니다.
             워드프레스는 사이트 URL, 관리자 ID, Application Password를 저장하면 발행 큐에서 API 발행을 실행할 수 있습니다.
@@ -4757,7 +4759,7 @@ function AccountSlotListV2({
               />
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(105px, 1fr))', gap: 6, marginTop: 6 }}>
-              <button type="button" onClick={() => onSaveCredential(item)} style={{ ...smallButtonStyle, background: COLORS.primary, color: 'white', borderColor: COLORS.primary }}>서버 저장</button>
+              <button type="button" onClick={() => onSaveCredential(item)} style={{ ...smallButtonStyle, background: COLORS.primary, color: 'white', borderColor: COLORS.primary }}>ID/PW 변경 저장</button>
               <button type="button" onClick={() => onVerifyCredential(item)} style={smallButtonStyle}>저장 확인</button>
               <button type="button" onClick={() => onDeleteCredential(item)} style={{ ...smallButtonStyle, color: COLORS.danger }}>자격증명 삭제</button>
             </div>
