@@ -6421,7 +6421,7 @@ router.post('/publish-queue/:id/claim', async (req, res) => {
            updated_at = NOW()
        WHERE id = $1
          AND COALESCE(tenant_id, 'owner') = $2
-         AND publish_status IN ('자동발행대기', '발행대기', '예약대기')
+         AND publish_status IN ('자동발행대기', '발행대기', '예약대기', '초안대기')
          AND (scheduled_at IS NULL OR scheduled_at <= NOW())
          AND ($3::text IS NULL OR platform = $3 OR publish_account_platform = $3)
        RETURNING *`,

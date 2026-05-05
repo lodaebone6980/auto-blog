@@ -88,6 +88,12 @@ h1 {
 
 .spread { justify-content: space-between; }
 
+.inline-actions {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+}
+
 label,
 strong {
   font-size: 12px;

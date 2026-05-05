@@ -55,12 +55,19 @@
         <button id="reloadJobs" class="ghost">목록 새로고침</button>
       </div>
       <p id="selectedJobCount" class="muted">선택 0개</p>
+      <div class="row">
+        <button id="selectAllJobs" class="ghost">전체 선택</button>
+        <button id="clearSelectedJobs" class="ghost">선택 해제</button>
+      </div>
       <div id="jobList" class="job-list muted">자동발행 대기 작업을 불러오세요.</div>
       <button id="startSelectedJobs">선택 작업 시작</button>
 
       <div class="row spread">
         <strong>현재 작업</strong>
-        <button id="clearJob" class="ghost">비우기</button>
+        <span class="inline-actions">
+          <button id="requeueJob" class="ghost">대기로 복구</button>
+          <button id="clearJob" class="ghost">비우기</button>
+        </span>
       </div>
       <div id="jobBox" class="job muted">대기 중인 작업을 가져오세요.</div>
       <div class="row">
