@@ -2200,6 +2200,9 @@ function RewritePanel() {
       return [];
     }
   });
+  const [selectedRewriteJobIds, setSelectedRewriteJobIds] = useState([]);
+  const [expandedRewriteJobIds, setExpandedRewriteJobIds] = useState([]);
+  const [reprocessingIds, setReprocessingIds] = useState([]);
   const [keywordDrafts, setKeywordDrafts] = useState({});
   const [savingKeywordIds, setSavingKeywordIds] = useState([]);
   const [keywordsText, setKeywordsText] = useState('');
@@ -2286,6 +2289,25 @@ function RewritePanel() {
     [selectedSources]
   );
 
+  const completedRewriteJobs = useMemo(
+    () => jobs.filter((job) => job.body || job.plain_text),
+    [jobs]
+  );
+
+  const selectedCompletedRewriteJobs = useMemo(
+    () => completedRewriteJobs.filter((job) => selectedRewriteJobIds.includes(job.id)),
+    [completedRewriteJobs, selectedRewriteJobIds]
+  );
+
+  const allRewriteJobsSelected = completedRewriteJobs.length > 0
+    && completedRewriteJobs.every((job) => selectedRewriteJobIds.includes(job.id));
+
+  useEffect(() => {
+    const availableIds = new Set(completedRewriteJobs.map((job) => job.id));
+    setSelectedRewriteJobIds((prev) => prev.filter((id) => availableIds.has(id)));
+    setExpandedRewriteJobIds((prev) => prev.filter((id) => availableIds.has(id)));
+  }, [completedRewriteJobs]);
+
   const derivedSourceKeywords = useMemo(
     () => [...new Set(selectedSources
       .map((link) => (link.corrected_main_keyword || link.main_keyword || '').trim())
@@ -2309,6 +2331,22 @@ function RewritePanel() {
 
   const toggleAllSources = () => {
     setSelectedSourceLinkIds(allSourcesSelected ? [] : collectedLinks.map((link) => link.id));
+  };
+
+  const toggleRewriteJob = (id) => {
+    setSelectedRewriteJobIds((prev) => (
+      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
+    ));
+  };
+
+  const toggleAllRewriteJobs = () => {
+    setSelectedRewriteJobIds(allRewriteJobsSelected ? [] : completedRewriteJobs.map((job) => job.id));
+  };
+
+  const toggleRewriteJobExpanded = (id) => {
+    setExpandedRewriteJobIds((prev) => (
+      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
+    ));
   };
 
   const saveCorrectedKeyword = async (link) => {
@@ -2512,12 +2550,19 @@ function RewritePanel() {
 
   const reprocessJob = async (jobId) => {
     setMessage(`작업 #${jobId}을 다시 생성 중입니다.`);
-    const res = await safeFetch(`${API}/rewrite-jobs/${jobId}/process`, { method: 'POST' });
+    setReprocessingIds((prev) => [...new Set([...prev, jobId])]);
+    const res = await safeFetch(`${API}/rewrite-jobs/${jobId}/process`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ forceVariant: true }),
+    });
+    setReprocessingIds((prev) => prev.filter((id) => id !== jobId));
     if (res?.ok) {
-      setMessage(`작업 #${jobId} 재생성 완료`);
+      const elapsed = res.elapsedMs ? ` · ${Math.max(1, Math.round(res.elapsedMs / 1000))}초` : '';
+      setMessage(`작업 #${jobId} 재생성 완료 · ${res.generatorMode === 'server_template' ? '서버 템플릿' : 'AI'}${elapsed}`);
       await loadRewriteData();
     } else {
-      setMessage('재생성에 실패했습니다.');
+      setMessage(res?.error || '재생성에 실패했습니다.');
     }
   };
 
@@ -2529,7 +2574,11 @@ function RewritePanel() {
     setCreating(true);
     setMessage(`선택한 ${selectedRewriteLinks.length}개 작업을 다시 생성 중입니다.`);
     for (const link of selectedRewriteLinks) {
-      await safeFetch(`${API}/rewrite-jobs/${link.rewrite_job_id}/process`, { method: 'POST' });
+      await safeFetch(`${API}/rewrite-jobs/${link.rewrite_job_id}/process`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ forceVariant: true }),
+      });
     }
     setCreating(false);
     setMessage(`선택한 ${selectedRewriteLinks.length}개 작업을 다시 생성했습니다.`);
@@ -2572,6 +2621,30 @@ function RewritePanel() {
 
   const sendSelectedToPublishQueue = async () => {
     await sendRewriteIdsToPublishQueue(selectedRewriteLinks.map((link) => link.rewrite_job_id));
+  };
+
+  const sendSelectedCompletedJobsToPublishQueue = async () => {
+    const result = await sendRewriteIdsToPublishQueue(selectedCompletedRewriteJobs.map((job) => job.id));
+    if (result?.ok) setSelectedRewriteJobIds([]);
+  };
+
+  const reprocessSelectedCompletedJobs = async () => {
+    if (selectedCompletedRewriteJobs.length === 0) {
+      setMessage('다시 생성할 완성 글을 체크해 주세요.');
+      return;
+    }
+    setCreating(true);
+    setMessage(`선택한 완성 글 ${selectedCompletedRewriteJobs.length}개를 다시 생성 중입니다.`);
+    for (const job of selectedCompletedRewriteJobs) {
+      await safeFetch(`${API}/rewrite-jobs/${job.id}/process`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ forceVariant: true }),
+      });
+    }
+    setCreating(false);
+    setMessage(`선택한 완성 글 ${selectedCompletedRewriteJobs.length}개를 다시 생성했습니다.`);
+    await loadRewriteData();
   };
 
   const copyBody = async (job) => {
@@ -3237,112 +3310,173 @@ function RewritePanel() {
 
       <section style={sectionStyle}>
         <div style={{ padding: '14px 18px', borderBottom: `1px solid ${COLORS.border}` }}>
-          <h3 style={{ fontSize: 15, fontWeight: 850, color: COLORS.primary }}>발행 생성 작업 목록</h3>
-          <p style={{ marginTop: 4, fontSize: 11, color: COLORS.textSecondary }}>
-            완료된 작업은 본문, 점수, 이미지 초안을 함께 저장합니다. 발행 전에 유사도와 사실 검수 단계를 거치는 흐름으로 운영합니다.
+          <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+            <div>
+              <h3 style={{ fontSize: 15, fontWeight: 850, color: COLORS.primary }}>발행 생성 작업 목록</h3>
+              <p style={{ marginTop: 4, fontSize: 11, color: COLORS.textSecondary }}>
+                본문이 완성된 글만 테이블로 모았습니다. 체크 후 한 번에 자동발행 대기로 넘기고, 검토 토글로 본문과 이미지 초안을 확인합니다.
+              </p>
+            </div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <button
+                type="button"
+                onClick={toggleAllRewriteJobs}
+                disabled={completedRewriteJobs.length === 0}
+                style={{ height: 30, padding: '0 12px', borderRadius: 8, border: `1px solid ${COLORS.border}`, background: 'white', color: COLORS.primary, fontSize: 11, fontWeight: 850, cursor: completedRewriteJobs.length === 0 ? 'not-allowed' : 'pointer' }}
+              >
+                {allRewriteJobsSelected ? '전체 해제' : '전체 선택'}
+              </button>
+              <button
+                type="button"
+                onClick={reprocessSelectedCompletedJobs}
+                disabled={selectedCompletedRewriteJobs.length === 0 || creating}
+                style={{ height: 30, padding: '0 12px', borderRadius: 8, border: `1px solid ${COLORS.border}`, background: 'white', color: COLORS.accent, fontSize: 11, fontWeight: 850, cursor: selectedCompletedRewriteJobs.length === 0 || creating ? 'not-allowed' : 'pointer' }}
+              >
+                선택 다시생성
+              </button>
+              <button
+                type="button"
+                onClick={sendSelectedCompletedJobsToPublishQueue}
+                disabled={selectedCompletedRewriteJobs.length === 0 || queueing}
+                style={{ height: 30, padding: '0 12px', borderRadius: 8, border: 'none', background: selectedCompletedRewriteJobs.length === 0 || queueing ? COLORS.textMuted : COLORS.success, color: 'white', fontSize: 11, fontWeight: 850, cursor: selectedCompletedRewriteJobs.length === 0 || queueing ? 'not-allowed' : 'pointer' }}
+              >
+                선택 자동발행 대기
+              </button>
+            </div>
+          </div>
+          <p style={{ marginTop: 8, fontSize: 11, color: COLORS.textMuted, fontWeight: 800 }}>
+            완성 글 {completedRewriteJobs.length}개 · 선택 {selectedCompletedRewriteJobs.length}개
           </p>
         </div>
-        <div style={{ display: 'grid', gap: 12, padding: 14 }}>
-          {jobs.length === 0 ? (
-            <div style={{ padding: 24, textAlign: 'center', color: COLORS.textMuted, fontSize: 13 }}>
-              아직 생성된 발행 생성 작업이 없습니다.
+        <div style={{ overflowX: 'auto' }}>
+          {loading ? (
+            <div style={{ padding: 20 }}>
+              {[1, 2, 3].map((item) => <Skeleton key={item} height={58} style={{ marginBottom: 8 }} />)}
             </div>
-          ) : jobs.map((job) => {
-            const images = parseArray(job.images_json);
-            const firstImage = images[0]?.url;
-            return (
-              <div key={job.id} style={{
-                border: `1px solid ${COLORS.border}`,
-                borderRadius: 10,
-                background: 'white',
-                padding: 14,
-                display: 'grid',
-                gridTemplateColumns: firstImage ? '140px minmax(0, 1fr)' : '1fr',
-                gap: 14,
-              }}>
-                {firstImage && (
-                  <img
-                    src={firstImage}
-                    alt={`${job.target_keyword} 대표 이미지 초안`}
-                    style={{ width: 140, height: 140, borderRadius: 8, objectFit: 'cover', border: `1px solid ${COLORS.border}` }}
-                  />
-                )}
-                <div style={{ minWidth: 0 }}>
-                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, flexWrap: 'wrap', marginBottom: 8 }}>
-                    <div style={{ minWidth: 0, marginRight: 'auto' }}>
-                      <h4 style={{ fontSize: 14, fontWeight: 900, color: COLORS.textPrimary, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                        {job.title || job.target_keyword}
-                      </h4>
-                      <p style={{ marginTop: 3, fontSize: 11, color: COLORS.textMuted }}>
-                        #{job.id} · {job.target_keyword} · {platformLabel[job.platform] || job.platform} · {job.category || 'general'}
-                      </p>
-                    </div>
-                    <StatusBadge value={job.status} />
-                  </div>
-
-                  <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', fontSize: 11, color: COLORS.textSecondary, marginBottom: 10 }}>
-                    <span>글자 {Number(job.char_count || 0).toLocaleString()}</span>
-                    <span>KW {job.kw_count || 0}</span>
-                    <span>이미지 {job.image_count || 0}</span>
-                    <span>인용구 {job.quote_count || 0}</span>
-                    <span>SEO {Number(job.seo_score || 0).toFixed(0)}</span>
-                    <span>GEO {Number(job.geo_score || 0).toFixed(0)}</span>
-                    <span>AEO {Number(job.aeo_score || 0).toFixed(0)}</span>
-                    <span>유사도 위험 {Number(job.similarity_risk || 0).toFixed(0)}</span>
-                    {job.use_naver_qr && <span>네이버 QR 사용</span>}
-                  </div>
-
-                  {job.plain_text && (
-                    <div style={{
-                      maxHeight: 130,
-                      overflow: 'auto',
-                      padding: 10,
-                      borderRadius: 8,
-                      background: '#f8fafc',
-                      border: `1px solid ${COLORS.border}`,
-                      fontSize: 11,
-                      lineHeight: 1.65,
-                      color: COLORS.textSecondary,
-                      whiteSpace: 'pre-wrap',
-                      marginBottom: 10,
-                    }}>
-                      {job.plain_text}
-                    </div>
-                  )}
-
-                  {job.error_message && (
-                    <p style={{ fontSize: 11, color: COLORS.danger, marginBottom: 10 }}>{job.error_message}</p>
-                  )}
-
-                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                    <button
-                      type="button"
-                      onClick={() => copyBody(job)}
-                      disabled={!job.body && !job.plain_text}
-                      style={{ height: 30, padding: '0 12px', borderRadius: 8, border: `1px solid ${COLORS.border}`, background: 'white', color: COLORS.primary, fontSize: 11, fontWeight: 850, cursor: !job.body && !job.plain_text ? 'not-allowed' : 'pointer' }}
-                    >
-                      본문 복사
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => reprocessJob(job.id)}
-                      style={{ height: 30, padding: '0 12px', borderRadius: 8, border: 'none', background: COLORS.primary, color: 'white', fontSize: 11, fontWeight: 850, cursor: 'pointer' }}
-                    >
-                      다시 생성
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => sendToPublishQueue(job)}
-                      disabled={!job.body && !job.plain_text}
-                      style={{ height: 30, padding: '0 12px', borderRadius: 8, border: 'none', background: !job.body && !job.plain_text ? COLORS.textMuted : COLORS.success, color: 'white', fontSize: 11, fontWeight: 850, cursor: !job.body && !job.plain_text ? 'not-allowed' : 'pointer' }}
-                    >
-                      자동발행 대기
-                    </button>
-                  </div>
-                </div>
-              </div>
-            );
-          })}
+          ) : completedRewriteJobs.length === 0 ? (
+            <div style={{ padding: 24, textAlign: 'center', color: COLORS.textMuted, fontSize: 13 }}>
+              아직 본문이 완성된 발행 생성 작업이 없습니다.
+            </div>
+          ) : (
+            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1450 }}>
+              <thead>
+                <tr style={{ background: '#f8fafc', color: COLORS.textSecondary, fontSize: 11, textAlign: 'left' }}>
+                  {['선택', '검토', '상태', '제목/키워드', '플랫폼', '글자/KW/이미지', '점수/위험', 'QR/CTA', '작업'].map((head) => (
+                    <th key={head} style={{ padding: '10px 12px', borderBottom: `1px solid ${COLORS.border}` }}>
+                      {head === '선택' ? (
+                        <input
+                          type="checkbox"
+                          checked={allRewriteJobsSelected}
+                          onChange={toggleAllRewriteJobs}
+                          aria-label="완성 글 전체 선택 또는 해제"
+                        />
+                      ) : head}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {completedRewriteJobs.map((job) => {
+                  const images = parseArray(job.images_json);
+                  const expanded = expandedRewriteJobIds.includes(job.id);
+                  const busy = reprocessingIds.includes(job.id);
+                  const selected = selectedRewriteJobIds.includes(job.id);
+                  return [
+                    <tr key={`row-${job.id}`} style={{ fontSize: 12, borderBottom: `1px solid ${COLORS.border}`, verticalAlign: 'top', background: selected ? '#f0f7ff' : 'white' }}>
+                      <td style={{ padding: '12px' }}>
+                        <input
+                          type="checkbox"
+                          checked={selected}
+                          onChange={() => toggleRewriteJob(job.id)}
+                          aria-label="완성 글 선택"
+                        />
+                      </td>
+                      <td style={{ padding: '12px' }}>
+                        <button
+                          type="button"
+                          onClick={() => toggleRewriteJobExpanded(job.id)}
+                          style={{ height: 28, padding: '0 10px', borderRadius: 8, border: `1px solid ${COLORS.border}`, background: expanded ? COLORS.primary : 'white', color: expanded ? 'white' : COLORS.primary, fontSize: 11, fontWeight: 850, cursor: 'pointer' }}
+                        >
+                          {expanded ? '닫기' : '열기'}
+                        </button>
+                      </td>
+                      <td style={{ padding: '12px', minWidth: 110 }}>
+                        <StatusBadge value={job.status || '완료'} />
+                        <p style={{ marginTop: 5, fontSize: 10, color: COLORS.textMuted }}>#{job.id}</p>
+                      </td>
+                      <td style={{ padding: '12px', maxWidth: 330 }}>
+                        <p style={{ fontWeight: 900, color: COLORS.textPrimary, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{job.title || job.target_keyword}</p>
+                        <p style={{ marginTop: 4, fontSize: 10, color: COLORS.textMuted }}>{job.target_keyword || '-'}</p>
+                        <p style={{ marginTop: 4, fontSize: 10, color: COLORS.textSecondary }}>{formatDateTime(job.updated_at || job.created_at)}</p>
+                      </td>
+                      <td style={{ padding: '12px', color: COLORS.textSecondary, fontWeight: 800, minWidth: 120 }}>
+                        <p>{platformLabel[job.platform] || job.platform || '-'}</p>
+                        <p style={{ marginTop: 4, fontSize: 10, color: COLORS.textMuted }}>{job.category || 'general'}</p>
+                      </td>
+                      <td style={{ padding: '12px', minWidth: 150, color: COLORS.textSecondary }}>
+                        <p>{Number(job.char_count || 0).toLocaleString()}자</p>
+                        <p style={{ marginTop: 4 }}>KW {job.kw_count || 0} · 이미지 {job.image_count || 0}</p>
+                        <p style={{ marginTop: 4, fontSize: 10, color: COLORS.textMuted }}>인용구 {job.quote_count || 0}</p>
+                      </td>
+                      <td style={{ padding: '12px', minWidth: 150, color: COLORS.textSecondary }}>
+                        <p>SEO {Number(job.seo_score || 0).toFixed(0)} · GEO {Number(job.geo_score || 0).toFixed(0)} · AEO {Number(job.aeo_score || 0).toFixed(0)}</p>
+                        <p style={{ marginTop: 4, color: Number(job.similarity_risk || 0) >= 45 ? COLORS.danger : COLORS.success, fontWeight: 850 }}>유사도 {Number(job.similarity_risk || 0).toFixed(0)}</p>
+                      </td>
+                      <td style={{ padding: '12px', minWidth: 150, color: COLORS.textSecondary }}>
+                        <p>{job.use_naver_qr ? '네이버 QR 사용' : '링크만 사용'}</p>
+                        <p style={{ marginTop: 4, fontSize: 10, color: COLORS.textMuted, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 160 }}>{job.cta_url || 'CTA 링크 미입력'}</p>
+                      </td>
+                      <td style={{ padding: '12px', minWidth: 230 }}>
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+                          <button type="button" onClick={() => copyBody(job)} style={smallButtonStyle}>본문 복사</button>
+                          <button type="button" disabled={busy} onClick={() => reprocessJob(job.id)} style={{ ...smallButtonStyle, background: COLORS.primary, color: 'white', borderColor: COLORS.primary }}>
+                            {busy ? '생성중' : '다시 생성'}
+                          </button>
+                          <button type="button" onClick={() => sendToPublishQueue(job)} style={{ ...smallButtonStyle, gridColumn: 'span 2', background: COLORS.success, color: 'white', borderColor: COLORS.success }}>자동발행 대기</button>
+                        </div>
+                      </td>
+                    </tr>,
+                    expanded ? (
+                      <tr key={`detail-${job.id}`} style={{ background: '#fbfdff', borderBottom: `1px solid ${COLORS.border}` }}>
+                        <td colSpan={9} style={{ padding: 16 }}>
+                          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 260px', gap: 14 }}>
+                            <div style={{
+                              maxHeight: 360,
+                              overflow: 'auto',
+                              padding: 14,
+                              borderRadius: 10,
+                              border: `1px solid ${COLORS.border}`,
+                              background: 'white',
+                              color: COLORS.textSecondary,
+                              fontSize: 12,
+                              lineHeight: 1.7,
+                              whiteSpace: 'pre-wrap',
+                            }}>
+                              {job.body || job.plain_text || '본문이 없습니다.'}
+                            </div>
+                            <div>
+                              <p style={{ fontSize: 11, color: COLORS.textSecondary, fontWeight: 850, marginBottom: 8 }}>이미지 초안 {images.length}개</p>
+                              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                                {images.slice(0, 6).map((image, index) => (
+                                  <img
+                                    key={`${job.id}-image-${index}`}
+                                    src={image.url}
+                                    alt={`${job.target_keyword} 이미지 ${index + 1}`}
+                                    style={{ width: '100%', aspectRatio: '1 / 1', objectFit: 'cover', borderRadius: 8, border: `1px solid ${COLORS.border}`, background: 'white' }}
+                                  />
+                                ))}
+                              </div>
+                              {job.error_message && <p style={{ marginTop: 10, fontSize: 11, color: COLORS.danger }}>{job.error_message}</p>}
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    ) : null,
+                  ];
+                })}
+              </tbody>
+            </table>
+          )}
         </div>
       </section>
     </div>

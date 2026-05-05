@@ -1145,7 +1145,12 @@ function normalizeIdList(input = []) {
 }
 
 function normalizeKeywordValue(value = '') {
-  return String(value || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+  return String(value || '')
+    .replace(/\s+/g, ' ')
+    .replace(/민생회복\s+지원금/g, '민생회복지원금')
+    .replace(/민생\s+회복지원금/g, '민생회복지원금')
+    .trim()
+    .slice(0, 60);
 }
 
 function normalizeTitleValue(value = '') {
@@ -1906,6 +1911,10 @@ function keywordVariantSeeds(seed = '') {
   if (/지원금|정책|수당|급여|환급/.test(keyword)) {
     variants.push(`${keyword} 대상`);
     variants.push(`${keyword} 지급일`);
+    variants.push(`${keyword} 신청방법`);
+    variants.push(`${keyword} 신청기간`);
+    variants.push(`${keyword} 금액`);
+    variants.push(`${keyword} 사용처`);
   }
   return [...new Set(variants.map(normalizeKeywordValue).filter(Boolean))].slice(0, 8);
 }
@@ -2083,8 +2092,37 @@ function scoreTitleCandidate({ title, keyword, topic = '', actionTerms = [], sou
   return { score, seoScore, aeoScore, geoScore, duplicateRisk, reasons };
 }
 
-function makeSectionTitles(keyword, topic, count) {
+function isPolicySupportKeyword(keyword = '') {
+  return /민생|지원금|소비쿠폰|환급|급여|수당|바우처|고유가/.test(String(keyword || ''));
+}
+
+function makeSectionTitles(keyword, topic, count, variantIndex = 0) {
   const subject = topic || keyword;
+  if (isPolicySupportKeyword(keyword)) {
+    const policySets = [
+      [
+        `${keyword} 현재 먼저 확인할 부분`,
+        `${keyword} 대상 기준`,
+        `${keyword} 신청 방법`,
+        `${keyword} 지급일과 사용처`,
+        `${keyword} 지역별 차이`,
+        `${keyword} 주의사항`,
+        `${keyword} 자주 묻는 질문`,
+        `${keyword} 최종 체크`,
+      ],
+      [
+        `${keyword} 공식 안내 확인 순서`,
+        `${keyword} 신청 대상 정리`,
+        `${keyword} 온라인 방문 신청`,
+        `${keyword} 금액과 지급 방식`,
+        `${keyword} 지자체별 확인 포인트`,
+        `${keyword} 놓치기 쉬운 부분`,
+        `${keyword} 신청 전 준비물`,
+        `${keyword} 마무리 요약`,
+      ],
+    ];
+    return policySets[Math.abs(variantIndex) % policySets.length].slice(0, count);
+  }
   const base = [
     `${keyword} 먼저 확인해야 할 부분`,
     `${subject} 핵심 기준`,
@@ -2157,11 +2195,12 @@ function makeTemplateImage({ keyword, section, subtitle, index, platform }) {
   return `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`;
 }
 
-function buildRewriteDraft({ keyword, topic, platform, ctaUrl, useNaverQr, useAiImages = true, pattern, customTitle = '' }) {
+function buildRewriteDraft({ keyword, topic, platform, ctaUrl, useNaverQr, useAiImages = true, pattern, customTitle = '', variantIndex = 0 }) {
   const title = normalizeTitleValue(customTitle) || makeRewriteTitle(keyword, topic, platform, pattern);
   const bodySectionCount = Math.max(1, (pattern.sectionCount || DEFAULT_REWRITE_SETTINGS.sectionCount) - 1);
-  const sectionTitles = makeSectionTitles(keyword, topic, bodySectionCount);
+  const sectionTitles = makeSectionTitles(keyword, topic, bodySectionCount, variantIndex);
   const subject = topic || '이 내용';
+  const isPolicySupport = isPolicySupportKeyword(keyword);
   const targetSectionChars = pattern.sectionCharCount || DEFAULT_REWRITE_SETTINGS.sectionCharCount;
   const desiredKwCount = pattern.targetKwCount || DEFAULT_REWRITE_SETTINGS.targetKwCount;
   const publishSpec = buildPublishSpec(platform, pattern.settings || pattern, { hasCtaUrl: Boolean(ctaUrl), useNaverQr });
@@ -2173,12 +2212,19 @@ function buildRewriteDraft({ keyword, topic, platform, ctaUrl, useNaverQr, useAi
   const sourceKeywordHint = Array.isArray(pattern.sourceKeywords)
     ? pattern.sourceKeywords.filter((item) => item && item !== keyword).slice(0, 3).join(', ')
     : '';
-  const intro = [
-    `${subject}을 알아보다 보면 정보는 많은데 정작 지금 나에게 필요한 기준을 한 번에 잡기 어렵습니다.`,
-    `그래서 이번 글은 ${keyword}를 중심으로 핵심 흐름과 확인 순서, 놓치기 쉬운 부분을 새롭게 정리했습니다.`,
-    `검색 의도는 ${searchIntent}에 맞추고, 주제 범위는 ${sourceKeywordHint || keyword} 흐름 안에서 벗어나지 않게 잡았습니다.`,
-    `아래 내용은 참고 글의 문장을 가져온 것이 아니라 글 구성과 분량, 반복 밀도만 반영해 새로 작성한 초안입니다.`,
-  ];
+  const intro = isPolicySupport
+    ? [
+        `${keyword}를 검색하면 비슷한 제목의 글이 많이 나오지만, 실제로 중요한 건 내 지역과 내 조건에 맞는 신청 가능 여부입니다.`,
+        `특히 지원금성 정보는 중앙정부 공통 정책인지, 지자체 자체 사업인지에 따라 대상과 지급일이 달라질 수 있습니다.`,
+        `이번 글에서는 ${keyword} 신청 대상, 지급일, 금액, 사용처를 확인하는 순서 중심으로 정리하겠습니다.`,
+        `아래 내용은 참고 글의 문장을 재사용하지 않고, 검색자가 바로 확인해야 할 항목만 새 구성으로 다시 쓴 초안입니다.`,
+      ]
+    : [
+        `${subject}을 알아보다 보면 정보는 많은데 정작 지금 나에게 필요한 기준을 한 번에 잡기 어렵습니다.`,
+        `그래서 이번 글은 ${keyword}를 중심으로 핵심 흐름과 확인 순서, 놓치기 쉬운 부분을 새롭게 정리했습니다.`,
+        `검색 의도는 ${searchIntent}에 맞추고, 주제 범위는 ${sourceKeywordHint || keyword} 흐름 안에서 벗어나지 않게 잡았습니다.`,
+        `아래 내용은 참고 글의 문장을 가져온 것이 아니라 글 구성과 분량, 반복 밀도만 반영해 새로 작성한 초안입니다.`,
+      ];
   const linkTarget = ctaUrl || '[글별 CTA 링크 입력 필요]';
   const cta = platform === 'cafe'
     ? [
@@ -2207,7 +2253,15 @@ function buildRewriteDraft({ keyword, topic, platform, ctaUrl, useNaverQr, useAi
   }
 
   const makeSectionBody = (section, index) => {
-    const sentences = [
+    const policySentences = [
+      `${index + 1}. ${section}에서는 ${keyword}를 볼 때 가장 먼저 확인해야 할 기준을 나눠서 정리합니다.`,
+      `지원금 정보는 이름이 비슷해도 중앙정부 사업, 광역 지자체 사업, 시군구 자체 사업으로 갈리는 경우가 많습니다.`,
+      `따라서 신청 전에는 주민등록상 주소지 공고와 정부24, 카드사 앱, 지역화폐 앱 안내를 함께 확인하는 편이 안전합니다.`,
+      `대상은 보통 소득 기준, 취약계층 여부, 거주 기준일, 신청 기간을 함께 보며 지역마다 금액과 지급 방식이 달라질 수 있습니다.`,
+      `지급 방식은 카드 포인트, 선불카드, 지역화폐처럼 소비처가 제한되는 구조가 많아 사용처를 먼저 확인해야 합니다.`,
+      `${keyword}는 확정 공고가 나오면 일정이 빠르게 지나갈 수 있으니 신청 시작일과 마감일을 따로 적어두는 것이 좋습니다.`,
+    ];
+    const generalSentences = [
       `${index + 1}. ${section}에서는 ${keyword}를 판단할 때 먼저 봐야 할 기준을 간단히 나눠서 정리합니다.`,
       `${subject}은 한 가지 조건만 보고 결정하기보다 상황, 목적, 진행 시점까지 같이 비교해야 결과가 자연스럽습니다.`,
       `특히 검색자가 궁금해하는 지점은 “그래서 내가 지금 무엇을 하면 되는가”이기 때문에 설명은 짧게 끊고 실제 확인 순서 중심으로 배치하는 편이 좋습니다.`,
@@ -2215,6 +2269,7 @@ function buildRewriteDraft({ keyword, topic, platform, ctaUrl, useNaverQr, useAi
       `너무 많은 정보를 한꺼번에 넣기보다 필요한 항목을 순서대로 보여주면 모바일에서도 읽는 흐름이 끊기지 않습니다.`,
       `마지막으로 실제 적용 전에는 날짜, 대상, 조건처럼 바뀔 수 있는 값만 한 번 더 확인하는 편이 좋습니다.`,
     ];
+    const sentences = isPolicySupport ? policySentences : generalSentences;
     const selected = [];
     while (selected.join('').replace(/\s/g, '').length < targetSectionChars && selected.length < sentences.length) {
       selected.push(sentences[selected.length]);
@@ -2243,8 +2298,12 @@ function buildRewriteDraft({ keyword, topic, platform, ctaUrl, useNaverQr, useAi
 
   bodyParts.push('> 마무리');
   bodyParts.push('');
-  bodyParts.push(`${keyword}는 단순히 정보만 많이 나열한다고 읽히는 주제가 아닙니다.`);
-  bodyParts.push(`처음에는 ${subject}의 핵심 기준을 잡고, 중간에는 실제 확인 방법과 주의사항을 배치한 뒤, 마지막에는 바로 실행할 수 있는 요약으로 닫는 구성이 안정적입니다.`);
+  bodyParts.push(isPolicySupport
+    ? `${keyword}는 지역과 시점에 따라 내용이 달라질 수 있어 공식 공고 확인이 가장 중요합니다.`
+    : `${keyword}는 단순히 정보만 많이 나열한다고 읽히는 주제가 아닙니다.`);
+  bodyParts.push(isPolicySupport
+    ? `먼저 내 주소지 기준 대상 여부를 확인하고, 그다음 신청 기간, 지급 방식, 사용처를 순서대로 보면 헷갈릴 가능성이 줄어듭니다.`
+    : `처음에는 ${subject}의 핵심 기준을 잡고, 중간에는 실제 확인 방법과 주의사항을 배치한 뒤, 마지막에는 바로 실행할 수 있는 요약으로 닫는 구성이 안정적입니다.`);
   bodyParts.push(useNaverQr ? `QR은 도입 CTA 이후나 두 번째 목차 뒤에 배치하고, 링크는 글별 CTA 컬럼값을 우선 사용합니다.` : `CTA 링크는 도입부 직후와 마무리 직전에 한 번씩만 배치하는 편이 깔끔합니다.`);
 
   let body = bodyParts.join('\n');
@@ -2334,14 +2393,20 @@ async function addRewriteEvent(rewriteJobId, eventType, message, payload = {}) {
   );
 }
 
-async function processRewriteJob(jobId) {
+async function processRewriteJob(jobId, options = {}) {
+  const startedAt = Date.now();
   const jobResult = await pool.query('SELECT * FROM rewrite_jobs WHERE id = $1', [jobId]);
   if (jobResult.rows.length === 0) throw new Error('Rewrite job not found');
   const job = jobResult.rows[0];
   const sourceIds = Array.isArray(job.source_analysis_ids) ? job.source_analysis_ids : [];
+  const completionCountResult = await pool.query(
+    "SELECT COUNT(*)::int AS count FROM rewrite_job_events WHERE rewrite_job_id = $1 AND event_type = 'completed'",
+    [jobId]
+  );
+  const variantIndex = Number(completionCountResult.rows[0]?.count || 0) + (options.forceVariant ? 1 : 0);
 
   await pool.query("UPDATE rewrite_jobs SET status = '패턴 분석중', updated_at = NOW() WHERE id = $1", [jobId]);
-  await addRewriteEvent(jobId, 'pattern_started', '선택한 수집글 패턴 분석을 시작했습니다', { sourceIds });
+  await addRewriteEvent(jobId, 'pattern_started', '선택한 수집글 패턴 분석을 시작했습니다', { sourceIds, variantIndex });
 
   const analyses = sourceIds.length
     ? (await pool.query('SELECT * FROM source_analyses WHERE id = ANY($1::int[])', [sourceIds])).rows
@@ -2364,6 +2429,7 @@ async function processRewriteJob(jobId) {
     useAiImages: job.use_ai_images,
     pattern,
     customTitle: job.custom_title,
+    variantIndex,
   });
 
   await pool.query("UPDATE rewrite_jobs SET status = '이미지 생성중', updated_at = NOW() WHERE id = $1", [jobId]);
@@ -2413,8 +2479,16 @@ async function processRewriteJob(jobId) {
     ]
   );
 
-    await addRewriteEvent(jobId, 'completed', '발행 생성 작업이 완료되었습니다', { finalStatus, scores, similarityRisk });
-  return rows[0];
+  const elapsedMs = Date.now() - startedAt;
+  await addRewriteEvent(jobId, 'completed', '발행 생성 작업이 완료되었습니다', {
+    finalStatus,
+    scores,
+    similarityRisk,
+    elapsedMs,
+    generatorMode: 'server_template',
+    variantIndex,
+  });
+  return { ...rows[0], generator_mode: 'server_template', elapsed_ms: elapsedMs, variant_index: variantIndex };
 }
 
 async function mapLimit(items, limit, mapper) {
@@ -5198,8 +5272,15 @@ router.post('/rewrite-jobs', async (req, res) => {
 
 router.post('/rewrite-jobs/:id/process', async (req, res) => {
   try {
-    const job = await processRewriteJob(req.params.id);
-    res.json({ ok: true, job });
+    const job = await processRewriteJob(req.params.id, { forceVariant: Boolean(req.body?.forceVariant || req.body?.force_variant) });
+    res.json({
+      ok: true,
+      job,
+      generatorMode: job.generator_mode || 'server_template',
+      elapsedMs: job.elapsed_ms || null,
+      variantIndex: job.variant_index || 0,
+      note: '현재 서버 발행 생성은 AI API가 아니라 애드센스용 규칙 템플릿 생성기입니다.',
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
