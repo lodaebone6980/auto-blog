@@ -1429,6 +1429,8 @@ function buildPublishSpec(platform = 'blog', settingsInput = {}, overrides = {})
     imageStorage: contentSkill.imagePipeline.storage,
     manualImageReviewRequired: contentSkill.imagePipeline.manualReviewRequired,
     quotePerSection: normalizedPlatform === 'blog' || normalizedPlatform === 'cafe',
+    quoteStyle: 'naver_quote_2',
+    thumbnailCtaHyperlinkRequired: true,
     videoRequired: normalizedPlatform === 'blog',
     qrOrLinkRequired: true,
     qrPosition: '도입 CTA 이후 또는 2번째 목차 뒤',

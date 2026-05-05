@@ -242,6 +242,60 @@ function applyFormatBlock(tagName) {
   }
 }
 
+function nodeText(node) {
+  return [
+    node.textContent,
+    node.getAttribute?.('aria-label'),
+    node.getAttribute?.('title'),
+    node.getAttribute?.('data-tooltip'),
+    node.getAttribute?.('data-name'),
+    node.className,
+  ].join(' ');
+}
+
+function findVisibleNode(selectors, matcher) {
+  for (const selector of selectors) {
+    const node = Array.from(document.querySelectorAll(selector))
+      .filter(visible)
+      .find((item) => matcher(nodeText(item), item));
+    if (node) return node;
+  }
+  return null;
+}
+
+async function clickNode(node, waitMs = 160) {
+  if (!node) return false;
+  node.scrollIntoView?.({ block: 'center', inline: 'center' });
+  node.click?.();
+  await sleep(waitMs);
+  return true;
+}
+
+async function applyNaverQuote2() {
+  const clickableSelectors = ['button', '[role="button"]', 'a', 'li', 'span'];
+  const quote2 = findVisibleNode(clickableSelectors, (text) =>
+    /인용구\s*2|인용\s*2|quote\s*2|quote2/i.test(text)
+  );
+  if (quote2 && await clickNode(quote2)) return true;
+
+  const quoteButton = findVisibleNode(clickableSelectors, (text) =>
+    /인용구|인용|quote/i.test(text)
+  );
+  if (quoteButton) {
+    await clickNode(quoteButton, 220);
+    const option2 = findVisibleNode(clickableSelectors, (text) =>
+      /인용구\s*2|인용\s*2|quote\s*2|quote2/i.test(text)
+    );
+    if (option2 && await clickNode(option2)) return true;
+
+    const quoteOptions = Array.from(document.querySelectorAll(clickableSelectors.join(',')))
+      .filter(visible)
+      .filter((node) => /인용구|인용|quote/i.test(nodeText(node)));
+    if (quoteOptions[1] && await clickNode(quoteOptions[1])) return true;
+  }
+  return false;
+}
+
 function pasteHtmlAtCaret(html, fallbackText = '') {
   try {
     const data = new DataTransfer();
@@ -260,8 +314,13 @@ async function insertImageAtCaret(node, image, index) {
   ensureTypingNotStopped();
   placeCaretAtEnd(editableRoot(node));
   const label = imageLabel(image, index);
-  const html = `<p style="text-align:center;margin:16px 0;"><img src="${escapeHtml(url)}" alt="${escapeHtml(label)}" style="display:block;width:500px;max-width:100%;height:auto;margin:0 auto;" /></p>`;
-  const inserted = pasteHtmlAtCaret(html, `[${label}]`);
+  const link = image.ctaLink || '';
+  const imageHtml = `<img src="${escapeHtml(url)}" alt="${escapeHtml(label)}" style="display:block;width:500px;max-width:100%;height:auto;margin:0 auto;" />`;
+  const linkedImageHtml = link
+    ? `<a href="${escapeHtml(link)}" target="_blank" rel="noopener noreferrer">${imageHtml}</a>`
+    : imageHtml;
+  const html = `<p style="text-align:center;margin:16px 0;">${linkedImageHtml}</p>`;
+  const inserted = pasteHtmlAtCaret(html, link ? `[${label}] ${link}` : `[${label}]`);
   emitInput(editableRoot(node));
   await sleep(180);
   await pressEnter(node, 1);
@@ -283,6 +342,11 @@ function escapeHtml(value) {
 
 function ctaUrl(job) {
   return job.cta_url || job.ctaUrl || job.qr_target_url || job.qrTargetUrl || job.naver_qr_manage_url || job.naverQrManageUrl || '';
+}
+
+function validHyperlink(value = '') {
+  const text = String(value || '').trim();
+  return /^https?:\/\//i.test(text) ? text : '';
 }
 
 function imageUrl(image) {
@@ -406,7 +470,7 @@ function buildTypingSegments(job, images = []) {
   let introImageInserted = false;
   let pendingSectionImage = false;
   let paragraphSinceImage = 0;
-  const link = ctaUrl(job);
+  const link = validHyperlink(ctaUrl(job));
 
   lines.forEach((line, index) => {
     if (isQrPlaceholder(line)) {
@@ -415,7 +479,7 @@ function buildTypingSegments(job, images = []) {
     }
     if (isQuoteLine(line)) {
       if (!introImageInserted && segments.length && images[imageIndex]) {
-        segments.push({ type: 'image', image: images[imageIndex], index: imageIndex });
+        segments.push({ type: 'image', image: { ...images[imageIndex], ctaLink: imageIndex === 0 ? link : '' }, index: imageIndex });
         imageIndex += 1;
         introImageInserted = true;
       }
@@ -433,12 +497,12 @@ function buildTypingSegments(job, images = []) {
     segments.push({ type: 'paragraph', text: line });
     paragraphSinceImage += 1;
     if (pendingSectionImage && images[imageIndex]) {
-      segments.push({ type: 'image', image: images[imageIndex], index: imageIndex });
+      segments.push({ type: 'image', image: { ...images[imageIndex], ctaLink: imageIndex === 0 ? link : '' }, index: imageIndex });
       imageIndex += 1;
       pendingSectionImage = false;
       paragraphSinceImage = 0;
     } else if (!pendingSectionImage && paragraphSinceImage >= 3 && images[imageIndex]) {
-      segments.push({ type: 'image', image: images[imageIndex], index: imageIndex });
+      segments.push({ type: 'image', image: { ...images[imageIndex], ctaLink: imageIndex === 0 ? link : '' }, index: imageIndex });
       imageIndex += 1;
       paragraphSinceImage = 0;
     }
@@ -466,7 +530,8 @@ async function typeBodySegments(node, job, images = []) {
       continue;
     }
     if (segment.type === 'quote') {
-      applyFormatBlock('blockquote');
+      const quote2Applied = await applyNaverQuote2();
+      if (!quote2Applied) applyFormatBlock('blockquote');
       await typeTextLikeHuman(target, segment.text, { chunkSize: 3, minDelay: 9, maxDelay: 23 });
       quoteCount += 1;
       await pressEnter(target, 1);
