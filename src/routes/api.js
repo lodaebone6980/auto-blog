@@ -358,7 +358,7 @@ function guessPlatform(sourceUrl, fallback = 'blog') {
 
 function normalizePlatform(value, sourceUrl) {
   const guessed = guessPlatform(sourceUrl, 'web');
-  const allowed = new Set(['blog', 'cafe', 'premium', 'brunch', 'web', 'wordpress']);
+  const allowed = new Set(['blog', 'cafe', 'premium', 'brunch', 'web', 'wordpress', 'qr']);
   return allowed.has(value) ? value : guessed;
 }
 
@@ -3217,6 +3217,12 @@ function decryptCredentialSecret(row = {}) {
 
 function publicAccountSlot(row = {}) {
   const channelDiscovery = row.channel_discovery || {};
+  const qrDailyLimit = clampNumber(parseInt(row.qr_daily_limit || '10', 10) || 10, 1, 10);
+  const qrUsedDate = row.qr_used_date ? String(row.qr_used_date).slice(0, 10) : null;
+  const qrToday = kstDateString();
+  const qrUsedToday = qrUsedDate === qrToday ? clampNumber(parseInt(row.qr_used_count || '0', 10) || 0, 0, qrDailyLimit) : 0;
+  const qrRemainingToday = Math.max(0, qrDailyLimit - qrUsedToday);
+  const qrLimitStatus = qrRemainingToday <= 0 ? '한도 소진' : (row.qr_limit_status || '사용가능');
   return {
     id: row.slot_id,
     slotId: row.slot_id,
@@ -3238,9 +3244,52 @@ function publicAccountSlot(row = {}) {
     channelDiscovery,
     categories: Array.isArray(channelDiscovery?.categories) ? channelDiscovery.categories : [],
     runnerProfileId: row.slot_id,
+    qrDailyLimit,
+    qrUsedDate: qrToday,
+    qrUsedToday,
+    qrRemainingToday,
+    qrLimitStatus,
+    qrLastShortUrl: row.qr_last_short_url || '',
+    qrLastUsedAt: row.qr_last_used_at || null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+async function consumeQrAccountUsage({ tenantId, slotId, shortUrl = '' }) {
+  if (!slotId) return null;
+  const today = kstDateString();
+  const slot = await loadAccountSlot({ tenantId, slotId });
+  if (!slot) return null;
+  const limit = clampNumber(parseInt(slot.qr_daily_limit || '10', 10) || 10, 1, 10);
+  const storedDate = slot.qr_used_date ? String(slot.qr_used_date).slice(0, 10) : null;
+  const currentUsed = storedDate === today ? clampNumber(parseInt(slot.qr_used_count || '0', 10) || 0, 0, limit) : 0;
+  if (currentUsed >= limit) {
+    const { rows } = await pool.query(
+      `UPDATE account_slots
+       SET qr_used_date = $3::date,
+           qr_used_count = $4,
+           qr_limit_status = '한도 소진',
+           updated_at = NOW()
+       WHERE tenant_id = $1 AND slot_id = $2
+       RETURNING *`,
+      [tenantId, slotId, today, currentUsed]
+    );
+    return { ok: false, account: publicAccountSlot(rows[0] || slot), reason: 'QR daily limit reached' };
+  }
+  const { rows } = await pool.query(
+    `UPDATE account_slots
+     SET qr_used_date = $3::date,
+         qr_used_count = $4,
+         qr_limit_status = CASE WHEN $4 >= LEAST(GREATEST(COALESCE(qr_daily_limit, 10), 1), 10) THEN '한도 소진' ELSE '사용가능' END,
+         qr_last_short_url = COALESCE($5, qr_last_short_url),
+         qr_last_used_at = NOW(),
+         updated_at = NOW()
+     WHERE tenant_id = $1 AND slot_id = $2
+     RETURNING *`,
+    [tenantId, slotId, today, currentUsed + 1, shortUrl || null]
+  );
+  return { ok: true, account: publicAccountSlot(rows[0]), used: currentUsed + 1, limit };
 }
 
 async function loadAccountSlot({ tenantId, slotId }) {
@@ -5056,6 +5105,31 @@ router.get('/account-slots', async (req, res) => {
   }
 });
 
+router.get('/qr-accounts', async (req, res) => {
+  try {
+    const tenantId = tenantIdFromReq(req);
+    const { rows } = await pool.query(
+      `SELECT *
+       FROM account_slots
+       WHERE tenant_id = $1
+         AND platform = 'qr'
+       ORDER BY created_at ASC, id ASC`,
+      [tenantId]
+    );
+    const accounts = rows.map(publicAccountSlot);
+    res.json({
+      ok: true,
+      accounts,
+      totalDailyLimit: accounts.reduce((sum, account) => sum + (account.qrDailyLimit || 0), 0),
+      totalUsedToday: accounts.reduce((sum, account) => sum + (account.qrUsedToday || 0), 0),
+      totalRemainingToday: accounts.reduce((sum, account) => sum + (account.qrRemainingToday || 0), 0),
+      usageDate: kstDateString(),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.post('/account-slots', async (req, res) => {
   try {
     const tenantId = tenantIdFromReq(req);
@@ -5067,6 +5141,7 @@ router.post('/account-slots', async (req, res) => {
     const targetUrl = String(body.targetUrl || body.target_url || body.memo || '').trim();
     const channelDiscovery = body.channelDiscovery || body.channel_discovery || null;
     const password = String(body.password || '');
+    const qrDailyLimit = clampNumber(parseInt(body.qrDailyLimit ?? body.qr_daily_limit ?? body.dailyLimit ?? 10, 10) || 10, 1, 10);
     if (!label) return res.status(400).json({ error: 'label is required' });
 
     const encrypted = password ? encryptCredentialSecret(password) : null;
@@ -5074,12 +5149,13 @@ router.post('/account-slots', async (req, res) => {
        `INSERT INTO account_slots (
           tenant_id, slot_id, platform, label, username, target_url, login_status,
           credential_mode, credential_cipher, credential_iv, credential_tag,
-          credential_updated_at, memo, channel_discovery, channel_discovered_at, updated_at
+          credential_updated_at, memo, channel_discovery, channel_discovered_at,
+          qr_daily_limit, qr_limit_status, updated_at
         )
         VALUES (
           $1,$2,$3,$4,$5,$6,$7,'server-aes-256-gcm',$8,$9,$10,
           CASE WHEN $8::text IS NULL THEN NULL ELSE NOW() END,$11,$12::jsonb,
-          CASE WHEN $12::jsonb IS NULL THEN NULL ELSE NOW() END,NOW()
+          CASE WHEN $12::jsonb IS NULL THEN NULL ELSE NOW() END,$13,'사용가능',NOW()
         )
        ON CONFLICT (tenant_id, slot_id) DO UPDATE SET
          platform = EXCLUDED.platform,
@@ -5104,6 +5180,7 @@ router.post('/account-slots', async (req, res) => {
             ELSE NOW()
           END,
           memo = COALESCE(NULLIF(EXCLUDED.memo, ''), account_slots.memo),
+          qr_daily_limit = COALESCE(EXCLUDED.qr_daily_limit, account_slots.qr_daily_limit, 10),
           updated_at = NOW()
         RETURNING *`,
       [
@@ -5119,6 +5196,7 @@ router.post('/account-slots', async (req, res) => {
         encrypted?.tag || null,
         targetUrl,
         channelDiscovery ? JSON.stringify(channelDiscovery) : null,
+        qrDailyLimit,
       ]
     );
     res.json({ ok: true, account: publicAccountSlot(rows[0]) });
@@ -6386,6 +6464,7 @@ router.post('/rewrite-jobs/:id/mark-published', async (req, res) => {
 
 async function saveRewriteQrResult(req, res) {
   try {
+    const tenantId = tenantIdFromReq(req);
     const rewrite = await pool.query('SELECT * FROM rewrite_jobs WHERE id = $1', [req.params.id]);
     if (rewrite.rows.length === 0) return res.status(404).json({ error: 'Rewrite job not found' });
 
@@ -6452,7 +6531,12 @@ async function saveRewriteQrResult(req, res) {
       linkedContentJobIds: linkedContentJobs.rows.map((row) => row.id),
     });
 
-    res.json({ ok: true, job: updated, linkedContentJobs: linkedContentJobs.rows });
+    const shouldConsumeQrUsage = Boolean(shortUrl && qrAccountId && shortUrl !== current.naver_qr_short_url);
+    const qrAccountUsage = shouldConsumeQrUsage
+      ? await consumeQrAccountUsage({ tenantId, slotId: qrAccountId, shortUrl })
+      : null;
+
+    res.json({ ok: true, job: updated, linkedContentJobs: linkedContentJobs.rows, qrAccountUsage });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

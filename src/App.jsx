@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 
 const API = '/api';
-const EXTENSION_ZIP_PATH = '/downloads/naviwrite-extension.zip?v=1.3.7';
+const EXTENSION_ZIP_PATH = '/downloads/naviwrite-extension.zip?v=1.3.8';
 const RUNNER_ZIP_PATH = '/downloads/naviwrite-runner.zip';
 
 const COLORS = {
@@ -4583,8 +4583,18 @@ function OperationsSettingsPanel() {
         if (!res.ok) throw new Error(data.error || `API error (${res.status})`);
         if (cancelled || !Array.isArray(data.accounts)) return;
         setSettings((prev) => {
-          const nextAccounts = data.accounts.length > 0 ? data.accounts : (Array.isArray(prev.accounts) ? prev.accounts : []);
-          const next = { ...prev, accounts: nextAccounts };
+          const publishAccounts = data.accounts.filter((account) => account.platform !== 'qr');
+          const qrAccounts = data.accounts
+            .filter((account) => account.platform === 'qr')
+            .map((account) => ({
+              ...account,
+              dailyLimit: account.qrDailyLimit || 10,
+              usedToday: account.qrUsedToday || 0,
+              status: account.qrLimitStatus || account.loginStatus || '사용가능',
+            }));
+          const nextAccounts = publishAccounts.length > 0 ? publishAccounts : (Array.isArray(prev.accounts) ? prev.accounts : []);
+          const nextQrAccounts = qrAccounts.length > 0 ? qrAccounts : (Array.isArray(prev.qrAccounts) ? prev.qrAccounts : []);
+          const next = { ...prev, accounts: nextAccounts, qrAccounts: nextQrAccounts };
           localStorage.setItem('naviwrite.opsSettings', JSON.stringify(next));
           return next;
         });
@@ -4644,10 +4654,31 @@ function OperationsSettingsPanel() {
 
   const mergeAccountSlot = (account) => {
     const normalized = { ...account, id: account.id || account.slotId };
+    if (normalized.platform === 'qr') {
+      return mergeQrAccountSlot(normalized);
+    }
     saveSettings({
       ...settings,
       accounts: [
         ...settings.accounts.filter((item) => item.id !== normalized.id),
+        normalized,
+      ],
+    });
+    return normalized;
+  };
+
+  const mergeQrAccountSlot = (account) => {
+    const normalized = {
+      ...account,
+      id: account.id || account.slotId,
+      dailyLimit: account.qrDailyLimit || account.dailyLimit || 10,
+      usedToday: account.qrUsedToday || account.usedToday || 0,
+      status: account.qrLimitStatus || account.status || account.loginStatus || '사용가능',
+    };
+    saveSettings({
+      ...settings,
+      qrAccounts: [
+        ...settings.qrAccounts.filter((item) => item.id !== normalized.id),
         normalized,
       ],
     });
@@ -4671,6 +4702,25 @@ function OperationsSettingsPanel() {
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || `API error (${res.status})`);
     return mergeAccountSlot(data.account);
+  };
+
+  const saveCloudQrSlot = async (account) => {
+    const res = await fetch(`${API}/account-slots`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        slotId: account.id || account.slotId,
+        platform: 'qr',
+        label: account.label,
+        usernameHint: account.naverIdHint || account.usernameHint || '',
+        targetUrl: '',
+        qrDailyLimit: account.dailyLimit || account.qrDailyLimit || 10,
+        loginStatus: account.loginStatus || 'QR 로그인 확인 필요',
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `API error (${res.status})`);
+    return mergeQrAccountSlot(data.account);
   };
 
   const updateAccount = (id, patch) => {
@@ -4982,18 +5032,25 @@ function OperationsSettingsPanel() {
     }
   };
 
-  const addQr = () => {
+  const addQr = async () => {
     if (!qrForm.label.trim()) return;
-    saveSettings({
-      ...settings,
-      qrAccounts: [...settings.qrAccounts, {
-        id: `qr_${Date.now()}`,
-        ...qrForm,
-        usedToday: 0,
-        status: '사용가능',
-      }],
-    });
-    setQrForm({ label: '', naverIdHint: '', dailyLimit: 10 });
+    const newQrAccount = {
+      id: `qr_${Date.now()}`,
+      ...qrForm,
+      dailyLimit: Math.min(10, Math.max(1, Number(qrForm.dailyLimit || 10))),
+      usedToday: 0,
+      status: 'QR 로그인 확인 필요',
+      loginStatus: 'QR 로그인 확인 필요',
+      platform: 'qr',
+    };
+    setRunnerStatus({ state: 'testing', message: `${newQrAccount.label} QR 계정을 서버에 저장 중...` });
+    try {
+      await saveCloudQrSlot(newQrAccount);
+      setQrForm({ label: '', naverIdHint: '', dailyLimit: 10 });
+      setRunnerStatus({ state: 'ok', message: `${newQrAccount.label} QR 계정을 저장했습니다. 확장프로그램 QR 탭에서 로그인 확인 후 사용하세요` });
+    } catch (err) {
+      setRunnerStatus({ state: 'fail', message: err instanceof Error ? err.message : 'QR 계정 저장 실패' });
+    }
   };
 
   const addVpn = () => {
@@ -5023,6 +5080,18 @@ function OperationsSettingsPanel() {
     } catch (err) {
       removeItem('accounts', id);
       setRunnerStatus({ state: 'fail', message: err instanceof Error ? err.message : '서버 계정 슬롯 삭제 실패' });
+    }
+  };
+
+  const removeQrAccount = async (id) => {
+    setRunnerStatus({ state: 'testing', message: 'QR 계정 삭제 중...' });
+    try {
+      await fetch(`${API}/account-slots/${id}`, { method: 'DELETE' });
+      removeItem('qrAccounts', id);
+      setRunnerStatus({ state: 'ok', message: 'QR 계정을 삭제했습니다' });
+    } catch (err) {
+      removeItem('qrAccounts', id);
+      setRunnerStatus({ state: 'fail', message: err instanceof Error ? err.message : 'QR 계정 삭제 실패' });
     }
   };
 
@@ -5162,9 +5231,12 @@ function OperationsSettingsPanel() {
             <h3 style={{ fontSize: 15, fontWeight: 850, color: COLORS.primary, marginBottom: 12 }}>네이버 QR 계정 풀</h3>
             <input value={qrForm.label} onChange={(e) => setQrForm({ ...qrForm, label: e.target.value })} placeholder="예: QR 계정 1" style={inputStyle} />
             <input value={qrForm.naverIdHint} onChange={(e) => setQrForm({ ...qrForm, naverIdHint: e.target.value })} placeholder="네이버 ID 힌트" style={inputStyle} />
-            <input type="number" value={qrForm.dailyLimit} onChange={(e) => setQrForm({ ...qrForm, dailyLimit: Number(e.target.value) })} placeholder="일일 한도" style={inputStyle} />
+            <input type="number" min="1" max="10" value={qrForm.dailyLimit} onChange={(e) => setQrForm({ ...qrForm, dailyLimit: Number(e.target.value) })} placeholder="일일 한도 최대 10" style={inputStyle} />
             <button type="button" onClick={addQr} style={primaryButtonStyle}>QR 계정 추가</button>
-            <SettingList items={settings.qrAccounts} onRemove={(id) => removeItem('qrAccounts', id)} meta={(item) => `${item.usedToday}/${item.dailyLimit} · ${item.status}`} />
+            <p style={{ marginTop: 2, fontSize: 10, color: COLORS.textMuted, lineHeight: 1.5 }}>
+              네이버 QR은 현재 아이디당 하루 10개 기준으로 관리합니다. 3개 계정이면 확장프로그램에서 계정 전환 확인을 거쳐 최대 30개까지 운영합니다.
+            </p>
+            <SettingList items={settings.qrAccounts} onRemove={removeQrAccount} meta={(item) => `${item.usedToday ?? item.qrUsedToday ?? 0}/${item.dailyLimit ?? item.qrDailyLimit ?? 10} · ${item.status || item.qrLimitStatus || '사용가능'}`} />
           </section>
         </div>
       </div>

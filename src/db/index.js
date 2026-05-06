@@ -686,6 +686,12 @@ export async function initDB() {
       ALTER TABLE account_slots ADD COLUMN IF NOT EXISTS channel_discovery JSONB DEFAULT '{}';
       ALTER TABLE account_slots ADD COLUMN IF NOT EXISTS channel_discovered_at TIMESTAMPTZ;
       ALTER TABLE account_slots ADD COLUMN IF NOT EXISTS memo TEXT;
+      ALTER TABLE account_slots ADD COLUMN IF NOT EXISTS qr_daily_limit INTEGER DEFAULT 10;
+      ALTER TABLE account_slots ADD COLUMN IF NOT EXISTS qr_used_date DATE;
+      ALTER TABLE account_slots ADD COLUMN IF NOT EXISTS qr_used_count INTEGER DEFAULT 0;
+      ALTER TABLE account_slots ADD COLUMN IF NOT EXISTS qr_limit_status TEXT DEFAULT '사용가능';
+      ALTER TABLE account_slots ADD COLUMN IF NOT EXISTS qr_last_short_url TEXT;
+      ALTER TABLE account_slots ADD COLUMN IF NOT EXISTS qr_last_used_at TIMESTAMPTZ;
 
       -- Content Job Event Log
       CREATE TABLE IF NOT EXISTS content_job_events (
@@ -713,6 +719,7 @@ export async function initDB() {
       CREATE INDEX IF NOT EXISTS idx_content_job_events_job_id ON content_job_events(job_id);
       CREATE INDEX IF NOT EXISTS idx_account_slots_tenant ON account_slots(tenant_id);
       CREATE INDEX IF NOT EXISTS idx_account_slots_platform ON account_slots(platform);
+      CREATE INDEX IF NOT EXISTS idx_account_slots_qr_date ON account_slots(qr_used_date);
       CREATE UNIQUE INDEX IF NOT EXISTS idx_account_slots_tenant_slot_unique ON account_slots(tenant_id, slot_id);
       CREATE INDEX IF NOT EXISTS idx_source_analyses_created_at ON source_analyses(created_at);
       CREATE INDEX IF NOT EXISTS idx_source_analyses_keyword ON source_analyses(keyword);

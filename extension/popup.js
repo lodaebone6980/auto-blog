@@ -14,6 +14,8 @@ const state = {
   apiBase: DEFAULT_API,
   accounts: [],
   selectedAccountId: '',
+  qrAccounts: [],
+  selectedQrAccountId: '',
   jobs: [],
   selectedJobIds: [],
   selectedQrJobIds: [],
@@ -161,9 +163,10 @@ function selectTab(name) {
 }
 
 async function loadSettings() {
-  const saved = await chromePromise((done) => chrome.storage.local.get(['apiBase', 'selectedAccountId', 'selectedJobIds', 'selectedQrJobIds', 'activeJob', 'activeQrJob', 'images', 'batchDelaySeconds'], done));
+  const saved = await chromePromise((done) => chrome.storage.local.get(['apiBase', 'selectedAccountId', 'selectedQrAccountId', 'selectedJobIds', 'selectedQrJobIds', 'activeJob', 'activeQrJob', 'images', 'batchDelaySeconds'], done));
   state.apiBase = saved.apiBase || DEFAULT_API;
   state.selectedAccountId = saved.selectedAccountId || '';
+  state.selectedQrAccountId = saved.selectedQrAccountId || '';
   state.selectedJobIds = Array.isArray(saved.selectedJobIds) ? saved.selectedJobIds.map((id) => Number(id)).filter(Boolean) : [];
   state.selectedQrJobIds = Array.isArray(saved.selectedQrJobIds) ? saved.selectedQrJobIds.map((id) => Number(id)).filter(Boolean) : [];
   state.activeJob = saved.activeJob || null;
@@ -350,14 +353,25 @@ async function discoverChannel() {
 
 async function loadAccounts() {
   const data = await api('/account-slots');
-  state.accounts = data.accounts || [];
+  const allAccounts = data.accounts || [];
+  state.accounts = allAccounts.filter((account) => account.platform !== 'qr');
+  state.qrAccounts = allAccounts.filter((account) => account.platform === 'qr');
   if (!state.selectedAccountId && state.accounts[0]) state.selectedAccountId = state.accounts[0].id;
-  await chromePromise((done) => chrome.storage.local.set({ selectedAccountId: state.selectedAccountId }, done));
+  if (!state.selectedQrAccountId && state.qrAccounts[0]) state.selectedQrAccountId = state.qrAccounts[0].id;
+  await chromePromise((done) => chrome.storage.local.set({
+    selectedAccountId: state.selectedAccountId,
+    selectedQrAccountId: state.selectedQrAccountId,
+  }, done));
   renderAccounts();
+  renderQrAccounts();
 }
 
 function selectedAccount() {
   return state.accounts.find((item) => item.id === state.selectedAccountId) || state.accounts[0] || null;
+}
+
+function selectedQrAccount() {
+  return state.qrAccounts.find((item) => item.id === state.selectedQrAccountId) || state.qrAccounts[0] || null;
 }
 
 function accountTarget(account) {
@@ -436,6 +450,38 @@ function renderAccounts() {
   renderCategoryBox(account);
   renderJobList();
   renderQrList();
+}
+
+function renderQrAccounts() {
+  const select = $('qrAccountSelect');
+  if (!select) return;
+  if (!state.qrAccounts.length) {
+    select.innerHTML = '<option value="">QR 계정 없음</option>';
+    setText('qrQuotaText', '사이트 운영 설정에서 네이버 QR 계정을 먼저 추가하세요. 계정 1개당 하루 10개까지 계산합니다.');
+    return;
+  }
+  select.innerHTML = state.qrAccounts.map((account) => {
+    const used = Number(account.qrUsedToday ?? account.usedToday ?? 0);
+    const limit = Number(account.qrDailyLimit ?? account.dailyLimit ?? 10);
+    const remaining = Math.max(0, Number(account.qrRemainingToday ?? (limit - used)));
+    const status = remaining <= 0 ? '한도 소진' : (account.qrLimitStatus || account.loginStatus || '사용가능');
+    const label = account.label || account.id;
+    const hint = account.usernameHint ? ` · ${account.usernameHint}` : '';
+    return `<option value="${account.id}">${label}${hint} (${used}/${limit} · 남음 ${remaining} · ${status})</option>`;
+  }).join('');
+  if (!state.qrAccounts.some((account) => account.id === state.selectedQrAccountId)) {
+    state.selectedQrAccountId = state.qrAccounts[0].id;
+    chrome.storage.local.set({ selectedQrAccountId: state.selectedQrAccountId });
+  }
+  select.value = state.selectedQrAccountId;
+  const account = selectedQrAccount();
+  const used = Number(account?.qrUsedToday ?? account?.usedToday ?? 0);
+  const limit = Number(account?.qrDailyLimit ?? account?.dailyLimit ?? 10);
+  const remaining = Math.max(0, Number(account?.qrRemainingToday ?? (limit - used)));
+  const status = remaining <= 0 ? '한도 소진' : (account?.qrLimitStatus || account?.loginStatus || '사용가능');
+  setText('qrQuotaText', account
+    ? `${account.label || account.id} · 오늘 ${used}/${limit}개 사용 · ${remaining}개 남음 · ${status}`
+    : 'QR 계정을 선택하세요.');
 }
 
 function renderJob() {
@@ -652,7 +698,14 @@ async function sendQrMessageToTab(tabId, message, retryMs = 12000) {
 
 async function openSelectedQrJob() {
   selectTab('qr');
+  await loadAccounts();
   if (!state.jobs.length) await loadPublishJobs();
+  const qrAccount = selectedQrAccount();
+  if (!qrAccount) throw new Error('QR 생성 계정을 먼저 선택하세요. 사이트 운영 설정에서 QR 계정을 추가할 수 있습니다.');
+  const used = Number(qrAccount.qrUsedToday ?? qrAccount.usedToday ?? 0);
+  const limit = Number(qrAccount.qrDailyLimit ?? qrAccount.dailyLimit ?? 10);
+  const remaining = Math.max(0, Number(qrAccount.qrRemainingToday ?? (limit - used)));
+  if (remaining <= 0) throw new Error(`${qrAccount.label || qrAccount.id} QR 계정은 오늘 한도 ${limit}개를 모두 사용했습니다. 다른 QR 계정으로 전환하세요.`);
   const id = state.selectedQrJobIds[0];
   if (!id) throw new Error('QR 탭에서 만들 작업을 체크해 주세요.');
   const rawJob = qrCandidateJobs().find((job) => Number(job.id) === Number(id));
@@ -665,7 +718,7 @@ async function openSelectedQrJob() {
   state.activeQrJob = { ...job, naverQrName: qrName, naver_qr_name: qrName };
   await chromePromise((done) => chrome.storage.local.set({ activeQrJob: state.activeQrJob }, done));
   renderActiveQrJob();
-  setText('qrStatus', '네이버 QR 페이지를 열고 링크/이름 자동 입력을 시도합니다.');
+  setText('qrStatus', `${qrAccount.label || qrAccount.id} 계정 기준으로 QR을 만듭니다. 현재 Chrome이 이 네이버 ID로 로그인되어 있는지 확인하세요.`);
 
   let tab = await chrome.tabs.create({ url: 'https://qr.naver.com/', active: true });
   tab = await waitForTabComplete(tab.id, 15000);
@@ -693,6 +746,8 @@ async function collectQrResult() {
   if (!result?.ok || !result.shortUrl) {
     throw new Error(result?.error || '현재 페이지에서 m.site.naver.com 단축 URL을 찾지 못했습니다.');
   }
+  const qrAccount = selectedQrAccount();
+  if (!qrAccount) throw new Error('QR 사용량을 차감할 QR 계정을 선택하세요.');
   const saved = await api(`/rewrite-jobs/${state.activeQrJob.id}/qr`, {
     method: 'POST',
     body: JSON.stringify({
@@ -702,7 +757,7 @@ async function collectQrResult() {
       naverQrImageUrl: result.imageUrl,
       qrTargetUrl: qrTargetForJob(state.activeQrJob),
       qrStatus: 'QR 생성 완료',
-      qrAccountId: selectedAccount()?.id || null,
+      qrAccountId: qrAccount.id,
     }),
   });
   const updated = saved.job || {};
@@ -715,7 +770,29 @@ async function collectQrResult() {
   }, done));
   renderQrList();
   renderJobList();
+  await loadAccounts().catch(() => {});
   setText('qrStatus', `저장 완료: ${result.shortUrl}`);
+}
+
+async function checkQrLoginStatus() {
+  const account = selectedQrAccount();
+  if (!account) throw new Error('QR 계정이 없습니다.');
+  const loggedIn = await checkNaverLogin(false);
+  await api('/account-slots', {
+    method: 'POST',
+    body: JSON.stringify({
+      slotId: account.id,
+      platform: 'qr',
+      label: account.label,
+      usernameHint: account.usernameHint,
+      qrDailyLimit: account.qrDailyLimit || account.dailyLimit || 10,
+      loginStatus: loggedIn ? 'QR 로그인 확인 완료' : 'QR 로그인 필요',
+    }),
+  });
+  await loadAccounts();
+  setText('qrStatus', loggedIn
+    ? `${account.label || account.id} QR 로그인 확인 완료. 한도 내에서 생성할 수 있습니다.`
+    : '네이버 로그인이 필요합니다. 네이버 로그인 버튼으로 로그인 후 다시 확인하세요.');
 }
 
 async function selectAllVisibleJobs() {
@@ -1004,6 +1081,11 @@ async function init() {
     renderAccounts();
     await loadPublishJobs().catch((err) => setText('loginText', err.message));
   });
+  $('qrAccountSelect').addEventListener('change', async () => {
+    state.selectedQrAccountId = $('qrAccountSelect').value;
+    await chromePromise((done) => chrome.storage.local.set({ selectedQrAccountId: state.selectedQrAccountId }, done));
+    renderQrAccounts();
+  });
   $('saveApi').addEventListener('click', () => saveSettings().catch((err) => setText('loginText', err.message)));
   $('openLogin').addEventListener('click', () => chrome.tabs.create({ url: 'https://nid.naver.com/nidlogin.login' }));
   $('openSite').addEventListener('click', () => chrome.tabs.create({ url: state.apiBase }));
@@ -1013,6 +1095,8 @@ async function init() {
   $('runSelectedJobs').addEventListener('click', () => openJobTabAndStart().catch((err) => setText('loginText', err.message)));
   $('reloadJobs').addEventListener('click', () => loadPublishJobs().catch((err) => setText('loginText', err.message)));
   $('reloadQrJobs').addEventListener('click', () => loadPublishJobs().catch((err) => setText('qrStatus', err.message)));
+  $('checkQrLogin').addEventListener('click', () => checkQrLoginStatus().catch((err) => setText('qrStatus', err.message)));
+  $('openQrLogin').addEventListener('click', () => chrome.tabs.create({ url: 'https://nid.naver.com/nidlogin.login' }));
   $('selectAllQrJobs').addEventListener('click', () => selectAllVisibleQrJobs().catch((err) => setText('qrStatus', err.message)));
   $('clearSelectedQrJobs').addEventListener('click', () => clearSelectedQrJobs().catch((err) => setText('qrStatus', err.message)));
   $('openSelectedQr').addEventListener('click', () => openSelectedQrJob().catch((err) => setText('qrStatus', err.message)));
