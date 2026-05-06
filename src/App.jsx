@@ -150,6 +150,12 @@ function formatUsd(value) {
   return `$${numeric.toFixed(4)}`;
 }
 
+function formatKrw(value) {
+  const numeric = Math.round(Number(value || 0));
+  if (!Number.isFinite(numeric)) return '0원';
+  return `${numeric.toLocaleString()}원`;
+}
+
 function keywordDemandBadge(candidate) {
   if (candidate?.searchVolume !== null && candidate?.searchVolume !== undefined) {
     return {
@@ -3356,6 +3362,9 @@ function RewritePanel() {
               <p style={{ fontSize: 11, color: COLORS.textSecondary, fontWeight: 800 }}>선택/생성 예상 OpenAI 비용</p>
               <p style={{ marginTop: 3, fontSize: 17, color: COLORS.primary, fontWeight: 950 }}>
                 {formatUsd(openAiEstimate?.estimate?.estimatedCostUsd || 0)}
+                <span style={{ marginLeft: 8, fontSize: 12, color: COLORS.success }}>
+                  {formatKrw(openAiEstimate?.estimate?.estimatedCostKrw || 0)}
+                </span>
               </p>
             </div>
             <p style={{ fontSize: 11, color: COLORS.textMuted, lineHeight: 1.5 }}>
@@ -5869,7 +5878,7 @@ function PublishQueuePanel({ embedded = false } = {}) {
   );
 }
 
-function OpenAiUsagePill({ summary }) {
+function OpenAiUsagePillV1({ summary }) {
   const usage = summary?.usage || {};
   const settings = summary?.settings || {};
   return (
@@ -5892,6 +5901,38 @@ function OpenAiUsagePill({ summary }) {
         <span>오늘 {formatUsd(usage.todayUsd || 0)}</span>
         <span>7일 {formatUsd(usage.sevenDaysUsd || 0)}</span>
         <span>30일 {formatUsd(usage.thirtyDaysUsd || 0)}</span>
+      </div>
+    </div>
+  );
+}
+
+function OpenAiUsagePill({ summary }) {
+  const usage = summary?.usage || {};
+  const settings = summary?.settings || {};
+  const rate = summary?.exchangeRate || {};
+  return (
+    <div style={{
+      display: 'grid',
+      gap: 2,
+      minWidth: 240,
+      minHeight: 48,
+      padding: '7px 10px',
+      borderRadius: 9,
+      background: '#f0f7ff',
+      border: `1px solid #c7ddf2`,
+      color: COLORS.primary,
+    }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 10, fontWeight: 900 }}>
+        <span>AI {settings.hasApiKey ? settings.model : 'API key'}</span>
+        <span>잔여 {formatKrw(usage.remainingBudgetKrw || 0)}</span>
+      </div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 10, color: COLORS.textSecondary, fontWeight: 800 }}>
+        <span>오늘 {formatKrw(usage.todayKrw || 0)}</span>
+        <span>7일 {formatKrw(usage.sevenDaysKrw || 0)}</span>
+        <span>30일 {formatKrw(usage.thirtyDaysKrw || 0)}</span>
+      </div>
+      <div style={{ fontSize: 9, color: COLORS.textMuted, fontWeight: 700 }}>
+        USD/KRW {Number(rate.usdKrwRate || 0).toLocaleString()} · {rate.rateType || 'deal_bas_r'}
       </div>
     </div>
   );
@@ -5940,7 +5981,7 @@ export default function App() {
       safeFetch(`${API}/content-jobs?limit=80`),
       safeFetch(`${API}/track/dashboard?period=${period}`),
       safeFetch(`${API}/track/alerts`),
-      safeFetch(`${API}/openai/usage-summary`),
+      safeFetch(`${API}/openai/usage-summary-v2`),
     ]);
     if (s) setStats(s);
     if (p) setPosts(Array.isArray(p) ? p : []);

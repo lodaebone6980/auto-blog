@@ -308,6 +308,22 @@ export async function initDB() {
         created_at TIMESTAMPTZ DEFAULT NOW()
       );
 
+      CREATE TABLE IF NOT EXISTS exchange_rate_daily (
+        id SERIAL PRIMARY KEY,
+        rate_date DATE NOT NULL,
+        source_date DATE NOT NULL,
+        base_currency TEXT DEFAULT 'USD',
+        quote_currency TEXT DEFAULT 'KRW',
+        rate_type TEXT DEFAULT 'deal_bas_r',
+        rate NUMERIC(14, 4) NOT NULL,
+        source TEXT DEFAULT 'manual_fallback',
+        is_fallback BOOLEAN DEFAULT FALSE,
+        meta JSONB DEFAULT '{}',
+        fetched_at TIMESTAMPTZ DEFAULT NOW(),
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE(rate_date, base_currency, quote_currency, rate_type)
+      );
+
       -- Simple server-side feature settings used by schedulers and dashboard screens.
       CREATE TABLE IF NOT EXISTS app_settings (
         key TEXT PRIMARY KEY,
@@ -393,6 +409,9 @@ export async function initDB() {
       ALTER TABLE rewrite_jobs ADD COLUMN IF NOT EXISTS openai_completion_tokens INTEGER DEFAULT 0;
       ALTER TABLE rewrite_jobs ADD COLUMN IF NOT EXISTS openai_total_tokens INTEGER DEFAULT 0;
       ALTER TABLE rewrite_jobs ADD COLUMN IF NOT EXISTS openai_estimated_cost_usd NUMERIC(12, 6) DEFAULT 0;
+      ALTER TABLE rewrite_jobs ADD COLUMN IF NOT EXISTS openai_estimated_cost_krw NUMERIC(14, 2) DEFAULT 0;
+      ALTER TABLE rewrite_jobs ADD COLUMN IF NOT EXISTS openai_usd_krw_rate NUMERIC(14, 4);
+      ALTER TABLE rewrite_jobs ADD COLUMN IF NOT EXISTS openai_exchange_rate_date DATE;
       ALTER TABLE rewrite_jobs ADD COLUMN IF NOT EXISTS elapsed_ms INTEGER DEFAULT 0;
       ALTER TABLE rewrite_jobs ADD COLUMN IF NOT EXISTS variant_index INTEGER DEFAULT 0;
       ALTER TABLE rewrite_jobs ADD COLUMN IF NOT EXISTS qr_target_url TEXT;
@@ -692,6 +711,11 @@ export async function initDB() {
       ALTER TABLE account_slots ADD COLUMN IF NOT EXISTS qr_limit_status TEXT DEFAULT '사용가능';
       ALTER TABLE account_slots ADD COLUMN IF NOT EXISTS qr_last_short_url TEXT;
       ALTER TABLE account_slots ADD COLUMN IF NOT EXISTS qr_last_used_at TIMESTAMPTZ;
+      ALTER TABLE openai_usage_logs ADD COLUMN IF NOT EXISTS exchange_rate_date DATE;
+      ALTER TABLE openai_usage_logs ADD COLUMN IF NOT EXISTS exchange_rate_source_date DATE;
+      ALTER TABLE openai_usage_logs ADD COLUMN IF NOT EXISTS usd_krw_rate NUMERIC(14, 4);
+      ALTER TABLE openai_usage_logs ADD COLUMN IF NOT EXISTS estimated_cost_krw NUMERIC(14, 2) DEFAULT 0;
+      ALTER TABLE openai_usage_logs ADD COLUMN IF NOT EXISTS exchange_rate_source TEXT;
 
       -- Content Job Event Log
       CREATE TABLE IF NOT EXISTS content_job_events (
@@ -743,6 +767,8 @@ export async function initDB() {
       CREATE INDEX IF NOT EXISTS idx_openai_usage_created_at ON openai_usage_logs(created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_openai_usage_tenant ON openai_usage_logs(tenant_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_openai_usage_rewrite_job ON openai_usage_logs(rewrite_job_id);
+      CREATE INDEX IF NOT EXISTS idx_openai_usage_exchange_rate_date ON openai_usage_logs(exchange_rate_date);
+      CREATE INDEX IF NOT EXISTS idx_exchange_rate_daily_date ON exchange_rate_daily(rate_date DESC);
       CREATE INDEX IF NOT EXISTS idx_rss_sources_status ON rss_sources(status);
       CREATE INDEX IF NOT EXISTS idx_rss_source_items_source ON rss_source_items(rss_source_id);
       CREATE INDEX IF NOT EXISTS idx_rss_source_items_status ON rss_source_items(status);

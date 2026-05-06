@@ -2759,7 +2759,7 @@ async function buildOpenAiRewriteDraft({ tenantId, job, analyses, pattern, setti
     promptTokens: usage.prompt_tokens || 0,
     completionTokens: usage.completion_tokens || 0,
   });
-  await saveOpenAiUsage({
+  const usageLog = await saveOpenAiUsage({
     tenantId,
     model,
     rewriteJobId: job.id,
@@ -2796,6 +2796,10 @@ async function buildOpenAiRewriteDraft({ tenantId, job, analyses, pattern, setti
       completionTokens: usage.completion_tokens || 0,
       totalTokens: usage.total_tokens || ((usage.prompt_tokens || 0) + (usage.completion_tokens || 0)),
       estimatedCostUsd: costUsd,
+      estimatedCostKrw: Number(usageLog?.estimated_cost_krw || 0),
+      usdKrwRate: Number(usageLog?.usd_krw_rate || 0),
+      exchangeRateDate: usageLog?.exchange_rate_date || null,
+      exchangeRateSource: usageLog?.exchange_rate_source || null,
     },
   };
 }
@@ -2943,8 +2947,11 @@ async function processRewriteJob(jobId, options = {}) {
           openai_completion_tokens = $20,
           openai_total_tokens = $21,
           openai_estimated_cost_usd = $22,
-          elapsed_ms = $23,
-          variant_index = $24,
+          openai_estimated_cost_krw = $23,
+          openai_usd_krw_rate = $24,
+          openai_exchange_rate_date = $25::date,
+          elapsed_ms = $26,
+          variant_index = $27,
           error_message = NULL,
           updated_at = NOW()
      WHERE id = $1
@@ -2972,6 +2979,9 @@ async function processRewriteJob(jobId, options = {}) {
       output.openaiUsage?.completionTokens || 0,
       output.openaiUsage?.totalTokens || 0,
       output.openaiUsage?.estimatedCostUsd || 0,
+      output.openaiUsage?.estimatedCostKrw || 0,
+      output.openaiUsage?.usdKrwRate || null,
+      output.openaiUsage?.exchangeRateDate || null,
       Date.now() - startedAt,
       variantIndex,
     ]
@@ -3385,6 +3395,123 @@ function estimateOpenAiCostUsd({ model, promptTokens = 0, completionTokens = 0 }
   return Number((((promptTokens * pricing.input) + (completionTokens * pricing.output)) / 1000000).toFixed(6));
 }
 
+function parseUsdKrwRate(value) {
+  const numeric = Number(String(value || '').replace(/,/g, '').trim());
+  return Number.isFinite(numeric) && numeric > 0 ? Number(numeric.toFixed(4)) : 0;
+}
+
+function yyyymmdd(dateString = kstDateString()) {
+  return String(dateString || '').replace(/-/g, '').slice(0, 8);
+}
+
+function addDaysToDateString(dateString, days) {
+  const [year, month, day] = String(dateString || kstDateString()).split('-').map(Number);
+  const date = new Date(Date.UTC(year || 1970, (month || 1) - 1, day || 1));
+  date.setUTCDate(date.getUTCDate() + Number(days || 0));
+  return date.toISOString().slice(0, 10);
+}
+
+async function cacheUsdKrwRate({ rateDate, sourceDate, rate, source, isFallback = false, meta = {} }) {
+  const { rows } = await pool.query(
+    `INSERT INTO exchange_rate_daily (
+       rate_date, source_date, base_currency, quote_currency, rate_type, rate,
+       source, is_fallback, meta, fetched_at
+     )
+     VALUES ($1::date,$2::date,'USD','KRW','deal_bas_r',$3,$4,$5,$6::jsonb,NOW())
+     ON CONFLICT (rate_date, base_currency, quote_currency, rate_type) DO UPDATE SET
+       source_date = EXCLUDED.source_date,
+       rate = EXCLUDED.rate,
+       source = EXCLUDED.source,
+       is_fallback = EXCLUDED.is_fallback,
+       meta = EXCLUDED.meta,
+       fetched_at = NOW()
+     RETURNING *`,
+    [rateDate, sourceDate, Number(rate), source, Boolean(isFallback), JSON.stringify(meta || {})]
+  );
+  return rows[0];
+}
+
+async function fetchKoreaEximUsdKrwRate(rateDate) {
+  const authKey = process.env.KOREA_EXIM_API_KEY || process.env.KOREAEXIM_API_KEY || process.env.EXCHANGE_RATE_API_KEY || '';
+  if (!authKey) return null;
+  for (let offset = 0; offset <= 7; offset += 1) {
+    const sourceDate = addDaysToDateString(rateDate, -offset);
+    const url = `https://oapi.koreaexim.go.kr/site/program/financial/exchangeJSON?authkey=${encodeURIComponent(authKey)}&searchdate=${yyyymmdd(sourceDate)}&data=AP01`;
+    try {
+      const response = await fetch(url);
+      if (!response.ok) continue;
+      const data = await response.json().catch(() => null);
+      const rows = Array.isArray(data) ? data : [];
+      const usd = rows.find((row) => String(row.cur_unit || row.CUR_UNIT || '').toUpperCase().startsWith('USD'));
+      const rate = parseUsdKrwRate(usd?.deal_bas_r || usd?.DEAL_BAS_R || usd?.kftc_deal_bas_r || usd?.KFTC_DEAL_BAS_R);
+      if (rate) {
+        return {
+          rateDate,
+          sourceDate,
+          rate,
+          source: 'koreaexim_deal_bas_r',
+          isFallback: offset > 0,
+          meta: { offsetDays: offset, curUnit: usd.cur_unit || usd.CUR_UNIT || 'USD' },
+        };
+      }
+    } catch (err) {
+      if (offset === 7) {
+        console.warn('[exchange-rate] Korea Exim fetch failed:', err.message);
+      }
+    }
+  }
+  return null;
+}
+
+async function fetchOpenUsdKrwRate(rateDate) {
+  try {
+    const response = await fetch('https://open.er-api.com/v6/latest/USD');
+    if (!response.ok) return null;
+    const data = await response.json().catch(() => null);
+    const rate = parseUsdKrwRate(data?.rates?.KRW);
+    if (!rate) return null;
+    return {
+      rateDate,
+      sourceDate: rateDate,
+      rate,
+      source: 'open_er_api_latest_usd',
+      isFallback: true,
+      meta: { note: 'Fallback latest market rate, not Korea Exim deal_bas_r' },
+    };
+  } catch (err) {
+    console.warn('[exchange-rate] fallback fetch failed:', err.message);
+    return null;
+  }
+}
+
+async function getUsdKrwRateForDate(rateDate = kstDateString(), { refresh = false } = {}) {
+  const date = String(rateDate || kstDateString()).slice(0, 10);
+  if (!refresh) {
+    const cached = await pool.query(
+      `SELECT *
+       FROM exchange_rate_daily
+       WHERE rate_date = $1::date
+         AND base_currency = 'USD'
+         AND quote_currency = 'KRW'
+         AND rate_type = 'deal_bas_r'
+       LIMIT 1`,
+      [date]
+    );
+    if (cached.rows[0]) return cached.rows[0];
+  }
+  const fetched = await fetchKoreaEximUsdKrwRate(date) || await fetchOpenUsdKrwRate(date);
+  if (fetched) return cacheUsdKrwRate(fetched);
+  const fallbackRate = parseUsdKrwRate(process.env.DEFAULT_USD_KRW_RATE || process.env.USD_KRW_RATE || 1350);
+  return cacheUsdKrwRate({
+    rateDate: date,
+    sourceDate: date,
+    rate: fallbackRate,
+    source: 'manual_env_fallback',
+    isFallback: true,
+    meta: { note: 'Set KOREA_EXIM_API_KEY for official 매매기준율' },
+  });
+}
+
 function estimateRewriteOpenAiUsage({ model, count = 1, targetCharCount = 2200, sourceCount = 0, sectionCount = 7 }) {
   const safeCount = clampNumber(parseInt(count, 10) || 1, 1, 500);
   const safeChars = clampNumber(parseInt(targetCharCount, 10) || DEFAULT_REWRITE_SETTINGS.targetCharCount, 1200, 5000);
@@ -3446,12 +3573,18 @@ async function saveOpenAiUsage({ tenantId = 'owner', feature = 'rewrite', operat
   const promptTokens = Number(usage.prompt_tokens ?? usage.promptTokens ?? 0) || 0;
   const completionTokens = Number(usage.completion_tokens ?? usage.completionTokens ?? 0) || 0;
   const totalTokens = Number(usage.total_tokens ?? usage.totalTokens ?? promptTokens + completionTokens) || 0;
+  const exchangeRateDate = kstDateString();
+  const exchangeRate = await getUsdKrwRateForDate(exchangeRateDate);
+  const usdKrwRate = Number(exchangeRate?.rate || 0);
+  const costKrw = Number((Number(costUsd || 0) * usdKrwRate).toFixed(2));
   const { rows } = await pool.query(
     `INSERT INTO openai_usage_logs (
        tenant_id, feature, operation, model, rewrite_job_id, content_job_id,
-       prompt_tokens, completion_tokens, total_tokens, estimated_cost_usd, request_meta
+       prompt_tokens, completion_tokens, total_tokens, estimated_cost_usd,
+       exchange_rate_date, exchange_rate_source_date, usd_krw_rate, estimated_cost_krw, exchange_rate_source,
+       request_meta
      )
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::date,$12::date,$13,$14,$15,$16)
      RETURNING *`,
     [
       tenantId,
@@ -3464,7 +3597,21 @@ async function saveOpenAiUsage({ tenantId = 'owner', feature = 'rewrite', operat
       completionTokens,
       totalTokens,
       Number(costUsd || 0),
-      JSON.stringify(meta || {}),
+      exchangeRateDate,
+      exchangeRate?.source_date || exchangeRateDate,
+      usdKrwRate,
+      costKrw,
+      exchangeRate?.source || 'manual_env_fallback',
+      JSON.stringify({
+        ...meta,
+        exchangeRate: {
+          rateDate: exchangeRateDate,
+          sourceDate: exchangeRate?.source_date || exchangeRateDate,
+          usdKrwRate,
+          source: exchangeRate?.source || 'manual_env_fallback',
+          isFallback: Boolean(exchangeRate?.is_fallback),
+        },
+      }),
     ]
   );
   return rows[0];
@@ -6017,7 +6164,119 @@ router.post('/openai/estimate', async (req, res) => {
       sourceCount: req.body?.sourceCount || req.body?.source_count || 0,
       sectionCount: req.body?.sectionCount || req.body?.section_count || DEFAULT_REWRITE_SETTINGS.sectionCount,
     });
-    res.json({ ok: true, estimate: usage, pricing: openAiPricingFor(usage.model) });
+    const exchangeRate = await getUsdKrwRateForDate(kstDateString());
+    const usdKrwRate = Number(exchangeRate?.rate || 0);
+    res.json({
+      ok: true,
+      estimate: {
+        ...usage,
+        estimatedCostKrw: Number((Number(usage.estimatedCostUsd || 0) * usdKrwRate).toFixed(2)),
+        usdKrwRate,
+        exchangeRateDate: exchangeRate?.rate_date || kstDateString(),
+        exchangeRateSourceDate: exchangeRate?.source_date || exchangeRate?.rate_date || kstDateString(),
+        exchangeRateSource: exchangeRate?.source || '',
+        exchangeRateIsFallback: Boolean(exchangeRate?.is_fallback),
+      },
+      pricing: openAiPricingFor(usage.model),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/exchange-rate/usd-krw', async (req, res) => {
+  try {
+    const rateDate = normalizeOptionalDate(req.query.date)?.slice(0, 10) || kstDateString();
+    const exchangeRate = await getUsdKrwRateForDate(rateDate, { refresh: req.query.refresh === '1' || req.query.refresh === 'true' });
+    res.json({
+      ok: true,
+      rateDate: exchangeRate?.rate_date || rateDate,
+      sourceDate: exchangeRate?.source_date || rateDate,
+      usdKrwRate: Number(exchangeRate?.rate || 0),
+      rateType: 'deal_bas_r',
+      source: exchangeRate?.source || '',
+      isFallback: Boolean(exchangeRate?.is_fallback),
+      fetchedAt: exchangeRate?.fetched_at || null,
+      note: 'KOREA_EXIM_API_KEY가 있으면 한국수출입은행 매매기준율(deal_bas_r)을 우선 사용합니다.',
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/openai/usage-summary-v2', async (req, res) => {
+  try {
+    const tenantId = tenantIdFromReq(req);
+    const settings = await getOpenAiSettings(tenantId);
+    const exchangeRate = await getUsdKrwRateForDate(kstDateString());
+    const usdKrwRate = Number(exchangeRate?.rate || 0);
+    const { rows } = await pool.query(
+      `SELECT
+         COALESCE(SUM(estimated_cost_usd) FILTER (WHERE (created_at AT TIME ZONE 'Asia/Seoul')::date = (NOW() AT TIME ZONE 'Asia/Seoul')::date), 0)::float AS today_usd,
+         COALESCE(SUM(estimated_cost_usd) FILTER (WHERE created_at >= NOW() - INTERVAL '7 days'), 0)::float AS seven_days_usd,
+         COALESCE(SUM(estimated_cost_usd) FILTER (WHERE created_at >= NOW() - INTERVAL '30 days'), 0)::float AS thirty_days_usd,
+         COALESCE(SUM(estimated_cost_usd) FILTER (WHERE date_trunc('month', created_at AT TIME ZONE 'Asia/Seoul') = date_trunc('month', NOW() AT TIME ZONE 'Asia/Seoul')), 0)::float AS month_usd,
+         COALESCE(SUM(COALESCE(estimated_cost_krw, estimated_cost_usd * $2)) FILTER (WHERE (created_at AT TIME ZONE 'Asia/Seoul')::date = (NOW() AT TIME ZONE 'Asia/Seoul')::date), 0)::float AS today_krw,
+         COALESCE(SUM(COALESCE(estimated_cost_krw, estimated_cost_usd * $2)) FILTER (WHERE created_at >= NOW() - INTERVAL '7 days'), 0)::float AS seven_days_krw,
+         COALESCE(SUM(COALESCE(estimated_cost_krw, estimated_cost_usd * $2)) FILTER (WHERE created_at >= NOW() - INTERVAL '30 days'), 0)::float AS thirty_days_krw,
+         COALESCE(SUM(COALESCE(estimated_cost_krw, estimated_cost_usd * $2)) FILTER (WHERE date_trunc('month', created_at AT TIME ZONE 'Asia/Seoul') = date_trunc('month', NOW() AT TIME ZONE 'Asia/Seoul')), 0)::float AS month_krw,
+         COALESCE(SUM(prompt_tokens) FILTER (WHERE created_at >= NOW() - INTERVAL '30 days'), 0)::int AS thirty_days_prompt_tokens,
+         COALESCE(SUM(completion_tokens) FILTER (WHERE created_at >= NOW() - INTERVAL '30 days'), 0)::int AS thirty_days_completion_tokens,
+         COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '30 days')::int AS thirty_days_requests
+       FROM openai_usage_logs
+       WHERE tenant_id = $1`,
+      [tenantId, usdKrwRate]
+    );
+    const daily = await pool.query(
+      `SELECT
+         (created_at AT TIME ZONE 'Asia/Seoul')::date AS usage_date,
+         COALESCE(SUM(estimated_cost_usd), 0)::float AS cost_usd,
+         COALESCE(SUM(COALESCE(estimated_cost_krw, estimated_cost_usd * $2)), 0)::float AS cost_krw,
+         COUNT(*)::int AS request_count
+       FROM openai_usage_logs
+       WHERE tenant_id = $1
+         AND created_at >= NOW() - INTERVAL '30 days'
+       GROUP BY 1
+       ORDER BY 1 ASC`,
+      [tenantId, usdKrwRate]
+    );
+    const usage = rows[0] || {};
+    const monthlyBudgetUsd = settings.monthlyBudgetUsd;
+    const remainingBudgetUsd = Number((monthlyBudgetUsd - Number(usage.month_usd || 0)).toFixed(6));
+    const remainingBudgetKrw = Number((remainingBudgetUsd * usdKrwRate).toFixed(2));
+    res.json({
+      ok: true,
+      settings: publicOpenAiSettings(settings),
+      usage: {
+        todayUsd: Number(usage.today_usd || 0),
+        sevenDaysUsd: Number(usage.seven_days_usd || 0),
+        thirtyDaysUsd: Number(usage.thirty_days_usd || 0),
+        monthUsd: Number(usage.month_usd || 0),
+        todayKrw: Number(usage.today_krw || 0),
+        sevenDaysKrw: Number(usage.seven_days_krw || 0),
+        thirtyDaysKrw: Number(usage.thirty_days_krw || 0),
+        monthKrw: Number(usage.month_krw || 0),
+        remainingBudgetUsd,
+        remainingBudgetKrw,
+        thirtyDaysPromptTokens: usage.thirty_days_prompt_tokens || 0,
+        thirtyDaysCompletionTokens: usage.thirty_days_completion_tokens || 0,
+        thirtyDaysRequests: usage.thirty_days_requests || 0,
+      },
+      exchangeRate: {
+        rateDate: exchangeRate?.rate_date || kstDateString(),
+        sourceDate: exchangeRate?.source_date || exchangeRate?.rate_date || kstDateString(),
+        usdKrwRate,
+        rateType: 'deal_bas_r',
+        source: exchangeRate?.source || '',
+        isFallback: Boolean(exchangeRate?.is_fallback),
+      },
+      dailyCosts: daily.rows.map((row) => ({
+        date: String(row.usage_date).slice(0, 10),
+        costUsd: Number(row.cost_usd || 0),
+        costKrw: Number(row.cost_krw || 0),
+        requestCount: Number(row.request_count || 0),
+      })),
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
