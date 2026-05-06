@@ -6216,10 +6216,10 @@ router.get('/openai/usage-summary-v2', async (req, res) => {
          COALESCE(SUM(estimated_cost_usd) FILTER (WHERE created_at >= NOW() - INTERVAL '7 days'), 0)::float AS seven_days_usd,
          COALESCE(SUM(estimated_cost_usd) FILTER (WHERE created_at >= NOW() - INTERVAL '30 days'), 0)::float AS thirty_days_usd,
          COALESCE(SUM(estimated_cost_usd) FILTER (WHERE date_trunc('month', created_at AT TIME ZONE 'Asia/Seoul') = date_trunc('month', NOW() AT TIME ZONE 'Asia/Seoul')), 0)::float AS month_usd,
-         COALESCE(SUM(COALESCE(estimated_cost_krw, estimated_cost_usd * $2)) FILTER (WHERE (created_at AT TIME ZONE 'Asia/Seoul')::date = (NOW() AT TIME ZONE 'Asia/Seoul')::date), 0)::float AS today_krw,
-         COALESCE(SUM(COALESCE(estimated_cost_krw, estimated_cost_usd * $2)) FILTER (WHERE created_at >= NOW() - INTERVAL '7 days'), 0)::float AS seven_days_krw,
-         COALESCE(SUM(COALESCE(estimated_cost_krw, estimated_cost_usd * $2)) FILTER (WHERE created_at >= NOW() - INTERVAL '30 days'), 0)::float AS thirty_days_krw,
-         COALESCE(SUM(COALESCE(estimated_cost_krw, estimated_cost_usd * $2)) FILTER (WHERE date_trunc('month', created_at AT TIME ZONE 'Asia/Seoul') = date_trunc('month', NOW() AT TIME ZONE 'Asia/Seoul')), 0)::float AS month_krw,
+         COALESCE(SUM(COALESCE(NULLIF(estimated_cost_krw, 0), estimated_cost_usd * $2)) FILTER (WHERE (created_at AT TIME ZONE 'Asia/Seoul')::date = (NOW() AT TIME ZONE 'Asia/Seoul')::date), 0)::float AS today_krw,
+         COALESCE(SUM(COALESCE(NULLIF(estimated_cost_krw, 0), estimated_cost_usd * $2)) FILTER (WHERE created_at >= NOW() - INTERVAL '7 days'), 0)::float AS seven_days_krw,
+         COALESCE(SUM(COALESCE(NULLIF(estimated_cost_krw, 0), estimated_cost_usd * $2)) FILTER (WHERE created_at >= NOW() - INTERVAL '30 days'), 0)::float AS thirty_days_krw,
+         COALESCE(SUM(COALESCE(NULLIF(estimated_cost_krw, 0), estimated_cost_usd * $2)) FILTER (WHERE date_trunc('month', created_at AT TIME ZONE 'Asia/Seoul') = date_trunc('month', NOW() AT TIME ZONE 'Asia/Seoul')), 0)::float AS month_krw,
          COALESCE(SUM(prompt_tokens) FILTER (WHERE created_at >= NOW() - INTERVAL '30 days'), 0)::int AS thirty_days_prompt_tokens,
          COALESCE(SUM(completion_tokens) FILTER (WHERE created_at >= NOW() - INTERVAL '30 days'), 0)::int AS thirty_days_completion_tokens,
          COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '30 days')::int AS thirty_days_requests
@@ -6229,9 +6229,9 @@ router.get('/openai/usage-summary-v2', async (req, res) => {
     );
     const daily = await pool.query(
       `SELECT
-         (created_at AT TIME ZONE 'Asia/Seoul')::date AS usage_date,
+         to_char((created_at AT TIME ZONE 'Asia/Seoul')::date, 'YYYY-MM-DD') AS usage_date,
          COALESCE(SUM(estimated_cost_usd), 0)::float AS cost_usd,
-         COALESCE(SUM(COALESCE(estimated_cost_krw, estimated_cost_usd * $2)), 0)::float AS cost_krw,
+         COALESCE(SUM(COALESCE(NULLIF(estimated_cost_krw, 0), estimated_cost_usd * $2)), 0)::float AS cost_krw,
          COUNT(*)::int AS request_count
        FROM openai_usage_logs
        WHERE tenant_id = $1
