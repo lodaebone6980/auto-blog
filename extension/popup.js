@@ -16,7 +16,9 @@ const state = {
   selectedAccountId: '',
   jobs: [],
   selectedJobIds: [],
+  selectedQrJobIds: [],
   activeJob: null,
+  activeQrJob: null,
   images: [],
   batchRunning: false,
   abortRequested: false,
@@ -96,8 +98,10 @@ function parseJsonArray(value) {
 function normalizeEditorJob(job = {}) {
   const keyword = job.keyword || job.target_keyword || '';
   const plainText = job.plainText || job.plain_text || job.body || '';
-  const ctaUrl = job.ctaUrl || job.cta_url || '';
-  const qrTargetUrl = job.qrTargetUrl || job.qr_target_url || ctaUrl;
+  const originalCtaUrl = job.ctaUrl || job.cta_url || '';
+  const naverQrShortUrl = job.naverQrShortUrl || job.naver_qr_short_url || '';
+  const ctaUrl = (job.use_naver_qr || job.useNaverQr) && naverQrShortUrl ? naverQrShortUrl : originalCtaUrl;
+  const qrTargetUrl = job.qrTargetUrl || job.qr_target_url || originalCtaUrl || ctaUrl;
   return {
     ...job,
     keyword,
@@ -105,6 +109,9 @@ function normalizeEditorJob(job = {}) {
     plain_text: plainText,
     ctaUrl,
     cta_url: ctaUrl,
+    originalCtaUrl,
+    naverQrShortUrl,
+    naver_qr_short_url: naverQrShortUrl,
     qrTargetUrl,
     qr_target_url: qrTargetUrl,
     platform: job.platform || 'blog',
@@ -154,11 +161,13 @@ function selectTab(name) {
 }
 
 async function loadSettings() {
-  const saved = await chromePromise((done) => chrome.storage.local.get(['apiBase', 'selectedAccountId', 'selectedJobIds', 'activeJob', 'images', 'batchDelaySeconds'], done));
+  const saved = await chromePromise((done) => chrome.storage.local.get(['apiBase', 'selectedAccountId', 'selectedJobIds', 'selectedQrJobIds', 'activeJob', 'activeQrJob', 'images', 'batchDelaySeconds'], done));
   state.apiBase = saved.apiBase || DEFAULT_API;
   state.selectedAccountId = saved.selectedAccountId || '';
   state.selectedJobIds = Array.isArray(saved.selectedJobIds) ? saved.selectedJobIds.map((id) => Number(id)).filter(Boolean) : [];
+  state.selectedQrJobIds = Array.isArray(saved.selectedQrJobIds) ? saved.selectedQrJobIds.map((id) => Number(id)).filter(Boolean) : [];
   state.activeJob = saved.activeJob || null;
+  state.activeQrJob = saved.activeQrJob || null;
   state.images = saved.images || [];
   state.batchDelaySeconds = clampNumber(saved.batchDelaySeconds, 5, 600, 60);
   $('apiBase').value = state.apiBase;
@@ -426,6 +435,7 @@ function renderAccounts() {
   setText('accountHint', account ? `${account.label || account.id} · ${accountTarget(account)}` : '계정 슬롯을 선택하세요.');
   renderCategoryBox(account);
   renderJobList();
+  renderQrList();
 }
 
 function renderJob() {
@@ -527,6 +537,187 @@ function renderJobList() {
   });
 }
 
+function qrTargetForJob(job = {}) {
+  return job.qrTargetUrl || job.qr_target_url || job.originalCtaUrl || job.cta_url || job.ctaUrl || '';
+}
+
+function qrShortForJob(job = {}) {
+  return job.naverQrShortUrl || job.naver_qr_short_url || '';
+}
+
+function qrCandidateJobs() {
+  return state.jobs.filter((job) => {
+    const targetUrl = qrTargetForJob(job);
+    if (!/^https?:\/\//i.test(String(targetUrl || ''))) return false;
+    const markedNeeded = job.qr_status === 'QR 생성 필요' && job.use_naver_qr !== false && job.useNaverQr !== false;
+    const shouldUseQr = job.use_naver_qr || job.useNaverQr || markedNeeded;
+    return shouldUseQr && (!qrShortForJob(job) || job.qr_status !== 'QR 생성 완료');
+  });
+}
+
+function renderQrList() {
+  const box = $('qrJobList');
+  if (!box) return;
+  const jobs = qrCandidateJobs();
+  state.selectedQrJobIds = state.selectedQrJobIds
+    .map((id) => Number(id))
+    .filter((id) => jobs.some((job) => Number(job.id) === id));
+  chrome.storage.local.set({ selectedQrJobIds: state.selectedQrJobIds });
+  setText('selectedQrCount', `선택 ${state.selectedQrJobIds.length}개 / QR 대상 ${jobs.length}개`);
+  renderActiveQrJob();
+  if (!jobs.length) {
+    box.textContent = 'CTA 링크가 있거나 네이버 QR 사용으로 표시된 작업이 없습니다.';
+    box.classList.add('muted');
+    return;
+  }
+  box.classList.remove('muted');
+  box.innerHTML = jobs.map((job) => {
+    const checked = state.selectedQrJobIds.includes(Number(job.id)) ? 'checked' : '';
+    const shortUrl = qrShortForJob(job);
+    const meta = [
+      `#${job.id}`,
+      job.qr_status || (shortUrl ? 'QR 생성 완료' : 'QR 생성 필요'),
+      shortUrl ? `단축 ${shortUrl}` : `원본 ${qrTargetForJob(job)}`,
+    ].filter(Boolean).join(' · ');
+    return `<label class="job-choice">
+      <input type="checkbox" data-qr-job-id="${job.id}" ${checked} />
+      <span>
+        <strong>${escapeHtml(job.title || job.target_keyword || job.keyword || '제목 없음')}</strong>
+        <span>${escapeHtml(meta)}</span>
+      </span>
+    </label>`;
+  }).join('');
+  box.querySelectorAll('input[data-qr-job-id]').forEach((input) => {
+    input.addEventListener('change', async () => {
+      const id = Number(input.dataset.qrJobId);
+      state.selectedQrJobIds = input.checked
+        ? [...new Set([...state.selectedQrJobIds, id])]
+        : state.selectedQrJobIds.filter((item) => item !== id);
+      await chromePromise((done) => chrome.storage.local.set({ selectedQrJobIds: state.selectedQrJobIds }, done));
+      renderQrList();
+    });
+  });
+}
+
+function renderActiveQrJob() {
+  const box = $('qrActiveBox');
+  if (!box) return;
+  if (!state.activeQrJob) {
+    box.textContent = '진행 중인 QR 작업이 없습니다.';
+    box.classList.add('muted');
+    return;
+  }
+  const job = state.activeQrJob;
+  box.classList.remove('muted');
+  box.innerHTML = `<strong>${escapeHtml(job.title || job.keyword || 'QR 작업')}</strong>
+    <span class="muted">#${escapeHtml(job.id)} · ${escapeHtml(job.naverQrName || job.naver_qr_name || '')}</span>
+    <pre>원본 링크: ${escapeHtml(qrTargetForJob(job))}
+단축 URL: ${escapeHtml(qrShortForJob(job) || '아직 수집 전')}</pre>`;
+}
+
+async function selectAllVisibleQrJobs() {
+  state.selectedQrJobIds = qrCandidateJobs().map((job) => Number(job.id));
+  await chromePromise((done) => chrome.storage.local.set({ selectedQrJobIds: state.selectedQrJobIds }, done));
+  renderQrList();
+}
+
+async function clearSelectedQrJobs() {
+  state.selectedQrJobIds = [];
+  await chromePromise((done) => chrome.storage.local.set({ selectedQrJobIds: [] }, done));
+  renderQrList();
+}
+
+function makeQrNameForJob(job = {}) {
+  const keyword = String(job.keyword || job.target_keyword || '키워드').trim().replace(/\s+/g, '_').replace(/[^\w가-힣-]/g, '');
+  const date = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+  return `${keyword || '키워드'}_${date}_rewrite`;
+}
+
+async function sendQrMessageToTab(tabId, message, retryMs = 12000) {
+  const started = Date.now();
+  let lastResponse = null;
+  while (Date.now() - started < retryMs) {
+    const frames = await chromePromise((done) => chrome.webNavigation.getAllFrames({ tabId }, done))
+      .catch(() => [{ frameId: 0 }]);
+    for (const frame of frames || [{ frameId: 0 }]) {
+      const response = await chromePromise((done) => chrome.tabs.sendMessage(tabId, message, { frameId: frame.frameId }, done))
+        .catch((err) => ({ ok: false, error: err.message }));
+      lastResponse = response;
+      if (response?.ok) return response;
+    }
+    await delay(700);
+  }
+  return lastResponse || { ok: false, error: 'QR 페이지와 연결하지 못했습니다.' };
+}
+
+async function openSelectedQrJob() {
+  selectTab('qr');
+  if (!state.jobs.length) await loadPublishJobs();
+  const id = state.selectedQrJobIds[0];
+  if (!id) throw new Error('QR 탭에서 만들 작업을 체크해 주세요.');
+  const rawJob = qrCandidateJobs().find((job) => Number(job.id) === Number(id));
+  if (!rawJob) throw new Error(`#${id} QR 작업을 찾지 못했습니다.`);
+  const job = normalizeEditorJob(rawJob);
+  const qrName = job.naverQrName || job.naver_qr_name || makeQrNameForJob(job);
+  const targetUrl = qrTargetForJob(job);
+  if (!/^https?:\/\//i.test(targetUrl)) throw new Error('QR로 변환할 CTA 원본 링크가 없습니다.');
+
+  state.activeQrJob = { ...job, naverQrName: qrName, naver_qr_name: qrName };
+  await chromePromise((done) => chrome.storage.local.set({ activeQrJob: state.activeQrJob }, done));
+  renderActiveQrJob();
+  setText('qrStatus', '네이버 QR 페이지를 열고 링크/이름 자동 입력을 시도합니다.');
+
+  let tab = await chrome.tabs.create({ url: 'https://qr.naver.com/', active: true });
+  tab = await waitForTabComplete(tab.id, 15000);
+  const response = await sendQrMessageToTab(tab.id, {
+    type: 'NAVIWRITE_QR_PREFILL',
+    job: state.activeQrJob,
+    qrName,
+    targetUrl,
+  }, 15000);
+
+  if (response?.ok) {
+    setText('qrStatus', response.note || 'QR 정보 자동 입력을 시도했습니다. 생성 완료 후 현재 QR 결과 수집을 누르세요.');
+  } else {
+    setText('qrStatus', `QR 페이지가 열렸습니다. 자동 입력이 안 되면 URL 링크 유형에 ${targetUrl}을 넣고 생성한 뒤 결과 수집을 누르세요.`);
+  }
+}
+
+async function collectQrResult() {
+  selectTab('qr');
+  if (!state.activeQrJob?.id) throw new Error('먼저 QR 탭에서 선택 QR 만들기를 실행하세요.');
+  const tab = await getActiveTab();
+  if (!tab?.id) throw new Error('현재 탭을 찾을 수 없습니다.');
+  setText('qrStatus', '현재 네이버 QR 페이지에서 m.site.naver.com 단축 URL을 찾는 중입니다.');
+  const result = await sendQrMessageToTab(tab.id, { type: 'NAVIWRITE_QR_COLLECT' }, 10000);
+  if (!result?.ok || !result.shortUrl) {
+    throw new Error(result?.error || '현재 페이지에서 m.site.naver.com 단축 URL을 찾지 못했습니다.');
+  }
+  const saved = await api(`/rewrite-jobs/${state.activeQrJob.id}/qr`, {
+    method: 'POST',
+    body: JSON.stringify({
+      naverQrName: state.activeQrJob.naverQrName || state.activeQrJob.naver_qr_name || makeQrNameForJob(state.activeQrJob),
+      naverQrShortUrl: result.shortUrl,
+      naverQrManageUrl: result.manageUrl,
+      naverQrImageUrl: result.imageUrl,
+      qrTargetUrl: qrTargetForJob(state.activeQrJob),
+      qrStatus: 'QR 생성 완료',
+      qrAccountId: selectedAccount()?.id || null,
+    }),
+  });
+  const updated = saved.job || {};
+  state.jobs = state.jobs.map((job) => Number(job.id) === Number(updated.id) ? updated : job);
+  state.activeQrJob = normalizeEditorJob(updated);
+  state.selectedQrJobIds = state.selectedQrJobIds.filter((item) => Number(item) !== Number(updated.id));
+  await chromePromise((done) => chrome.storage.local.set({
+    activeQrJob: state.activeQrJob,
+    selectedQrJobIds: state.selectedQrJobIds,
+  }, done));
+  renderQrList();
+  renderJobList();
+  setText('qrStatus', `저장 완료: ${result.shortUrl}`);
+}
+
 async function selectAllVisibleJobs() {
   state.selectedJobIds = publishWaitingJobs().map((job) => job.id);
   await chromePromise((done) => chrome.storage.local.set({ selectedJobIds: state.selectedJobIds }, done));
@@ -553,6 +744,7 @@ async function loadPublishJobs() {
   const jobs = await api('/rewrite-jobs?limit=120');
   state.jobs = Array.isArray(jobs) ? jobs : [];
   renderJobList();
+  renderQrList();
   setStep('claim', 'done', `본문 완성 작업 ${publishWaitingJobs().length}개 확인`);
 }
 
@@ -797,6 +989,7 @@ async function init() {
   renderSteps();
   renderJob();
   renderImages();
+  renderActiveQrJob();
   await checkNaverLogin(false);
   await loadAccounts().catch((err) => setText('loginText', err.message));
   await loadPublishJobs().catch((err) => setText('loginText', err.message));
@@ -819,6 +1012,11 @@ async function init() {
   $('detectChannel').addEventListener('click', () => discoverChannel().catch((err) => setText('loginText', err.message)));
   $('runSelectedJobs').addEventListener('click', () => openJobTabAndStart().catch((err) => setText('loginText', err.message)));
   $('reloadJobs').addEventListener('click', () => loadPublishJobs().catch((err) => setText('loginText', err.message)));
+  $('reloadQrJobs').addEventListener('click', () => loadPublishJobs().catch((err) => setText('qrStatus', err.message)));
+  $('selectAllQrJobs').addEventListener('click', () => selectAllVisibleQrJobs().catch((err) => setText('qrStatus', err.message)));
+  $('clearSelectedQrJobs').addEventListener('click', () => clearSelectedQrJobs().catch((err) => setText('qrStatus', err.message)));
+  $('openSelectedQr').addEventListener('click', () => openSelectedQrJob().catch((err) => setText('qrStatus', err.message)));
+  $('collectQrResult').addEventListener('click', () => collectQrResult().catch((err) => setText('qrStatus', err.message)));
   $('selectAllJobs').addEventListener('click', () => selectAllVisibleJobs().catch((err) => setText('loginText', err.message)));
   $('clearSelectedJobs').addEventListener('click', () => clearSelectedJobs().catch((err) => setText('loginText', err.message)));
   $('batchDelaySeconds').addEventListener('change', () => saveBatchDelaySeconds().catch((err) => setText('loginText', err.message)));

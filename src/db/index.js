@@ -269,6 +269,15 @@ export async function initDB() {
         total_score REAL DEFAULT 0,
         similarity_risk REAL DEFAULT 0,
         images_json JSONB DEFAULT '[]',
+        qr_target_url TEXT,
+        naver_qr_name TEXT,
+        naver_qr_short_url TEXT,
+        naver_qr_image_url TEXT,
+        naver_qr_manage_url TEXT,
+        qr_status TEXT DEFAULT 'QR 생성 필요',
+        qr_created_at TIMESTAMPTZ,
+        qr_account_id TEXT,
+        qr_error_message TEXT,
         error_message TEXT,
         created_at TIMESTAMPTZ DEFAULT NOW(),
         updated_at TIMESTAMPTZ DEFAULT NOW()
@@ -386,6 +395,22 @@ export async function initDB() {
       ALTER TABLE rewrite_jobs ADD COLUMN IF NOT EXISTS openai_estimated_cost_usd NUMERIC(12, 6) DEFAULT 0;
       ALTER TABLE rewrite_jobs ADD COLUMN IF NOT EXISTS elapsed_ms INTEGER DEFAULT 0;
       ALTER TABLE rewrite_jobs ADD COLUMN IF NOT EXISTS variant_index INTEGER DEFAULT 0;
+      ALTER TABLE rewrite_jobs ADD COLUMN IF NOT EXISTS qr_target_url TEXT;
+      ALTER TABLE rewrite_jobs ADD COLUMN IF NOT EXISTS naver_qr_name TEXT;
+      ALTER TABLE rewrite_jobs ADD COLUMN IF NOT EXISTS naver_qr_short_url TEXT;
+      ALTER TABLE rewrite_jobs ADD COLUMN IF NOT EXISTS naver_qr_image_url TEXT;
+      ALTER TABLE rewrite_jobs ADD COLUMN IF NOT EXISTS naver_qr_manage_url TEXT;
+      ALTER TABLE rewrite_jobs ADD COLUMN IF NOT EXISTS qr_status TEXT DEFAULT 'QR 생성 필요';
+      ALTER TABLE rewrite_jobs ADD COLUMN IF NOT EXISTS qr_created_at TIMESTAMPTZ;
+      ALTER TABLE rewrite_jobs ADD COLUMN IF NOT EXISTS qr_account_id TEXT;
+      ALTER TABLE rewrite_jobs ADD COLUMN IF NOT EXISTS qr_error_message TEXT;
+      UPDATE rewrite_jobs
+      SET qr_target_url = COALESCE(qr_target_url, cta_url),
+          qr_status = CASE
+            WHEN use_naver_qr IS TRUE THEN COALESCE(qr_status, 'QR 생성 필요')
+            ELSE 'QR 미사용'
+          END
+      WHERE qr_target_url IS NULL OR (use_naver_qr IS NOT TRUE AND COALESCE(qr_status, 'QR 생성 필요') = 'QR 생성 필요');
       ALTER TABLE rss_sources ADD COLUMN IF NOT EXISTS collected_blog_id INTEGER REFERENCES collected_blogs(id) ON DELETE SET NULL;
       ALTER TABLE rss_sources ADD COLUMN IF NOT EXISTS continuous_monitor BOOLEAN DEFAULT TRUE;
 
@@ -494,9 +519,13 @@ export async function initDB() {
         aeo_score REAL DEFAULT 0,
         total_score REAL DEFAULT 0,
         naver_qr_name TEXT,
+        naver_qr_short_url TEXT,
         naver_qr_image_url TEXT,
         naver_qr_manage_url TEXT,
         qr_status TEXT DEFAULT 'QR 생성 필요',
+        qr_created_at TIMESTAMPTZ,
+        qr_account_id TEXT,
+        qr_error_message TEXT,
         generation_status TEXT DEFAULT '대기중',
         editor_status TEXT DEFAULT '검수 필요',
         sheet_row_id TEXT,
@@ -637,6 +666,10 @@ export async function initDB() {
       ALTER TABLE content_jobs ADD COLUMN IF NOT EXISTS published_at TIMESTAMPTZ;
       ALTER TABLE content_jobs ADD COLUMN IF NOT EXISTS obsidian_export_status TEXT DEFAULT '관리자전용';
       ALTER TABLE content_jobs ADD COLUMN IF NOT EXISTS runner_plan JSONB DEFAULT '{}';
+      ALTER TABLE content_jobs ADD COLUMN IF NOT EXISTS naver_qr_short_url TEXT;
+      ALTER TABLE content_jobs ADD COLUMN IF NOT EXISTS qr_created_at TIMESTAMPTZ;
+      ALTER TABLE content_jobs ADD COLUMN IF NOT EXISTS qr_account_id TEXT;
+      ALTER TABLE content_jobs ADD COLUMN IF NOT EXISTS qr_error_message TEXT;
       ALTER TABLE account_slots ADD COLUMN IF NOT EXISTS tenant_id TEXT DEFAULT 'owner';
       ALTER TABLE account_slots ADD COLUMN IF NOT EXISTS slot_id TEXT;
       ALTER TABLE account_slots ADD COLUMN IF NOT EXISTS platform TEXT DEFAULT 'blog';
@@ -697,6 +730,7 @@ export async function initDB() {
       CREATE INDEX IF NOT EXISTS idx_cafe_post_view_snapshots_post_date ON cafe_post_view_snapshots(cafe_post_id, snapshot_date DESC);
       CREATE INDEX IF NOT EXISTS idx_rewrite_jobs_created_at ON rewrite_jobs(created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_rewrite_jobs_status ON rewrite_jobs(status);
+      CREATE INDEX IF NOT EXISTS idx_rewrite_jobs_qr_status ON rewrite_jobs(qr_status);
       CREATE INDEX IF NOT EXISTS idx_rewrite_jobs_keyword ON rewrite_jobs(target_keyword);
       CREATE INDEX IF NOT EXISTS idx_rewrite_job_events_job_id ON rewrite_job_events(rewrite_job_id);
       CREATE INDEX IF NOT EXISTS idx_openai_usage_created_at ON openai_usage_logs(created_at DESC);

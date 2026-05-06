@@ -97,7 +97,10 @@ function activateBodyArea() {
 function setText(node, text) {
   node.focus();
   if ('value' in node) {
-    node.value = text;
+    const prototype = node.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    const setter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
+    if (setter) setter.call(node, text);
+    else node.value = text;
   } else {
     node.textContent = text;
   }
@@ -341,7 +344,7 @@ function escapeHtml(value) {
 }
 
 function ctaUrl(job) {
-  return job.cta_url || job.ctaUrl || job.qr_target_url || job.qrTargetUrl || job.naver_qr_manage_url || job.naverQrManageUrl || '';
+  return job.naver_qr_short_url || job.naverQrShortUrl || job.cta_url || job.ctaUrl || job.qr_target_url || job.qrTargetUrl || job.naver_qr_manage_url || job.naverQrManageUrl || '';
 }
 
 function validHyperlink(value = '') {
@@ -710,6 +713,114 @@ function selectCategoryByName(categoryName = '') {
   return false;
 }
 
+function fieldMeta(node) {
+  const safeId = node.id && window.CSS?.escape ? CSS.escape(node.id) : String(node.id || '').replace(/"/g, '\\"');
+  const label = safeId ? document.querySelector(`label[for="${safeId}"]`)?.textContent : '';
+  return [
+    node.getAttribute?.('placeholder'),
+    node.getAttribute?.('aria-label'),
+    node.getAttribute?.('title'),
+    node.getAttribute?.('name'),
+    node.getAttribute?.('id'),
+    node.getAttribute?.('data-testid'),
+    label,
+    node.closest?.('label')?.textContent,
+    node.parentElement?.textContent,
+  ].join(' ');
+}
+
+function findQrField(includePatterns, excludePatterns = []) {
+  const nodes = Array.from(document.querySelectorAll('input, textarea, [contenteditable="true"]'))
+    .filter(visible)
+    .filter((node) => !node.disabled && node.getAttribute?.('readonly') === null);
+  return nodes
+    .map((node) => {
+      const meta = fieldMeta(node);
+      const includeScore = includePatterns.reduce((score, pattern) => score + (pattern.test(meta) ? 1 : 0), 0);
+      const excluded = excludePatterns.some((pattern) => pattern.test(meta));
+      const typeBonus = node.getAttribute?.('type') === 'url' ? 2 : 0;
+      return { node, score: includeScore + typeBonus, excluded };
+    })
+    .filter((item) => item.score > 0 && !item.excluded)
+    .sort((a, b) => b.score - a.score)[0]?.node || null;
+}
+
+function clickQrNodeByText(patterns) {
+  const selectors = ['button', 'a', '[role="button"]', 'li', 'span'];
+  const node = Array.from(document.querySelectorAll(selectors.join(',')))
+    .filter(visible)
+    .find((item) => patterns.some((pattern) => pattern.test(nodeText(item))));
+  if (!node) return false;
+  node.scrollIntoView?.({ block: 'center', inline: 'center' });
+  node.click?.();
+  return true;
+}
+
+async function prefillNaverQr(message = {}) {
+  const targetUrl = message.targetUrl || message.qrTargetUrl || message.job?.qr_target_url || message.job?.cta_url || '';
+  const qrName = message.qrName || message.job?.naver_qr_name || message.job?.title || message.job?.keyword || '';
+  if (!/^https?:\/\//i.test(targetUrl)) return { ok: false, error: 'QR로 만들 원본 URL이 없습니다.' };
+
+  clickQrNodeByText([/코드\s*생성|QR\s*만들기|시작/i]);
+  await sleep(500);
+  clickQrNodeByText([/URL\s*링크|링크|URL/i]);
+  await sleep(500);
+
+  const urlField = findQrField([/url|URL|링크|주소|http/i], [/검색|관리|로그인|아이디|비밀번호/i]);
+  const nameField = findQrField([/코드.*이름|QR.*이름|제목|이름|코드명|타이틀/i], [/url|URL|링크|주소|http|검색|아이디|비밀번호/i]);
+  let filled = 0;
+  if (nameField && qrName) {
+    setText(nameField, qrName);
+    filled += 1;
+  }
+  if (urlField) {
+    setText(urlField, targetUrl);
+    filled += 1;
+  }
+  return {
+    ok: filled > 0,
+    note: filled > 0
+      ? `네이버 QR 입력칸 ${filled}개에 값을 넣었습니다. 화면에서 다음/생성을 완료한 뒤 결과 수집을 누르세요.`
+      : 'QR 생성 화면은 열었지만 입력칸을 찾지 못했습니다. URL 링크 유형을 선택한 뒤 다시 눌러보세요.',
+    filled,
+  };
+}
+
+function absoluteUrl(value = '') {
+  if (!value) return '';
+  try {
+    return new URL(value, location.href).href;
+  } catch {
+    return value;
+  }
+}
+
+function collectNaverQrResult() {
+  const chunks = [document.body?.innerText || ''];
+  document.querySelectorAll('a[href], img[src], input, textarea').forEach((node) => {
+    chunks.push(node.getAttribute?.('href') || '');
+    chunks.push(node.getAttribute?.('src') || '');
+    chunks.push(node.value || '');
+    chunks.push(node.textContent || '');
+  });
+  const text = chunks.join('\n');
+  const shortMatch = text.match(/https?:\/\/m\.site\.naver\.com\/[^\s"'<>]+/i);
+  const shortUrl = shortMatch?.[0]?.replace(/[)\].,;]+$/, '') || '';
+  const imageNode = Array.from(document.querySelectorAll('img[src]'))
+    .filter(visible)
+    .map((node) => ({ node, rect: node.getBoundingClientRect(), src: node.getAttribute('src') || '' }))
+    .filter((item) => /qr|code|qrcode/i.test(item.src) || (item.rect.width >= 120 && item.rect.height >= 120))
+    .sort((a, b) => (b.rect.width * b.rect.height) - (a.rect.width * a.rect.height))[0]?.node;
+  return {
+    ok: Boolean(shortUrl),
+    shortUrl,
+    manageUrl: location.href,
+    imageUrl: absoluteUrl(imageNode?.getAttribute?.('src') || ''),
+    pageTitle: document.title || '',
+    error: shortUrl ? '' : 'm.site.naver.com 단축 URL을 찾지 못했습니다.',
+  };
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === 'NAVIWRITE_DETECT_CHANNEL') {
     sendResponse({
@@ -739,6 +850,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       title: job.title || job.keyword || '',
       note: 'NaviWrite content script is ready.',
     });
+    return true;
+  }
+
+  if (message?.type === 'NAVIWRITE_QR_PREFILL') {
+    prefillNaverQr(message)
+      .then((result) => sendResponse(result))
+      .catch((err) => sendResponse({ ok: false, error: err.message }));
+    return true;
+  }
+
+  if (message?.type === 'NAVIWRITE_QR_COLLECT') {
+    sendResponse(collectNaverQrResult());
     return true;
   }
 

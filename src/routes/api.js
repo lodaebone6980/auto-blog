@@ -3015,7 +3015,7 @@ async function saveCollectionAnalysis(link, analysis, fetchStatus = 'server_coll
       post_view_count, post_view_source, view_count_checked_at,
       quote_blocks, repeated_terms, quote_repeated_terms, fetch_status, error_message
      )
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39)
      RETURNING *`,
     [
       link.id,
@@ -3454,8 +3454,12 @@ function normalizeJobInput(body = {}) {
     aeo_score: body.aeo_score ?? scores.aeo ?? 0,
     total_score: body.total_score ?? scores.total ?? 0,
     naver_qr_name: body.naver_qr_name || body.naverQrName || null,
+    naver_qr_short_url: body.naver_qr_short_url || body.naverQrShortUrl || body.shortUrl || body.short_url || null,
     naver_qr_image_url: body.naver_qr_image_url || body.naverQrImageUrl || null,
     naver_qr_manage_url: body.naver_qr_manage_url || body.naverQrManageUrl || null,
+    qr_created_at: normalizeOptionalDate(body.qr_created_at || body.qrCreatedAt),
+    qr_account_id: body.qr_account_id || body.qrAccountId || null,
+    qr_error_message: body.qr_error_message || body.qrErrorMessage || null,
     qr_status: JOB_STATUSES.has(qrStatus) ? qrStatus : 'QR 생성 필요',
     generation_status: JOB_STATUSES.has(generationStatus) ? generationStatus : '대기중',
     editor_status: JOB_STATUSES.has(editorStatus) ? editorStatus : '검수 필요',
@@ -3498,8 +3502,11 @@ function jobToSheetPayload(job) {
     ctaUrl: job.cta_url,
     qrTargetUrl: job.qr_target_url,
     naverQrName: job.naver_qr_name,
+    naverQrShortUrl: job.naver_qr_short_url,
     naverQrImageUrl: job.naver_qr_image_url,
     naverQrManageUrl: job.naver_qr_manage_url,
+    qrCreatedAt: job.qr_created_at,
+    qrAccountId: job.qr_account_id,
     qrStatus: job.qr_status,
     generationStatus: job.generation_status,
     editorStatus: job.editor_status,
@@ -3855,8 +3862,8 @@ async function createContentJobFromRewrite({ tenantId, rewriteJob, body = {} }) 
     category: rewriteJob.category,
     platform: rewriteJob.platform,
     contentSkillKey: rewriteJob.content_skill_key || parseRewriteSettings(rewriteJob.settings_json).contentSkillKey,
-    ctaUrl: rewriteJob.cta_url,
-    qrTargetUrl: rewriteJob.cta_url,
+    ctaUrl: rewriteJob.naver_qr_short_url || rewriteJob.cta_url,
+    qrTargetUrl: rewriteJob.qr_target_url || rewriteJob.cta_url,
     title: rewriteJob.title,
     body: rewriteJob.body,
     plainText: rewriteJob.plain_text,
@@ -3869,32 +3876,42 @@ async function createContentJobFromRewrite({ tenantId, rewriteJob, body = {} }) 
       aeo: rewriteJob.aeo_score,
       total: rewriteJob.total_score,
     },
-    qrStatus: rewriteJob.use_naver_qr ? 'QR 생성 필요' : 'QR 미사용',
+    naverQrName: rewriteJob.naver_qr_name,
+    naverQrShortUrl: rewriteJob.naver_qr_short_url,
+    naverQrImageUrl: rewriteJob.naver_qr_image_url,
+    naverQrManageUrl: rewriteJob.naver_qr_manage_url,
+    qrCreatedAt: rewriteJob.qr_created_at,
+    qrAccountId: rewriteJob.qr_account_id,
+    qrErrorMessage: rewriteJob.qr_error_message,
+    qrStatus: rewriteJob.qr_status || (rewriteJob.use_naver_qr ? 'QR 생성 필요' : 'QR 미사용'),
     generationStatus: '글생성 완료',
     publishMode: body.publishMode || body.publish_mode || 'scheduled',
     publishStatus: body.publishStatus || body.publish_status || '예약대기',
     rssUrl: body.rssUrl || body.rss_url || null,
     obsidianExportStatus: '관리자전용',
   });
-  const qrName = makeNaverQrName(input.keyword, input.campaign_name || 'rewrite');
+  const qrName = input.naver_qr_name || makeNaverQrName(input.keyword, input.campaign_name || 'rewrite');
   const { rows } = await pool.query(
     `INSERT INTO content_jobs (
        tenant_id, rewrite_job_id, keyword, category, platform, content_skill_key, cta_url, qr_target_url,
        title, body, plain_text, char_count, kw_count, image_count,
        seo_score, geo_score, aeo_score, total_score,
-       naver_qr_name, qr_status, generation_status, editor_status,
+       naver_qr_name, naver_qr_short_url, naver_qr_image_url, naver_qr_manage_url,
+       qr_status, qr_created_at, qr_account_id, qr_error_message, generation_status, editor_status,
        publish_mode, scheduled_at, publish_status, publish_account_id,
        publish_account_label, publish_account_platform, action_delay_min_seconds,
        action_delay_max_seconds, between_posts_delay_minutes, rss_url, obsidian_export_status
      )
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39)
      RETURNING *`,
     [
       input.tenant_id, input.rewrite_job_id, input.keyword, input.category, input.platform,
       input.content_skill_key, input.cta_url, input.qr_target_url, input.title, input.body, input.plain_text,
       input.char_count, input.kw_count, input.image_count, input.seo_score, input.geo_score,
-      input.aeo_score, input.total_score, qrName, input.qr_status, input.generation_status,
-      input.editor_status, input.publish_mode, input.scheduled_at, input.publish_status,
+      input.aeo_score, input.total_score, qrName, input.naver_qr_short_url, input.naver_qr_image_url,
+      input.naver_qr_manage_url, input.qr_status, input.qr_created_at, input.qr_account_id,
+      input.qr_error_message, input.generation_status, input.editor_status, input.publish_mode,
+      input.scheduled_at, input.publish_status,
       input.publish_account_id, input.publish_account_label, input.publish_account_platform,
       input.action_delay_min_seconds, input.action_delay_max_seconds, input.between_posts_delay_minutes,
       input.rss_url, input.obsidian_export_status,
@@ -6193,6 +6210,7 @@ router.post('/rewrite-jobs', async (req, res) => {
     const category = req.body?.category || 'general';
     const targetTopic = req.body?.targetTopic || req.body?.topic || '';
     const ctaUrl = req.body?.ctaUrl || req.body?.cta_url || null;
+    const qrTargetUrl = req.body?.qrTargetUrl || req.body?.qr_target_url || ctaUrl;
     const useNaverQr = Boolean(req.body?.useNaverQr || req.body?.use_naver_qr);
     const useAiImages = Boolean(req.body?.useAiImages || req.body?.use_ai_images);
     const rewriteSettings = parseRewriteSettings(req.body?.rewriteSettings || req.body?.settings || {});
@@ -6223,9 +6241,9 @@ router.post('/rewrite-jobs', async (req, res) => {
         `INSERT INTO rewrite_jobs (
           target_keyword, target_topic, platform, category, cta_url,
           use_naver_qr, use_ai_images, source_analysis_ids, settings_json, content_skill_key,
-          custom_title, status, source_kind, publish_spec
+          custom_title, status, source_kind, publish_spec, qr_target_url, naver_qr_name, qr_status
         )
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'대기중',$12,$13)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'대기중',$12,$13,$14,$15,$16)
         RETURNING *`,
         [
           spec.keyword,
@@ -6244,6 +6262,9 @@ router.post('/rewrite-jobs', async (req, res) => {
             qrOrLinkRequired: true,
             ctaUrlRequiredPerRow: true,
           })),
+          qrTargetUrl,
+          makeNaverQrName(spec.keyword, req.body?.campaignName || req.body?.campaign_name || 'rewrite'),
+          useNaverQr ? 'QR 생성 필요' : 'QR 미사용',
         ]
       );
       await addRewriteEvent(rows[0].id, 'created', '발행 생성 작업이 등록되었습니다', {
@@ -6362,6 +6383,83 @@ router.post('/rewrite-jobs/:id/mark-published', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+async function saveRewriteQrResult(req, res) {
+  try {
+    const rewrite = await pool.query('SELECT * FROM rewrite_jobs WHERE id = $1', [req.params.id]);
+    if (rewrite.rows.length === 0) return res.status(404).json({ error: 'Rewrite job not found' });
+
+    const current = rewrite.rows[0];
+    const shortUrl = req.body.naverQrShortUrl || req.body.naver_qr_short_url || req.body.shortUrl || req.body.short_url || null;
+    const manageUrl = req.body.naverQrManageUrl || req.body.naver_qr_manage_url || req.body.manageUrl || req.body.manage_url || null;
+    const imageUrl = req.body.naverQrImageUrl || req.body.naver_qr_image_url || req.body.imageUrl || req.body.image_url || null;
+    const qrName = req.body.naverQrName || req.body.naver_qr_name || current.naver_qr_name || makeNaverQrName(current.target_keyword, 'rewrite');
+    const qrTargetUrl = req.body.qrTargetUrl || req.body.qr_target_url || req.body.targetUrl || req.body.target_url || current.qr_target_url || current.cta_url || null;
+    const qrAccountId = req.body.qrAccountId || req.body.qr_account_id || null;
+    const qrErrorMessage = req.body.qrErrorMessage || req.body.qr_error_message || req.body.error || null;
+    const requestedStatus = req.body.qrStatus || req.body.qr_status;
+    const qrStatus = JOB_STATUSES.has(requestedStatus)
+      ? requestedStatus
+      : shortUrl
+        ? 'QR 생성 완료'
+        : qrErrorMessage
+          ? '오류'
+          : 'QR 생성 필요';
+    const qrCreatedAt = req.body.qrCreatedAt || req.body.qr_created_at || (shortUrl ? new Date().toISOString() : null);
+
+    const { rows } = await pool.query(
+      `UPDATE rewrite_jobs
+       SET qr_target_url = COALESCE($2, qr_target_url, cta_url),
+           naver_qr_name = COALESCE($3, naver_qr_name),
+           naver_qr_short_url = COALESCE($4, naver_qr_short_url),
+           naver_qr_manage_url = COALESCE($5, naver_qr_manage_url),
+           naver_qr_image_url = COALESCE($6, naver_qr_image_url),
+           qr_status = $7,
+           qr_created_at = CASE WHEN $4 IS NOT NULL THEN COALESCE($8::timestamptz, NOW()) ELSE qr_created_at END,
+           qr_account_id = COALESCE($9, qr_account_id),
+           qr_error_message = CASE WHEN $4 IS NOT NULL THEN NULL ELSE COALESCE($10, qr_error_message) END,
+           updated_at = NOW()
+       WHERE id = $1
+       RETURNING *`,
+      [current.id, qrTargetUrl, qrName, shortUrl, manageUrl, imageUrl, qrStatus, qrCreatedAt, qrAccountId, qrErrorMessage]
+    );
+
+    const updated = rows[0];
+    const linkedContentJobs = await pool.query(
+      `UPDATE content_jobs
+       SET cta_url = COALESCE($2, cta_url),
+           qr_target_url = COALESCE($3, qr_target_url),
+           naver_qr_name = COALESCE($4, naver_qr_name),
+           naver_qr_short_url = COALESCE($2, naver_qr_short_url),
+           naver_qr_manage_url = COALESCE($5, naver_qr_manage_url),
+           naver_qr_image_url = COALESCE($6, naver_qr_image_url),
+           qr_status = $7,
+           qr_created_at = CASE WHEN $2 IS NOT NULL THEN COALESCE($8::timestamptz, NOW()) ELSE qr_created_at END,
+           qr_account_id = COALESCE($9, qr_account_id),
+           qr_error_message = CASE WHEN $2 IS NOT NULL THEN NULL ELSE COALESCE($10, qr_error_message) END,
+           updated_at = NOW()
+       WHERE rewrite_job_id = $1
+       RETURNING id`,
+      [current.id, shortUrl, qrTargetUrl, qrName, manageUrl, imageUrl, qrStatus, qrCreatedAt, qrAccountId, qrErrorMessage]
+    );
+
+    await addRewriteEvent(current.id, shortUrl ? 'qr_short_url_saved' : 'qr_result_saved', '네이버 QR 단축 URL 정보가 저장되었습니다', {
+      shortUrl,
+      manageUrl,
+      imageUrl,
+      qrName,
+      qrTargetUrl,
+      linkedContentJobIds: linkedContentJobs.rows.map((row) => row.id),
+    });
+
+    res.json({ ok: true, job: updated, linkedContentJobs: linkedContentJobs.rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+}
+
+router.post('/rewrite-jobs/:id/qr', saveRewriteQrResult);
+router.patch('/rewrite-jobs/:id/qr', saveRewriteQrResult);
 
 router.post('/rewrite-jobs/:id/to-content-job', async (req, res) => {
   try {
@@ -7014,8 +7112,9 @@ router.post('/content-jobs', async (req, res) => {
         keyword, category, platform, source_url, cta_url, qr_target_url, tone, campaign_name,
         title, body, plain_text, char_count, kw_count, image_count,
         seo_score, geo_score, aeo_score, total_score,
-        naver_qr_name, naver_qr_image_url, naver_qr_manage_url,
-        qr_status, generation_status, editor_status, sheet_row_id, sheet_sync_status,
+        naver_qr_name, naver_qr_short_url, naver_qr_image_url, naver_qr_manage_url,
+        qr_status, qr_created_at, qr_account_id, qr_error_message,
+        generation_status, editor_status, sheet_row_id, sheet_sync_status,
         notion_url, error_message, source_analysis_id, publish_account_id,
         publish_account_label, publish_account_platform, learning_status, login_status,
         publish_mode, scheduled_at, publish_status, action_delay_min_seconds,
@@ -7027,13 +7126,14 @@ router.post('/content-jobs', async (req, res) => {
         $4,$5,$6,$7,$8,$9,$10,$11,
         $12,$13,$14,$15,$16,$17,
         $18,$19,$20,$21,
-        $22,$23,$24,
-        $25,$26,$27,$28,$29,
+        $22,$23,$24,$25,
+        $26,$27,$28,$29,
         $30,$31,$32,$33,$34,
-        $35,$36,$37,$38,
-        $39,$40,$41,
-        $42,$43,$44,
-        $45,$46,$47
+        $35,$36,$37,$38,$39,
+        $40,$41,$42,$43,
+        $44,$45,$46,
+        $47,$48,$49,
+        $50,$51
        )
        RETURNING *`,
       [
@@ -7042,8 +7142,9 @@ router.post('/content-jobs', async (req, res) => {
         job.tone, job.campaign_name, job.title, job.body, job.plain_text,
         job.char_count, job.kw_count, job.image_count,
         job.seo_score, job.geo_score, job.aeo_score, job.total_score,
-        qrName, job.naver_qr_image_url, job.naver_qr_manage_url,
-        job.qr_status, generationStatus, job.editor_status, job.sheet_row_id,
+        qrName, job.naver_qr_short_url, job.naver_qr_image_url, job.naver_qr_manage_url,
+        job.qr_status, job.qr_created_at, job.qr_account_id, job.qr_error_message,
+        generationStatus, job.editor_status, job.sheet_row_id,
         job.sheet_sync_status, job.notion_url, job.error_message, job.source_analysis_id,
         job.publish_account_id, job.publish_account_label, job.publish_account_platform,
         job.learning_status, job.login_status, job.publish_mode, job.scheduled_at,
@@ -7087,7 +7188,8 @@ router.patch('/content-jobs/:id', async (req, res) => {
       'keyword', 'category', 'platform', 'source_url', 'cta_url', 'qr_target_url', 'tone',
       'campaign_name', 'title', 'body', 'plain_text', 'char_count', 'kw_count', 'image_count',
       'seo_score', 'geo_score', 'aeo_score', 'total_score', 'naver_qr_name',
-      'naver_qr_image_url', 'naver_qr_manage_url', 'qr_status', 'generation_status',
+      'naver_qr_short_url', 'naver_qr_image_url', 'naver_qr_manage_url',
+      'qr_status', 'qr_created_at', 'qr_account_id', 'qr_error_message', 'generation_status',
       'editor_status', 'sheet_row_id', 'sheet_sync_status', 'notion_url', 'error_message',
       'source_analysis_id', 'publish_account_id', 'publish_account_label',
       'publish_account_platform', 'learning_status', 'login_status', 'publish_mode',
@@ -7110,9 +7212,13 @@ router.patch('/content-jobs/:id', async (req, res) => {
       aeo_score: ['aeo_score', 'aeoScore', 'scores'],
       total_score: ['total_score', 'totalScore', 'scores'],
       naver_qr_name: ['naver_qr_name', 'naverQrName'],
+      naver_qr_short_url: ['naver_qr_short_url', 'naverQrShortUrl', 'shortUrl'],
       naver_qr_image_url: ['naver_qr_image_url', 'naverQrImageUrl'],
       naver_qr_manage_url: ['naver_qr_manage_url', 'naverQrManageUrl'],
       qr_status: ['qr_status', 'qrStatus'],
+      qr_created_at: ['qr_created_at', 'qrCreatedAt'],
+      qr_account_id: ['qr_account_id', 'qrAccountId'],
+      qr_error_message: ['qr_error_message', 'qrErrorMessage'],
       generation_status: ['generation_status', 'generationStatus'],
       editor_status: ['editor_status', 'editorStatus'],
       sheet_row_id: ['sheet_row_id', 'sheetRowId'],
@@ -7177,22 +7283,43 @@ router.post('/content-jobs/:id/qr', async (req, res) => {
     const currentJob = await loadTenantContentJob(req, req.params.id);
     if (!currentJob) return res.status(404).json({ error: 'Content job not found' });
 
-    const { naver_qr_image_url, naver_qr_manage_url, qr_status } = normalizeJobInput({
+    const { naver_qr_short_url, naver_qr_image_url, naver_qr_manage_url, qr_status, qr_created_at, qr_account_id, qr_error_message } = normalizeJobInput({
       ...req.body,
-      qr_status: req.body.qr_status || 'QR 생성 완료',
+      qr_status: req.body.qr_status || req.body.qrStatus || (req.body.naverQrShortUrl || req.body.naver_qr_short_url || req.body.shortUrl ? 'QR 생성 완료' : 'QR 생성 필요'),
     });
 
     const { rows } = await pool.query(
       `UPDATE content_jobs
-       SET naver_qr_image_url = COALESCE($2, naver_qr_image_url),
-           naver_qr_manage_url = COALESCE($3, naver_qr_manage_url),
-           qr_status = $4,
+       SET naver_qr_short_url = COALESCE($2, naver_qr_short_url),
+           cta_url = COALESCE($2, cta_url),
+           naver_qr_image_url = COALESCE($3, naver_qr_image_url),
+           naver_qr_manage_url = COALESCE($4, naver_qr_manage_url),
+           qr_status = $5,
+           qr_created_at = CASE WHEN $2 IS NOT NULL THEN COALESCE($6::timestamptz, NOW()) ELSE qr_created_at END,
+           qr_account_id = COALESCE($7, qr_account_id),
+           qr_error_message = CASE WHEN $2 IS NOT NULL THEN NULL ELSE COALESCE($8, qr_error_message) END,
            updated_at = NOW()
        WHERE id = $1
        RETURNING *`,
-      [currentJob.id, naver_qr_image_url, naver_qr_manage_url, qr_status]
+      [currentJob.id, naver_qr_short_url, naver_qr_image_url, naver_qr_manage_url, qr_status, qr_created_at, qr_account_id, qr_error_message]
     );
     if (rows.length === 0) return res.status(404).json({ error: 'Content job not found' });
+
+    if (currentJob.rewrite_job_id) {
+      await pool.query(
+        `UPDATE rewrite_jobs
+         SET naver_qr_short_url = COALESCE($2, naver_qr_short_url),
+             naver_qr_image_url = COALESCE($3, naver_qr_image_url),
+             naver_qr_manage_url = COALESCE($4, naver_qr_manage_url),
+             qr_status = $5,
+             qr_created_at = CASE WHEN $2 IS NOT NULL THEN COALESCE($6::timestamptz, NOW()) ELSE qr_created_at END,
+             qr_account_id = COALESCE($7, qr_account_id),
+             qr_error_message = CASE WHEN $2 IS NOT NULL THEN NULL ELSE COALESCE($8, qr_error_message) END,
+             updated_at = NOW()
+         WHERE id = $1`,
+        [currentJob.rewrite_job_id, naver_qr_short_url, naver_qr_image_url, naver_qr_manage_url, qr_status, qr_created_at, qr_account_id, qr_error_message]
+      );
+    }
 
     await addJobEvent(rows[0].id, 'qr_saved', '네이버 QR 정보가 저장되었습니다', req.body);
     const sheetSync = req.body.syncSheet === false ? null : await syncJobToGoogleSheet(rows[0]);

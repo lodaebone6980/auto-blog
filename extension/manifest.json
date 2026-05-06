@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "NaviWrite 자동발행",
-  "version": "1.3.6",
+  "version": "1.3.7",
   "description": "NaviWrite 자동발행 작업과 네이버 작성 화면을 연결합니다.",
   "permissions": [
     "activeTab",
@@ -36,6 +36,8 @@
     {
       "matches": [
         "https://blog.naver.com/*",
+        "https://qr.naver.com/*",
+        "https://m.site.naver.com/*",
         "https://cafe.naver.com/*",
         "https://contents.premium.naver.com/*",
         "https://brunch.co.kr/*"

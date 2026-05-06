@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 
 const API = '/api';
-const EXTENSION_ZIP_PATH = '/downloads/naviwrite-extension.zip?v=1.3.6';
+const EXTENSION_ZIP_PATH = '/downloads/naviwrite-extension.zip?v=1.3.7';
 const RUNNER_ZIP_PATH = '/downloads/naviwrite-runner.zip';
 
 const COLORS = {
@@ -964,6 +964,7 @@ function ContentJobRow({ job, onRefresh }) {
         <span>SEO {Number(job.seo_score || 0).toFixed(1)}</span>
         <span>GEO {Number(job.geo_score || 0).toFixed(1)}</span>
         <span>AEO {Number(job.aeo_score || 0).toFixed(1)}</span>
+        {job.naver_qr_short_url && <span style={{ wordBreak: 'break-all', color: COLORS.success, fontWeight: 700 }}>단축 URL {job.naver_qr_short_url}</span>}
         {job.qr_target_url && <span style={{ wordBreak: 'break-all' }}>QR 링크 {job.qr_target_url}</span>}
       </div>
     </div>
@@ -3784,6 +3785,8 @@ function RewritePanel() {
                       </td>
                       <td style={{ padding: '12px', minWidth: 150, color: COLORS.textSecondary }}>
                         <p>{job.use_naver_qr ? '네이버 QR 사용' : '링크만 사용'}</p>
+                        {job.naver_qr_short_url && <p style={{ marginTop: 4, fontSize: 10, color: COLORS.success, fontWeight: 850, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 160 }}>{job.naver_qr_short_url}</p>}
+                        {job.use_naver_qr && !job.naver_qr_short_url && <p style={{ marginTop: 4, fontSize: 10, color: COLORS.warning, fontWeight: 850 }}>{job.qr_status || 'QR 생성 필요'}</p>}
                         <p style={{ marginTop: 4, fontSize: 10, color: COLORS.textMuted, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 160 }}>{job.cta_url || 'CTA 링크 미입력'}</p>
                       </td>
                       <td style={{ padding: '12px', minWidth: 230 }}>
@@ -4152,7 +4155,7 @@ function OperationsSettingsPanelLegacy() {
   });
   const [runnerStatus, setRunnerStatus] = useState({ state: 'idle', message: '' });
   const [accountForm, setAccountForm] = useState({ platform: 'blog', label: '', memo: '', usernameHint: '' });
-  const [qrForm, setQrForm] = useState({ label: '', naverIdHint: '', dailyLimit: 100 });
+  const [qrForm, setQrForm] = useState({ label: '', naverIdHint: '', dailyLimit: 10 });
   const [vpnForm, setVpnForm] = useState({ label: '', provider: 'nordvpn', target: '', mode: '수동 승인' });
 
   const saveSettings = (next) => {
@@ -4288,7 +4291,7 @@ function OperationsSettingsPanelLegacy() {
         status: '사용가능',
       }],
     });
-    setQrForm({ label: '', naverIdHint: '', dailyLimit: 100 });
+    setQrForm({ label: '', naverIdHint: '', dailyLimit: 10 });
   };
 
   const addVpn = () => {
@@ -4545,7 +4548,7 @@ function OperationsSettingsPanel() {
   });
   const [runnerStatus, setRunnerStatus] = useState({ state: 'idle', message: '' });
   const [accountForm, setAccountForm] = useState({ platform: 'blog', label: '', memo: '', usernameHint: '', password: '' });
-  const [qrForm, setQrForm] = useState({ label: '', naverIdHint: '', dailyLimit: 100 });
+  const [qrForm, setQrForm] = useState({ label: '', naverIdHint: '', dailyLimit: 10 });
   const [vpnForm, setVpnForm] = useState({ label: '', provider: 'nordvpn', target: '', mode: '수동 확인' });
   const [credentialDrafts, setCredentialDrafts] = useState({});
   const [openAiForm, setOpenAiForm] = useState({ apiKey: '', model: 'gpt-5-mini', monthlyBudgetUsd: 20, hasApiKey: false, keySource: 'missing' });
@@ -4990,7 +4993,7 @@ function OperationsSettingsPanel() {
         status: '사용가능',
       }],
     });
-    setQrForm({ label: '', naverIdHint: '', dailyLimit: 100 });
+    setQrForm({ label: '', naverIdHint: '', dailyLimit: 10 });
   };
 
   const addVpn = () => {
