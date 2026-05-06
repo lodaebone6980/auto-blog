@@ -6246,6 +6246,7 @@ router.get('/openai/usage-summary-v2', async (req, res) => {
     const remainingBudgetKrw = Number((remainingBudgetUsd * usdKrwRate).toFixed(2));
     res.json({
       ok: true,
+      summaryVersion: 'krw-nullif-2026-05-06',
       settings: publicOpenAiSettings(settings),
       usage: {
         todayUsd: Number(usage.today_usd || 0),
