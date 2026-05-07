@@ -28,8 +28,51 @@ function findTitleTarget() {
   return null;
 }
 
+function findTitleTargetV2() {
+  const selectors = [
+    'textarea[placeholder*="제목"]',
+    'input[placeholder*="제목"]',
+    '[contenteditable="true"][aria-label*="제목"]',
+    '[contenteditable="true"][data-placeholder*="제목"]',
+    '[contenteditable="true"][title*="제목"]',
+    '[contenteditable="true"][data-a11y-title*="제목"]',
+    '.se-title-text [contenteditable="true"]',
+    '.se-title [contenteditable="true"]',
+    '.se-title-text .se-text-paragraph',
+    '.se-documentTitle [contenteditable="true"]',
+  ];
+  for (const selector of selectors) {
+    const node = Array.from(document.querySelectorAll(selector)).find(visible);
+    if (node) return editableRoot(node) || node;
+  }
+
+  const original = findTitleTarget();
+  if (original) return editableRoot(original) || original;
+
+  const candidates = Array.from(document.querySelectorAll('textarea,input,[contenteditable="true"],.se-text-paragraph'))
+    .filter(visible)
+    .map((node) => {
+      const rect = node.getBoundingClientRect();
+      const meta = [
+        node.getAttribute?.('placeholder'),
+        node.getAttribute?.('aria-label'),
+        node.getAttribute?.('data-placeholder'),
+        node.getAttribute?.('data-a11y-title'),
+        node.getAttribute?.('title'),
+        node.className,
+        node.closest?.('[class]')?.className,
+      ].join(' ');
+      const titleHint = /제목|title|documentTitle|se-title/i.test(meta) ? 5000 : 0;
+      const topBonus = Math.max(0, 1200 - Math.abs(rect.top - 140));
+      const sizePenalty = rect.height > 180 ? 900 : 0;
+      return { node: editableRoot(node) || node, score: titleHint + topBonus + rect.width - sizePenalty };
+    })
+    .sort((a, b) => b.score - a.score);
+  return candidates[0]?.node || null;
+}
+
 function findBodyTarget() {
-  const titleTarget = findTitleTarget();
+  const titleTarget = findTitleTargetV2();
   const titleBottom = titleTarget?.getBoundingClientRect?.().bottom || 0;
   const isTitleLike = (node) => {
     if (!node) return false;
@@ -274,6 +317,41 @@ async function clickNode(node, waitMs = 160) {
   return true;
 }
 
+async function dismissResumeDraftDialog() {
+  const dialogSelectors = [
+    '[role="dialog"]',
+    '.se-popup',
+    '.se-dialog',
+    '.se-layer',
+    '.layer',
+    '.modal',
+    '.ly_wrap',
+    'body',
+  ];
+  for (let attempt = 0; attempt < 24; attempt += 1) {
+    const dialog = Array.from(document.querySelectorAll(dialogSelectors.join(',')))
+      .filter(visible)
+      .find((node) => /작성 중인 글|이어서 작성|작성하시겠습니까|작성중인 글/.test(node.textContent || ''));
+    if (dialog) {
+      const cancel = Array.from(dialog.querySelectorAll('button, a, [role="button"], input[type="button"]'))
+        .filter(visible)
+        .find((node) => /취소|새로|아니오|cancel/i.test(nodeText(node)));
+      if (cancel) {
+        await clickNode(cancel, 700);
+        return true;
+      }
+      const buttons = Array.from(dialog.querySelectorAll('button, a, [role="button"], input[type="button"]'))
+        .filter(visible);
+      if (buttons[0]) {
+        await clickNode(buttons[0], 700);
+        return true;
+      }
+    }
+    await sleep(150);
+  }
+  return false;
+}
+
 async function applyNaverQuote2() {
   const clickableSelectors = ['button', '[role="button"]', 'a', 'li', 'span'];
   const quote2 = findVisibleNode(clickableSelectors, (text) =>
@@ -311,22 +389,144 @@ function pasteHtmlAtCaret(html, fallbackText = '') {
   return Boolean(document.execCommand?.('insertHTML', false, html));
 }
 
+function safeImageFilename(value = 'naviwrite-image') {
+  return String(value || 'naviwrite-image')
+    .replace(/[\\/:*?"<>|]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 60) || 'naviwrite-image';
+}
+
+function dataUrlToBlob(dataUrl = '') {
+  const match = /^data:([^;,]+)?(;base64)?,(.*)$/i.exec(dataUrl);
+  if (!match) return null;
+  const mime = match[1] || 'application/octet-stream';
+  const isBase64 = Boolean(match[2]);
+  const payload = match[3] || '';
+  const raw = isBase64 ? atob(payload) : decodeURIComponent(payload);
+  const bytes = new Uint8Array(raw.length);
+  for (let index = 0; index < raw.length; index += 1) bytes[index] = raw.charCodeAt(index);
+  return new Blob([bytes], { type: mime });
+}
+
+function loadImageElement(src) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error('이미지를 PNG로 변환하지 못했습니다.'));
+    image.src = src;
+  });
+}
+
+async function blobToCenteredPng(blob) {
+  const objectUrl = URL.createObjectURL(blob);
+  try {
+    const source = await loadImageElement(objectUrl);
+    const sourceWidth = source.naturalWidth || source.width || 500;
+    const sourceHeight = source.naturalHeight || source.height || 500;
+    const canvas = document.createElement('canvas');
+    canvas.width = 500;
+    canvas.height = 500;
+    const context = canvas.getContext('2d');
+    context.fillStyle = '#ffffff';
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    const scale = Math.min(canvas.width / sourceWidth, canvas.height / sourceHeight);
+    const drawWidth = Math.round(sourceWidth * scale);
+    const drawHeight = Math.round(sourceHeight * scale);
+    const x = Math.round((canvas.width - drawWidth) / 2);
+    const y = Math.round((canvas.height - drawHeight) / 2);
+    context.drawImage(source, x, y, drawWidth, drawHeight);
+    return await new Promise((resolve) => canvas.toBlob(resolve, 'image/png', 0.95));
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+}
+
+async function imageUrlToPngBlob(url = '') {
+  let blob = null;
+  if (/^data:image\//i.test(url)) {
+    blob = dataUrlToBlob(url);
+  } else if (/^https?:\/\//i.test(url)) {
+    const response = await fetch(url, { credentials: 'omit', cache: 'no-store' });
+    if (!response.ok) throw new Error(`이미지 다운로드 실패: ${response.status}`);
+    blob = await response.blob();
+  }
+  if (!blob || !/^image\//i.test(blob.type || '')) return null;
+  return await blobToCenteredPng(blob);
+}
+
+function editorImageCount() {
+  return document.querySelectorAll('.se-component-image, .se-module-image, img[src]').length;
+}
+
+async function pasteImageFileAtCaret(node, blob, label) {
+  const target = editableRoot(node);
+  const beforeCount = editorImageCount();
+  placeCaretAtEnd(target);
+  const file = new File([blob], `${safeImageFilename(label)}.png`, { type: 'image/png' });
+  const pasteData = new DataTransfer();
+  pasteData.items.add(file);
+  pasteData.setData('text/plain', `[이미지] ${label}`);
+  const pasteEvent = new ClipboardEvent('paste', {
+    clipboardData: pasteData,
+    bubbles: true,
+    cancelable: true,
+  });
+  const pasteAccepted = !target.dispatchEvent(pasteEvent);
+  emitInput(target);
+  await sleep(1100);
+  if (pasteAccepted || editorImageCount() > beforeCount) return true;
+
+  const rect = target.getBoundingClientRect();
+  const dropData = new DataTransfer();
+  dropData.items.add(file);
+  const dropEvent = new DragEvent('drop', {
+    dataTransfer: dropData,
+    bubbles: true,
+    cancelable: true,
+    clientX: Math.round(rect.left + Math.min(rect.width / 2, 260)),
+    clientY: Math.round(rect.top + Math.min(rect.height / 2, 120)),
+  });
+  const dropAccepted = !target.dispatchEvent(dropEvent);
+  emitInput(target);
+  await sleep(1300);
+  return dropAccepted || editorImageCount() > beforeCount;
+}
+
 async function insertImageAtCaret(node, image, index) {
   const url = imageUrl(image);
   if (!url) return false;
   ensureTypingNotStopped();
-  placeCaretAtEnd(editableRoot(node));
+  const target = editableRoot(node);
+  placeCaretAtEnd(target);
   const label = imageLabel(image, index);
   const link = image.ctaLink || '';
+  try {
+    const pngBlob = await imageUrlToPngBlob(url);
+    if (pngBlob) {
+      const insertedAsFile = await pasteImageFileAtCaret(target, pngBlob, label);
+      if (insertedAsFile) {
+        await pressEnter(target, 1);
+        return true;
+      }
+    }
+  } catch (err) {
+    console.warn('NaviWrite image conversion failed', err);
+  }
+  if (/^data:image\//i.test(url)) {
+    await typeTextLikeHuman(target, `[이미지: ${label}]`, { chunkSize: 3, minDelay: 8, maxDelay: 18 });
+    await pressEnter(target, 1);
+    return false;
+  }
   const imageHtml = `<img src="${escapeHtml(url)}" alt="${escapeHtml(label)}" style="display:block;width:500px;max-width:100%;height:auto;margin:0 auto;" />`;
   const linkedImageHtml = link
     ? `<a href="${escapeHtml(link)}" target="_blank" rel="noopener noreferrer">${imageHtml}</a>`
     : imageHtml;
   const html = `<p style="text-align:center;margin:16px 0;">${linkedImageHtml}</p>`;
   const inserted = pasteHtmlAtCaret(html, link ? `[${label}] ${link}` : `[${label}]`);
-  emitInput(editableRoot(node));
+  emitInput(target);
   await sleep(180);
-  await pressEnter(node, 1);
+  await pressEnter(target, 1);
   return inserted;
 }
 
@@ -567,9 +767,11 @@ async function typeBodySegments(node, job, images = []) {
 
 async function fillJobLikeTyping(job, images = []) {
   typingStopRequested = false;
+  await dismissResumeDraftDialog();
+  await sleep(220);
   const title = job.title || job.keyword || '';
   const body = plainBody(job);
-  const titleTarget = editableRoot(findTitleTarget());
+  const titleTarget = editableRoot(findTitleTargetV2());
   let bodyTarget = editableRoot(findBodyTarget());
   if (!bodyTarget && body) {
     activateBodyArea();
@@ -584,7 +786,7 @@ async function fillJobLikeTyping(job, images = []) {
     throw new Error('제목 영역은 찾았지만 본문 입력 영역을 찾지 못했습니다. 본문 영역을 한 번 클릭한 뒤 다시 삽입하세요.');
   }
 
-  const categorySelected = selectCategoryByName(job.category || job.category_guess || job.target_category || '');
+  let categorySelected = false;
   if (titleTarget && title) {
     clearEditable(titleTarget);
     await typeTextLikeHuman(titleTarget, title, { chunkSize: 4, minDelay: 12, maxDelay: 28 });
@@ -595,6 +797,7 @@ async function fillJobLikeTyping(job, images = []) {
     bodyTarget.click?.();
     placeCaretAtEnd(bodyTarget);
     const result = await typeBodySegments(bodyTarget, job, images);
+    categorySelected = selectCategoryByName(job.category || job.category_guess || job.target_category || '');
     return {
       ok: true,
       note: `제목/본문 타이핑 완료 · 인용구 ${result.quoteCount}개 · 이미지 ${result.imageCount}장${categorySelected ? ' · 카테고리 선택 시도 완료' : ''}`,
