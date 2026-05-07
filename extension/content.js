@@ -108,13 +108,34 @@ function findTitlePlaceholder() {
     .find((node) => /\uC81C\uBAA9/.test(node.textContent || node.getAttribute?.('placeholder') || node.getAttribute?.('aria-label') || '')) || null;
 }
 
+function findTitleArea() {
+  const target = findTitleTargetV2();
+  if (target) return target.closest?.('.se-title, .se-title-text, .se-documentTitle, [class*="title"], [class*="Title"]') || target;
+  return findTitlePlaceholder();
+}
+
+function titleTextPresent(title) {
+  const wanted = String(title || '').trim();
+  if (!wanted) return true;
+  const area = findTitleArea();
+  const chunks = [];
+  if (area) {
+    chunks.push(area.textContent || '');
+    chunks.push(area.value || '');
+    area.querySelectorAll?.('input, textarea, [contenteditable="true"]').forEach((node) => {
+      chunks.push(node.value || node.textContent || '');
+    });
+  }
+  return chunks.some((chunk) => String(chunk || '').includes(wanted));
+}
+
 async function focusTitleTarget() {
   let target = editableRoot(findTitleTargetV2());
   if (target && visible(target)) return target;
   const placeholder = findTitlePlaceholder();
   if (placeholder) {
     await clickNode(placeholder, 250);
-    target = editableRoot(document.activeElement) || selectionEditable();
+    target = editableRoot(document.activeElement) || selectionEditable({ allowTitle: true });
     if (target && visible(target)) return target;
   }
   return null;
@@ -205,27 +226,51 @@ function setText(node, text) {
   emitInput(node);
 }
 
+async function selectAllAndDelete(node) {
+  const target = editableRoot(node);
+  if (!target) return;
+  target.focus?.();
+  target.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', code: 'KeyA', ctrlKey: true, bubbles: true }));
+  document.execCommand?.('selectAll', false);
+  target.dispatchEvent(new KeyboardEvent('keyup', { key: 'a', code: 'KeyA', ctrlKey: true, bubbles: true }));
+  await sleep(40);
+  target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Backspace', code: 'Backspace', bubbles: true }));
+  document.execCommand?.('delete', false);
+  target.dispatchEvent(new KeyboardEvent('keyup', { key: 'Backspace', code: 'Backspace', bubbles: true }));
+  emitInput(target);
+}
+
 function currentTextValue(node) {
   return String(('value' in node ? node.value : node.textContent) || '');
 }
 
 async function setTitleText(node, text) {
   const target = editableRoot(node);
-  clearEditable(target);
-  setText(target, text);
-  target.dispatchEvent(new InputEvent('input', {
-    bubbles: true,
-    cancelable: false,
-    inputType: 'insertText',
-    data: text,
-  }));
+  await selectAllAndDelete(target);
+  await typeTextLikeHuman(target, text, { chunkSize: 1, minDelay: 10, maxDelay: 24 });
   await sleep(180);
-  if (!currentTextValue(target).includes(text)) {
-    clearEditable(target);
-    await typeTextLikeHuman(target, text, { chunkSize: 4, minDelay: 12, maxDelay: 28 });
-  }
   emitInput(target);
-  return currentTextValue(target).includes(text);
+  return currentTextValue(target).includes(text) || titleTextPresent(text);
+}
+
+async function typeTitleText(title) {
+  const area = findTitleArea();
+  if (area) await clickNode(area, 250);
+  let target = editableRoot(document.activeElement)
+    || editableRoot(findTitleTargetV2())
+    || selectionEditable({ allowTitle: true });
+  if (!target && area) target = editableRoot(area);
+  if (!target) return false;
+  await setTitleText(target, title);
+  if (titleTextPresent(title)) return true;
+  await clickNode(area || target, 250);
+  target = editableRoot(document.activeElement)
+    || selectionEditable({ allowTitle: true })
+    || editableRoot(target);
+  if (!target) return false;
+  await typeTextLikeHuman(target, title, { chunkSize: 1, minDelay: 10, maxDelay: 24 });
+  await sleep(180);
+  return titleTextPresent(title);
 }
 
 function setRichText(node, html, fallbackText) {
@@ -292,14 +337,16 @@ function isTitleEditable(node) {
     || Boolean(node.closest?.('.se-title, .se-title-text, .se-documentTitle'));
 }
 
-function selectionEditable() {
+function selectionEditable(options = {}) {
   const selection = window.getSelection?.();
   if (!selection?.rangeCount) return null;
   const raw = selection.anchorNode?.nodeType === Node.ELEMENT_NODE
     ? selection.anchorNode
     : selection.anchorNode?.parentElement;
   const editable = editableRoot(raw);
-  return editable && visible(editable) && !isTitleEditable(editable) ? editable : null;
+  if (!editable || !visible(editable)) return null;
+  if (!options.allowTitle && isTitleEditable(editable)) return null;
+  return editable;
 }
 
 function activeEditable() {
@@ -326,6 +373,26 @@ function lastEmptyBodyEditable() {
         || /\uB0B4\uC6A9\uC744?\s*\uC785\uB825|\uB0B4\uC6A9\uC744?\s*\uC785\uB825\uD558\uC138\uC694/.test(text);
     })
     .sort((a, b) => b.getBoundingClientRect().top - a.getBoundingClientRect().top)[0] || null;
+}
+
+function bodyTypingTarget(preferred) {
+  const selected = selectionEditable();
+  if (selected && !isPlaceholderOnly(selected)) return selected;
+  return lastEmptyBodyEditable()
+    || selected
+    || activeEditable()
+    || editableRoot(preferred)
+    || editableRoot(findBodyTarget());
+}
+
+async function prepareBodyTypingTarget(preferred, { placeAtEnd = true } = {}) {
+  const target = bodyTypingTarget(preferred);
+  if (!target) return null;
+  target.scrollIntoView?.({ block: 'center', inline: 'center' });
+  await clickNode(target, 80);
+  if (isPlaceholderOnly(target)) clearEditable(target);
+  if (placeAtEnd) placeCaretAtEnd(target);
+  return target;
 }
 
 function isPlaceholderOnly(node) {
@@ -524,6 +591,29 @@ async function dismissResumeDraftDialog() {
     '.se-popup-container',
     '.se-dialog-container',
   ];
+  const isDraftLayerVisible = () => Array.from(document.querySelectorAll(`${popupRootSelector}, ${dialogSelectors.join(',')}`))
+    .filter(visible)
+    .some((node) => draftPattern.test(node.textContent || ''));
+  const forceRemoveDraftLayer = () => {
+    let removed = false;
+    Array.from(document.querySelectorAll(`${popupRootSelector}, .se-popup-dim, .se-dim, .dimmed, .se-popup-dim-white`))
+      .filter((node) => draftPattern.test(node.textContent || '') || /dim|popup/i.test(String(node.className || '')))
+      .forEach((node) => {
+        node.remove?.();
+        removed = true;
+      });
+    document.body?.removeAttribute?.('aria-hidden');
+    document.body?.style?.removeProperty?.('overflow');
+    return removed;
+  };
+  const clickDraftCancel = async (node, waitMs = 700) => {
+    await clickNode(node, waitMs);
+    for (let i = 0; i < 8; i += 1) {
+      if (!isDraftLayerVisible()) return true;
+      await sleep(120);
+    }
+    return forceRemoveDraftLayer();
+  };
   for (let attempt = 0; attempt < 30; attempt += 1) {
     const explicitCancel = Array.from(document.querySelectorAll([
       'button.se-popup-button-cancel',
@@ -538,8 +628,7 @@ async function dismissResumeDraftDialog() {
         return cancelPattern.test(nodeText(node)) && draftPattern.test(text);
       });
     if (explicitCancel) {
-      await clickNode(explicitCancel, 900);
-      return true;
+      return clickDraftCancel(explicitCancel, 900);
     }
 
     const directCancel = Array.from(document.querySelectorAll('button, a, [role="button"], input[type="button"]'))
@@ -550,8 +639,7 @@ async function dismissResumeDraftDialog() {
         return cancelPattern.test(nodeText(node)) && draftPattern.test(nearby);
       });
     if (directCancel) {
-      await clickNode(directCancel, 700);
-      return true;
+      return clickDraftCancel(directCancel, 700);
     }
 
     const dialog = Array.from(document.querySelectorAll(dialogSelectors.join(',')))
@@ -569,8 +657,7 @@ async function dismissResumeDraftDialog() {
         .sort((a, b) => buttonCenterX(a) - buttonCenterX(b));
       const cancel = buttons.find((node) => cancelPattern.test(nodeText(node))) || buttons[0];
       if (cancel) {
-        await clickNode(cancel, 700);
-        return true;
+        return clickDraftCancel(cancel, 700);
       }
     }
     await sleep(150);
@@ -989,6 +1076,20 @@ function isImagePlaceholder(line) {
   return /^\[이미지\s*\d*/.test(line) || /^\[이미지\]/.test(line);
 }
 
+function isImagePlaceholderV2(line = '') {
+  return /^\s*\[?\s*(?:\uC774\uBBF8\uC9C0|image|img)\s*\]?\s*(?:\uC774\uBBF8\uC9C0\s*)?\d*\s*[:：-]?\s*$/i.test(line)
+    || isImagePlaceholder(line);
+}
+
+function stripInlinePlaceholders(line = '') {
+  return String(line || '')
+    .replace(/\[\s*(?:\uC774\uBBF8\uC9C0|image|img)\s*\]\s*(?:\uC774\uBBF8\uC9C0\s*)?\d*/gi, '')
+    .replace(/(?:^|\s)\uC774\uBBF8\uC9C0\s*\d+(?=\s|$)/g, ' ')
+    .replace(/\[?대?吏\s*\d*/g, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
 function isQrPlaceholder(line) {
   return /^\[네이버\s*QR\s*삽입/.test(line);
 }
@@ -1013,10 +1114,10 @@ function cleanBodyLines(job) {
   const title = String(job.title || job.keyword || '').trim();
   return plainBody(job)
     .split(/\n+/)
-    .map((line) => line.trim())
+    .map((line) => stripInlinePlaceholders(line.trim()))
     .filter(Boolean)
     .filter((line, index) => !(index === 0 && title && line === title))
-    .filter((line) => !isImagePlaceholder(line));
+    .filter((line) => !isImagePlaceholderV2(line));
 }
 
 function buildTypingSegments(job, images = []) {
@@ -1087,7 +1188,7 @@ function buildPublishingSegments(job, images = []) {
       return;
     }
     if (isQuoteLine(line)) {
-      segments.push({ type: 'quote', text: cleanQuoteLine(line) });
+      segments.push({ type: 'heading', text: cleanQuoteLine(line) });
       if (images[imageIndex]) {
         segments.push({ type: 'image', image: { ...images[imageIndex], ctaLink: '' }, index: imageIndex });
         imageIndex += 1;
@@ -1108,7 +1209,7 @@ function buildPublishingSegments(job, images = []) {
 }
 
 async function typeBodySegments(node, job, images = []) {
-  const target = editableRoot(node);
+  let target = editableRoot(node);
   clearEditable(target);
   const segments = buildPublishingSegments(job, images);
   let imageCount = 0;
@@ -1118,17 +1219,19 @@ async function typeBodySegments(node, job, images = []) {
   for (const segment of segments) {
     ensureTypingNotStopped();
     if (segment.type === 'image') {
+      target = await prepareBodyTypingTarget(target) || target;
       const inserted = await insertImageAtCaret(target, segment.image, segment.index);
       if (!inserted) throw new Error(`이미지 ${segment.index + 1} 업로드에 실패했습니다. 사진 버튼 또는 이미지 형식을 확인해 주세요.`);
       imageCount += 1;
+      target = await prepareBodyTypingTarget(target) || target;
       continue;
     }
     if (segment.type === 'quote') {
+      target = await prepareBodyTypingTarget(target) || target;
       const quote2Applied = await applyNaverQuote2();
       if (!quote2Applied) applyFormatBlock('blockquote');
       await sleep(120);
-      const written = await pastePlainTextAtCaret(target, segment.text, { chunkSize: 3, minDelay: 9, maxDelay: 23 });
-      if (!written) throw new Error('인용구 본문 입력에 실패했습니다.');
+      await typeTextLikeHuman(target, segment.text, { chunkSize: 1, minDelay: 9, maxDelay: 23, useCurrentCaret: true });
       quoteCount += 1;
       await pressEnter(target, 1, { useCurrentCaret: true });
       applyFormatBlock('p');
@@ -1136,25 +1239,26 @@ async function typeBodySegments(node, job, images = []) {
       continue;
     }
     if (segment.type === 'heading') {
+      target = await prepareBodyTypingTarget(target) || target;
       applyFormatBlock('h3');
-      const written = await pastePlainTextAtCaret(target, segment.text, { chunkSize: 3, minDelay: 9, maxDelay: 22 });
-      if (!written) throw new Error('소제목 입력에 실패했습니다.');
+      await typeTextLikeHuman(target, segment.text, { chunkSize: 1, minDelay: 9, maxDelay: 22, useCurrentCaret: true });
       await pressEnter(target, 1, { useCurrentCaret: true });
+      target = await prepareBodyTypingTarget(target) || target;
       applyFormatBlock('p');
       typedSegments += 1;
       continue;
     }
     if (segment.type === 'cta') {
+      target = await prepareBodyTypingTarget(target) || target;
       applyFormatBlock('p');
-      const written = await pastePlainTextAtCaret(target, segment.text, { chunkSize: 3, minDelay: 9, maxDelay: 22 });
-      if (!written) throw new Error('CTA 입력에 실패했습니다.');
+      await typeTextLikeHuman(target, segment.text, { chunkSize: 1, minDelay: 9, maxDelay: 22, useCurrentCaret: true });
       await pressEnter(target, 2, { useCurrentCaret: true });
       typedSegments += 1;
       continue;
     }
+    target = await prepareBodyTypingTarget(target) || target;
     applyFormatBlock('p');
-    const written = await pastePlainTextAtCaret(target, segment.text, { chunkSize: 3, minDelay: 8, maxDelay: 20 });
-    if (!written) throw new Error('본문 입력에 실패했습니다.');
+    await typeTextLikeHuman(target, segment.text, { chunkSize: 1, minDelay: 8, maxDelay: 20, useCurrentCaret: true });
     await pressEnter(target, 2, { useCurrentCaret: true });
     typedSegments += 1;
   }
@@ -1169,6 +1273,7 @@ async function fillJobLikeTyping(job, images = []) {
   const title = job.title || job.keyword || '';
   const body = plainBody(job);
   const titleTarget = title ? await focusTitleTarget() : editableRoot(findTitleTargetV2());
+  let titleWritten = false;
   let bodyTarget = titleTarget ? null : editableRoot(findBodyTarget());
 
   if (title && !titleTarget) {
@@ -1183,7 +1288,7 @@ async function fillJobLikeTyping(job, images = []) {
 
   let categorySelected = false;
   if (titleTarget && title) {
-    const titleWritten = await setTitleText(titleTarget, title);
+    titleWritten = await typeTitleText(title);
     if (!titleWritten) throw new Error('제목 입력에 실패했습니다. 제목 영역을 클릭한 뒤 다시 시도해 주세요.');
   }
   if (body) {
