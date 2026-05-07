@@ -386,6 +386,27 @@ function currentTextValue(node) {
   return String(('value' in node ? node.value : node.textContent) || '');
 }
 
+function requestMainWorldTitleWrite(text) {
+  return new Promise((resolve) => {
+    if (!chrome.runtime?.sendMessage) {
+      resolve(false);
+      return;
+    }
+    const timer = setTimeout(() => resolve(false), 2500);
+    chrome.runtime.sendMessage(
+      { type: 'NAVIWRITE_WRITE_TITLE_MAIN_WORLD', title: text },
+      (response) => {
+        clearTimeout(timer);
+        if (chrome.runtime.lastError) {
+          resolve(false);
+          return;
+        }
+        resolve(Boolean(response?.ok));
+      },
+    );
+  });
+}
+
 async function setTitleText(node, text) {
   const target = editableRoot(node);
   if (!target) return false;
@@ -414,6 +435,10 @@ async function setTitleText(node, text) {
   emitInput(target);
   await sleep(180);
   if (currentTextValue(target).includes(text) || titleTextPresent(text, target)) return true;
+
+  const mainWorldWritten = await requestMainWorldTitleWrite(text);
+  await sleep(220);
+  if (mainWorldWritten && titleTextPresent(text, target)) return true;
 
   if ('value' in target) {
     const prototype = target.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
