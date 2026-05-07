@@ -39,6 +39,12 @@ function findTitleTarget() {
 
 function findTitleTargetV2() {
   const selectors = [
+    'textarea[placeholder*="\uC81C\uBAA9"]',
+    'input[placeholder*="\uC81C\uBAA9"]',
+    '[contenteditable="true"][aria-label*="\uC81C\uBAA9"]',
+    '[contenteditable="true"][data-placeholder*="\uC81C\uBAA9"]',
+    '[contenteditable="true"][title*="\uC81C\uBAA9"]',
+    '[contenteditable="true"][data-a11y-title*="\uC81C\uBAA9"]',
     'textarea[placeholder*="제목"]',
     'input[placeholder*="제목"]',
     '[contenteditable="true"][aria-label*="제목"]',
@@ -71,7 +77,7 @@ function findTitleTargetV2() {
         node.className,
         node.closest?.('[class]')?.className,
       ].join(' ');
-      const titleHint = /제목|title|documentTitle|se-title/i.test(meta) ? 5000 : 0;
+      const titleHint = /\uC81C\uBAA9|title|documentTitle|se-title/i.test(meta) ? 5000 : 0;
       const topBonus = Math.max(0, 1200 - Math.abs(rect.top - 140));
       const sizePenalty = rect.height > 180 ? 900 : 0;
       return { node: editableRoot(node) || node, score: titleHint + topBonus + rect.width - sizePenalty };
@@ -93,6 +99,10 @@ function findBodyTarget() {
     '.se-content [contenteditable="true"]',
     '.se-section-text [contenteditable="true"]',
     '.se-component-content [contenteditable="true"]',
+    '[contenteditable="true"][data-a11y-title*="\uBCF8\uBB38"]',
+    '[contenteditable="true"][aria-label*="\uBCF8\uBB38"]',
+    '[contenteditable="true"][data-placeholder*="\uBCF8\uBB38"]',
+    '[contenteditable="true"][data-placeholder*="\uB0B4\uC6A9"]',
     '[contenteditable="true"][data-a11y-title*="본문"]',
     '[contenteditable="true"][aria-label*="본문"]',
     '[contenteditable="true"][data-placeholder*="본문"]',
@@ -205,6 +215,70 @@ function editableRoot(node) {
   return node.closest?.('[contenteditable="true"]') || node;
 }
 
+function isTitleEditable(node) {
+  if (!node) return false;
+  const meta = [
+    node.getAttribute?.('placeholder'),
+    node.getAttribute?.('aria-label'),
+    node.getAttribute?.('data-placeholder'),
+    node.getAttribute?.('data-a11y-title'),
+    node.getAttribute?.('title'),
+    node.className,
+    node.closest?.('[class]')?.className,
+  ].join(' ');
+  return /\uC81C\uBAA9|title|documentTitle|se-title/i.test(meta)
+    || Boolean(node.closest?.('.se-title, .se-title-text, .se-documentTitle'));
+}
+
+function selectionEditable() {
+  const selection = window.getSelection?.();
+  if (!selection?.rangeCount) return null;
+  const raw = selection.anchorNode?.nodeType === Node.ELEMENT_NODE
+    ? selection.anchorNode
+    : selection.anchorNode?.parentElement;
+  const editable = editableRoot(raw);
+  return editable && visible(editable) && !isTitleEditable(editable) ? editable : null;
+}
+
+function activeEditable() {
+  const active = document.activeElement;
+  const editable = editableRoot(active);
+  return editable && visible(editable) && !isTitleEditable(editable) ? editable : null;
+}
+
+function lastEmptyBodyEditable() {
+  return Array.from(document.querySelectorAll('[contenteditable="true"], textarea'))
+    .map(editableRoot)
+    .filter(Boolean)
+    .filter((node, index, list) => list.indexOf(node) === index)
+    .filter((node) => visible(node) && !isTitleEditable(node))
+    .filter((node) => {
+      const text = (node.textContent || node.value || '').replace(/\s+/g, '').trim();
+      const placeholder = [
+        node.getAttribute?.('placeholder'),
+        node.getAttribute?.('data-placeholder'),
+        node.getAttribute?.('aria-label'),
+      ].join(' ');
+      return !text
+        || /\uB0B4\uC6A9\uC744?\s*\uC785\uB825|\uB0B4\uC6A9\uC744?\s*\uC785\uB825\uD558\uC138\uC694|content/i.test(placeholder)
+        || /\uB0B4\uC6A9\uC744?\s*\uC785\uB825|\uB0B4\uC6A9\uC744?\s*\uC785\uB825\uD558\uC138\uC694/.test(text);
+    })
+    .sort((a, b) => b.getBoundingClientRect().top - a.getBoundingClientRect().top)[0] || null;
+}
+
+function isPlaceholderOnly(node) {
+  const text = String(node?.textContent || node?.value || '').replace(/\s+/g, '').trim();
+  return Boolean(text) && /^\uB0B4\uC6A9\uC744?\uC785\uB825\uD558\uC138\uC694\.?$/.test(text);
+}
+
+function resolveTypingTarget(fallback, options = {}) {
+  const base = editableRoot(fallback);
+  if (options.useCurrentCaret) {
+    return selectionEditable() || activeEditable() || lastEmptyBodyEditable() || base;
+  }
+  return base;
+}
+
 function placeCaretAtEnd(node) {
   node.focus();
   if ('value' in node) {
@@ -238,14 +312,20 @@ function clearEditable(node) {
 }
 
 async function typeTextLikeHuman(node, text, options = {}) {
-  const target = editableRoot(node);
+  let target = resolveTypingTarget(node, options);
   const chunkSize = options.chunkSize || 3;
   const minDelay = options.minDelay ?? 8;
   const maxDelay = options.maxDelay ?? 24;
-  placeCaretAtEnd(target);
+  if (!options.useCurrentCaret) placeCaretAtEnd(target);
+  else {
+    target.focus?.();
+    if (isPlaceholderOnly(target)) clearEditable(target);
+    if (!selectionEditable()) placeCaretAtEnd(target);
+  }
   for (let index = 0; index < text.length; index += chunkSize) {
     ensureTypingNotStopped();
     const chunk = text.slice(index, index + chunkSize);
+    if (options.useCurrentCaret) target = resolveTypingTarget(target, options);
     target.dispatchEvent(new KeyboardEvent('keydown', { key: chunk, bubbles: true }));
     if ('value' in target) {
       const start = target.selectionStart ?? target.value.length;
@@ -254,9 +334,10 @@ async function typeTextLikeHuman(node, text, options = {}) {
       target.setSelectionRange?.(start + chunk.length, start + chunk.length);
     } else {
       const before = target.textContent || '';
+      const selection = window.getSelection();
+      if (!selection?.rangeCount || !target.contains(selection.anchorNode)) placeCaretAtEnd(target);
       const inserted = document.execCommand?.('insertText', false, chunk);
       if (!inserted && (target.textContent || '') === before) {
-        const selection = window.getSelection();
         const range = selection.rangeCount ? selection.getRangeAt(0) : document.createRange();
         range.deleteContents();
         range.insertNode(document.createTextNode(chunk));
@@ -271,11 +352,13 @@ async function typeTextLikeHuman(node, text, options = {}) {
   }
 }
 
-async function pressEnter(node, count = 1) {
-  const target = editableRoot(node);
-  placeCaretAtEnd(target);
+async function pressEnter(node, count = 1, options = {}) {
+  let target = resolveTypingTarget(node, options);
+  if (!options.useCurrentCaret) placeCaretAtEnd(target);
+  else if (!selectionEditable()) placeCaretAtEnd(target);
   for (let i = 0; i < count; i += 1) {
     ensureTypingNotStopped();
+    if (options.useCurrentCaret) target = resolveTypingTarget(target, options);
     if ('value' in target) {
       await typeTextLikeHuman(target, '\n', { chunkSize: 1, minDelay: 5, maxDelay: 10 });
     } else {
@@ -299,12 +382,18 @@ function applyFormatBlock(tagName) {
 function nodeText(node) {
   return [
     node.textContent,
+    node.value,
     node.getAttribute?.('aria-label'),
     node.getAttribute?.('title'),
     node.getAttribute?.('data-tooltip'),
     node.getAttribute?.('data-name'),
     node.className,
   ].join(' ');
+}
+
+function buttonCenterX(node) {
+  const rect = node.getBoundingClientRect();
+  return rect.left + rect.width / 2;
 }
 
 function findVisibleNode(selectors, matcher) {
@@ -326,6 +415,8 @@ async function clickNode(node, waitMs = 160) {
 }
 
 async function dismissResumeDraftDialog() {
+  const draftPattern = /(?:\uC791\uC131\s*\uC911\uC778\s*\uAE00|\uC774\uC5B4\uC11C\s*\uC791\uC131|\uC791\uC131\uD558\uC2DC\uACA0\uC2B5\uB2C8\uAE4C)/;
+  const cancelPattern = /(?:\uCDE8\uC18C|\uC0C8\uB85C|\uC544\uB2C8\uC624|cancel|no)/i;
   const dialogSelectors = [
     '[role="dialog"]',
     '.se-popup',
@@ -334,24 +425,38 @@ async function dismissResumeDraftDialog() {
     '.layer',
     '.modal',
     '.ly_wrap',
-    'body',
+    '.se-popup-container',
+    '.se-dialog-container',
   ];
-  for (let attempt = 0; attempt < 24; attempt += 1) {
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    const directCancel = Array.from(document.querySelectorAll('button, a, [role="button"], input[type="button"]'))
+      .filter(visible)
+      .find((node) => {
+        const container = node.closest?.('div, section, article, [role="dialog"]');
+        const nearby = container?.textContent || document.body?.textContent || '';
+        return cancelPattern.test(nodeText(node)) && draftPattern.test(nearby);
+      });
+    if (directCancel) {
+      await clickNode(directCancel, 700);
+      return true;
+    }
+
     const dialog = Array.from(document.querySelectorAll(dialogSelectors.join(',')))
       .filter(visible)
-      .find((node) => /작성 중인 글|이어서 작성|작성하시겠습니까|작성중인 글/.test(node.textContent || ''));
+      .find((node) => {
+        const text = node.textContent || '';
+        const rect = node.getBoundingClientRect();
+        const hasTwoButtons = node.querySelectorAll?.('button, a, [role="button"], input[type="button"]').length >= 2;
+        return draftPattern.test(text)
+          || (rect.width >= 260 && rect.height >= 120 && hasTwoButtons && /(?:\uD655\uC778|\uCDE8\uC18C)/.test(text));
+      });
     if (dialog) {
-      const cancel = Array.from(dialog.querySelectorAll('button, a, [role="button"], input[type="button"]'))
+      const buttons = Array.from(dialog.querySelectorAll('button, a, [role="button"], input[type="button"]'))
         .filter(visible)
-        .find((node) => /취소|새로|아니오|cancel/i.test(nodeText(node)));
+        .sort((a, b) => buttonCenterX(a) - buttonCenterX(b));
+      const cancel = buttons.find((node) => cancelPattern.test(nodeText(node))) || buttons[0];
       if (cancel) {
         await clickNode(cancel, 700);
-        return true;
-      }
-      const buttons = Array.from(dialog.querySelectorAll('button, a, [role="button"], input[type="button"]'))
-        .filter(visible);
-      if (buttons[0]) {
-        await clickNode(buttons[0], 700);
         return true;
       }
     }
@@ -590,8 +695,8 @@ async function insertImageAtCaret(node, image, index) {
   const url = imageUrl(image);
   if (!url) return false;
   ensureTypingNotStopped();
-  const target = editableRoot(node);
-  placeCaretAtEnd(target);
+  const target = resolveTypingTarget(node, { useCurrentCaret: true });
+  if (!selectionEditable()) placeCaretAtEnd(target);
   const label = imageLabel(image, index);
   const link = image.ctaLink || '';
   try {
@@ -600,7 +705,7 @@ async function insertImageAtCaret(node, image, index) {
       let insertedAsFile = await uploadImageViaNaverPhoto(target, pngBlob, label);
       if (!insertedAsFile) insertedAsFile = await pasteImageFileAtCaret(target, pngBlob, label);
       if (insertedAsFile) {
-        await pressEnter(target, 1);
+        await pressEnter(target, 1, { useCurrentCaret: true });
         return true;
       }
     }
@@ -618,7 +723,7 @@ async function insertImageAtCaret(node, image, index) {
   const inserted = pasteHtmlAtCaret(html, link ? `[${label}] ${link}` : `[${label}]`);
   emitInput(target);
   await sleep(180);
-  await pressEnter(target, 1);
+  await pressEnter(target, 1, { useCurrentCaret: true });
   return inserted;
 }
 
@@ -828,31 +933,32 @@ async function typeBodySegments(node, job, images = []) {
     if (segment.type === 'quote') {
       const quote2Applied = await applyNaverQuote2();
       if (!quote2Applied) applyFormatBlock('blockquote');
-      await typeTextLikeHuman(target, segment.text, { chunkSize: 3, minDelay: 9, maxDelay: 23 });
+      await sleep(120);
+      await typeTextLikeHuman(target, segment.text, { chunkSize: 3, minDelay: 9, maxDelay: 23, useCurrentCaret: true });
       quoteCount += 1;
-      await pressEnter(target, 1);
+      await pressEnter(target, 1, { useCurrentCaret: true });
       applyFormatBlock('p');
       typedSegments += 1;
       continue;
     }
     if (segment.type === 'heading') {
       applyFormatBlock('h3');
-      await typeTextLikeHuman(target, segment.text, { chunkSize: 3, minDelay: 9, maxDelay: 22 });
-      await pressEnter(target, 1);
+      await typeTextLikeHuman(target, segment.text, { chunkSize: 3, minDelay: 9, maxDelay: 22, useCurrentCaret: true });
+      await pressEnter(target, 1, { useCurrentCaret: true });
       applyFormatBlock('p');
       typedSegments += 1;
       continue;
     }
     if (segment.type === 'cta') {
       applyFormatBlock('p');
-      await typeTextLikeHuman(target, segment.text, { chunkSize: 3, minDelay: 9, maxDelay: 22 });
-      await pressEnter(target, 2);
+      await typeTextLikeHuman(target, segment.text, { chunkSize: 3, minDelay: 9, maxDelay: 22, useCurrentCaret: true });
+      await pressEnter(target, 2, { useCurrentCaret: true });
       typedSegments += 1;
       continue;
     }
     applyFormatBlock('p');
-    await typeTextLikeHuman(target, segment.text, { chunkSize: 3, minDelay: 8, maxDelay: 20 });
-    await pressEnter(target, 2);
+    await typeTextLikeHuman(target, segment.text, { chunkSize: 3, minDelay: 8, maxDelay: 20, useCurrentCaret: true });
+    await pressEnter(target, 2, { useCurrentCaret: true });
     typedSegments += 1;
   }
   return { typedSegments, imageCount, quoteCount };
