@@ -3463,6 +3463,43 @@ async function fetchKoreaEximUsdKrwRate(rateDate) {
   return null;
 }
 
+async function fetchNaverUsdKrwRate(rateDate) {
+  const today = kstDateString();
+  if (String(rateDate || today).slice(0, 10) !== today) return null;
+  try {
+    const response = await fetch('https://api.stock.naver.com/marketindex/exchange/FX_USDKRW', {
+      headers: {
+        Accept: 'application/json',
+        'User-Agent': 'NaviWrite/1.0 (+https://web-production-184ff.up.railway.app)',
+      },
+    });
+    if (!response.ok) return null;
+    const data = await response.json().catch(() => null);
+    const info = data?.exchangeInfo || {};
+    const rate = parseUsdKrwRate(info.closePrice || info.calcPrice);
+    if (!rate) return null;
+    const tradedAt = String(info.localTradedAt || '');
+    return {
+      rateDate,
+      sourceDate: tradedAt.slice(0, 10) || rateDate,
+      rate,
+      source: 'naver_hana_deal_bas_r',
+      isFallback: false,
+      meta: {
+        provider: 'Naver Finance',
+        bank: info.stockExchangeType?.nameKor || '하나은행',
+        localTradedAt: tradedAt,
+        degreeCount: info.degreeCount || null,
+        marketStatus: info.marketStatus || '',
+        priceDataType: info.priceDataType || '',
+      },
+    };
+  } catch (err) {
+    console.warn('[exchange-rate] Naver fetch failed:', err.message);
+    return null;
+  }
+}
+
 async function fetchOpenUsdKrwRate(rateDate) {
   try {
     const response = await fetch('https://open.er-api.com/v6/latest/USD');
@@ -3497,9 +3534,13 @@ async function getUsdKrwRateForDate(rateDate = kstDateString(), { refresh = fals
        LIMIT 1`,
       [date]
     );
-    if (cached.rows[0]) return cached.rows[0];
+    if (cached.rows[0]) {
+      const cachedSource = String(cached.rows[0].source || '');
+      const shouldPreferNaverToday = date === kstDateString() && cachedSource !== 'naver_hana_deal_bas_r';
+      if (!shouldPreferNaverToday) return cached.rows[0];
+    }
   }
-  const fetched = await fetchKoreaEximUsdKrwRate(date) || await fetchOpenUsdKrwRate(date);
+  const fetched = await fetchNaverUsdKrwRate(date) || await fetchKoreaEximUsdKrwRate(date) || await fetchOpenUsdKrwRate(date);
   if (fetched) return cacheUsdKrwRate(fetched);
   const fallbackRate = parseUsdKrwRate(process.env.DEFAULT_USD_KRW_RATE || process.env.USD_KRW_RATE || 1350);
   return cacheUsdKrwRate({
@@ -6197,7 +6238,7 @@ router.get('/exchange-rate/usd-krw', async (req, res) => {
       source: exchangeRate?.source || '',
       isFallback: Boolean(exchangeRate?.is_fallback),
       fetchedAt: exchangeRate?.fetched_at || null,
-      note: 'KOREA_EXIM_API_KEY가 있으면 한국수출입은행 매매기준율(deal_bas_r)을 우선 사용합니다.',
+      note: '네이버 금융 USD/KRW 매매기준율을 우선 사용합니다. 별도 환율 API 키는 필요하지 않습니다.',
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
