@@ -39,6 +39,16 @@ function findTitleTarget() {
 
 function findTitleTargetV2() {
   const selectors = [
+    '.se-title textarea',
+    '.se-title input',
+    '.se-title [contenteditable="true"]',
+    '.se-title-text textarea',
+    '.se-title-text input',
+    '.se-title-text [contenteditable="true"]',
+    '.se-title-text',
+    '.se-documentTitle textarea',
+    '.se-documentTitle input',
+    '.se-documentTitle [contenteditable="true"]',
     'textarea[placeholder*="\uC81C\uBAA9"]',
     'input[placeholder*="\uC81C\uBAA9"]',
     '[contenteditable="true"][aria-label*="\uC81C\uBAA9"]',
@@ -57,14 +67,20 @@ function findTitleTargetV2() {
     '.se-documentTitle [contenteditable="true"]',
   ];
   for (const selector of selectors) {
-    const node = Array.from(document.querySelectorAll(selector)).find(visible);
-    if (node) return editableRoot(node) || node;
+    const node = Array.from(document.querySelectorAll(selector))
+      .map((item) => editableRoot(item))
+      .filter(Boolean)
+      .find(visible);
+    if (node) return node;
   }
 
   const original = findTitleTarget();
   if (original) return editableRoot(original) || original;
 
   const candidates = Array.from(document.querySelectorAll('textarea,input,[contenteditable="true"],.se-text-paragraph'))
+    .map((item) => editableRoot(item))
+    .filter(Boolean)
+    .filter((node, index, list) => list.indexOf(node) === index)
     .filter(visible)
     .map((node) => {
       const rect = node.getBoundingClientRect();
@@ -114,6 +130,8 @@ function findBodyTarget() {
   const candidates = [];
   for (const selector of selectors) {
     Array.from(document.querySelectorAll(selector))
+      .map((node) => editableRoot(node))
+      .filter(Boolean)
       .filter((node) => visible(node) && !isTitleLike(node))
       .forEach((node) => {
         if (!candidates.includes(node)) candidates.push(node);
@@ -156,6 +174,7 @@ function activateBodyArea() {
 }
 
 function setText(node, text) {
+  if (!node) throw new Error('입력 가능한 영역을 찾지 못했습니다.');
   node.focus();
   if ('value' in node) {
     const prototype = node.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
@@ -166,6 +185,29 @@ function setText(node, text) {
     node.textContent = text;
   }
   emitInput(node);
+}
+
+function currentTextValue(node) {
+  return String(('value' in node ? node.value : node.textContent) || '');
+}
+
+async function setTitleText(node, text) {
+  const target = editableRoot(node);
+  clearEditable(target);
+  setText(target, text);
+  target.dispatchEvent(new InputEvent('input', {
+    bubbles: true,
+    cancelable: false,
+    inputType: 'insertText',
+    data: text,
+  }));
+  await sleep(180);
+  if (!currentTextValue(target).includes(text)) {
+    clearEditable(target);
+    await typeTextLikeHuman(target, text, { chunkSize: 4, minDelay: 12, maxDelay: 28 });
+  }
+  emitInput(target);
+  return currentTextValue(target).includes(text);
 }
 
 function setRichText(node, html, fallbackText) {
@@ -212,7 +254,9 @@ function ensureTypingNotStopped() {
 function editableRoot(node) {
   if (!node) return null;
   if ('value' in node || node.isContentEditable) return node;
-  return node.closest?.('[contenteditable="true"]') || node;
+  return node.closest?.('[contenteditable="true"]')
+    || node.querySelector?.('[contenteditable="true"], textarea, input')
+    || null;
 }
 
 function isTitleEditable(node) {
@@ -280,6 +324,7 @@ function resolveTypingTarget(fallback, options = {}) {
 }
 
 function placeCaretAtEnd(node) {
+  if (!node) throw new Error('입력 가능한 영역을 찾지 못했습니다.');
   node.focus();
   if ('value' in node) {
     const end = node.value.length;
@@ -336,6 +381,12 @@ async function typeTextLikeHuman(node, text, options = {}) {
       const before = target.textContent || '';
       const selection = window.getSelection();
       if (!selection?.rangeCount || !target.contains(selection.anchorNode)) placeCaretAtEnd(target);
+      target.dispatchEvent(new InputEvent('beforeinput', {
+        bubbles: true,
+        cancelable: true,
+        inputType: 'insertText',
+        data: chunk,
+      }));
       const inserted = document.execCommand?.('insertText', false, chunk);
       if (!inserted && (target.textContent || '') === before) {
         const range = selection.rangeCount ? selection.getRangeAt(0) : document.createRange();
@@ -346,6 +397,12 @@ async function typeTextLikeHuman(node, text, options = {}) {
         selection.addRange(range);
       }
     }
+    target.dispatchEvent(new InputEvent('input', {
+      bubbles: true,
+      cancelable: false,
+      inputType: 'insertText',
+      data: chunk,
+    }));
     emitInput(target);
     target.dispatchEvent(new KeyboardEvent('keyup', { key: chunk, bubbles: true }));
     await sleep(randomDelay(minDelay, maxDelay));
@@ -1021,9 +1078,8 @@ async function fillJobLikeTyping(job, images = []) {
 
   let categorySelected = false;
   if (titleTarget && title) {
-    clearEditable(titleTarget);
-    await typeTextLikeHuman(titleTarget, title, { chunkSize: 4, minDelay: 12, maxDelay: 28 });
-    await sleep(180);
+    const titleWritten = await setTitleText(titleTarget, title);
+    if (!titleWritten) throw new Error('제목 입력에 실패했습니다. 제목 영역을 클릭한 뒤 다시 시도해 주세요.');
   }
   if (body) {
     bodyTarget = editableRoot(findBodyTarget());
