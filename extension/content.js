@@ -1,5 +1,6 @@
 let typingStopRequested = false;
 let typingSessionStartedAt = 0;
+let cachedTitleTarget = null;
 
 chrome.storage?.onChanged?.addListener?.((changes, area) => {
   if (area !== 'local') return;
@@ -147,6 +148,14 @@ function uniqueNodes(nodes) {
   return nodes.filter(Boolean).filter((node, index, list) => list.indexOf(node) === index);
 }
 
+function usableTitleEditable(node) {
+  return node
+    && document.contains(node)
+    && visible(node)
+    && (closestTitleContainer(node) || hasTitleHint(node))
+    && !(hasBodyHint(node) && !closestTitleContainer(node));
+}
+
 function titleCandidateScore(node) {
   const rect = node.getBoundingClientRect?.() || { top: 9999, width: 0, height: 0 };
   const titleScore = hasTitleHint(node) ? 5000 : 0;
@@ -165,9 +174,7 @@ function findStrictTitleContainer() {
     .filter(visible)
     .filter((node) => hasTitleHint(node) && !(hasBodyHint(node) && !closestTitleContainer(node)))
     .sort((a, b) => titleCandidateScore(b) - titleCandidateScore(a));
-  if (containers[0]) return containers[0];
-  const placeholder = findTitlePlaceholder();
-  return placeholder ? closestTitleContainer(placeholder) || placeholder : null;
+  return containers[0] || null;
 }
 
 function editableInsideTitleContainer(container) {
@@ -192,9 +199,18 @@ function editableInsideTitleContainer(container) {
 }
 
 function findStrictTitleEditable() {
+  if (usableTitleEditable(cachedTitleTarget)) return cachedTitleTarget;
+  const active = activeTitleEditable();
+  if (active) {
+    cachedTitleTarget = active;
+    return active;
+  }
   const container = findStrictTitleContainer();
   const inside = editableInsideTitleContainer(container);
-  if (inside) return inside;
+  if (inside) {
+    cachedTitleTarget = inside;
+    return inside;
+  }
   const direct = uniqueNodes(Array.from(document.querySelectorAll([
     'textarea[placeholder*="\uC81C\uBAA9"]',
     'input[placeholder*="\uC81C\uBAA9"]',
@@ -206,7 +222,8 @@ function findStrictTitleEditable() {
     .map((node) => editableRoot(node) || node))
     .filter((node) => visible(node) && hasTitleHint(node) && !(hasBodyHint(node) && !closestTitleContainer(node)))
     .sort((a, b) => titleCandidateScore(b) - titleCandidateScore(a));
-  return direct[0] || null;
+  cachedTitleTarget = direct[0] || null;
+  return cachedTitleTarget;
 }
 
 function findTitlePlaceholder() {
@@ -217,9 +234,6 @@ function findTitlePlaceholder() {
     '[data-placeholder*="\uC81C\uBAA9"]',
     '[aria-label*="\uC81C\uBAA9"]',
     '[placeholder*="\uC81C\uBAA9"]',
-    'div',
-    'span',
-    'p',
   ].join(',')))
     .filter(visible)
     .filter((node) => /\uC81C\uBAA9/.test(node.textContent || node.getAttribute?.('placeholder') || node.getAttribute?.('aria-label') || node.getAttribute?.('data-placeholder') || ''))
@@ -264,21 +278,26 @@ function activeTitleEditable() {
 }
 
 async function focusTitleTarget() {
-  for (let attempt = 0; attempt < 10; attempt += 1) {
-    await dismissResumeDraftDialog();
+  for (let attempt = 0; attempt < 4; attempt += 1) {
     let target = activeTitleEditable() || findStrictTitleEditable();
     if (target && visible(target)) {
-      await clickNode(target, 120);
+      await clickNode(target, 45);
       target = activeTitleEditable() || target;
-      if (target && visible(target)) return target;
+      if (target && visible(target)) {
+        cachedTitleTarget = target;
+        return target;
+      }
     }
     const area = findTitleArea();
     const placeholder = findTitlePlaceholder();
     const clickTarget = placeholder || area;
-    if (clickTarget) await clickNode(clickTarget, 180);
+    if (clickTarget) await clickNode(clickTarget, 70);
     target = activeTitleEditable() || findStrictTitleEditable();
-    if (target && visible(target)) return target;
-    await sleep(150);
+    if (target && visible(target)) {
+      cachedTitleTarget = target;
+      return target;
+    }
+    await sleep(70);
   }
   return null;
 }
@@ -407,9 +426,49 @@ function requestMainWorldTitleWrite(text) {
   });
 }
 
+async function pasteTitleText(target, text) {
+  if (!target) return false;
+  clearEditable(target);
+  target.focus?.();
+  placeCaretAtEnd(target);
+  try {
+    const data = new DataTransfer();
+    data.setData('text/plain', text);
+    const event = new ClipboardEvent('paste', {
+      clipboardData: data,
+      bubbles: true,
+      cancelable: true,
+    });
+    target.dispatchEvent(event);
+    target.dispatchEvent(new InputEvent('beforeinput', {
+      bubbles: true,
+      cancelable: true,
+      inputType: 'insertFromPaste',
+      data: text,
+    }));
+    target.dispatchEvent(new InputEvent('input', {
+      bubbles: true,
+      cancelable: false,
+      inputType: 'insertFromPaste',
+      data: text,
+    }));
+    emitInput(target);
+    await sleep(180);
+    return titleTextPresent(text, target);
+  } catch {
+    return false;
+  }
+}
+
 async function setTitleText(node, text) {
   const target = editableRoot(node);
   if (!target) return false;
+  if (await pasteTitleText(target, text)) return true;
+
+  const mainWorldWritten = await requestMainWorldTitleWrite(text);
+  await sleep(220);
+  if (mainWorldWritten && titleTextPresent(text, target)) return true;
+
   clearEditable(target);
   await typeTextLikeHuman(target, text, { chunkSize: 1, minDelay: 10, maxDelay: 24 });
   await sleep(180);
@@ -435,10 +494,6 @@ async function setTitleText(node, text) {
   emitInput(target);
   await sleep(180);
   if (currentTextValue(target).includes(text) || titleTextPresent(text, target)) return true;
-
-  const mainWorldWritten = await requestMainWorldTitleWrite(text);
-  await sleep(220);
-  if (mainWorldWritten && titleTextPresent(text, target)) return true;
 
   if ('value' in target) {
     const prototype = target.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
@@ -1562,6 +1617,42 @@ async function fillJobLikeTyping(job, images = []) {
   return { ok: true, note: `제목 타이핑 완료${categorySelected ? ' · 카테고리 선택 시도 완료' : ''}` };
 }
 
+async function writeJobTitleOnly(job) {
+  typingStopRequested = false;
+  typingSessionStartedAt = Date.now();
+  await dismissResumeDraftDialog();
+  const title = job.title || job.keyword || '';
+  if (!title) throw new Error('제목으로 사용할 작업 제목/키워드가 없습니다.');
+  const titleWritten = await typeTitleText(title);
+  if (!titleWritten) throw new Error('제목 입력에 실패했습니다. 제목 영역을 클릭한 뒤 다시 시도해 주세요.');
+  return { ok: true, note: '제목 입력 완료' };
+}
+
+async function fillJobBodyOnly(job, images = []) {
+  typingStopRequested = false;
+  typingSessionStartedAt = Date.now();
+  const body = plainBody(job);
+  if (!body) return { ok: true, note: '본문이 없어 제목만 입력했습니다.' };
+  let bodyTarget = editableRoot(findBodyTarget());
+  if (!bodyTarget) {
+    activateBodyArea();
+    await sleep(220);
+    bodyTarget = editableRoot(findBodyTarget());
+  }
+  if (!bodyTarget) {
+    throw new Error('본문 입력 영역을 찾지 못했습니다. 본문 영역을 한 번 클릭한 뒤 다시 시도해 주세요.');
+  }
+  bodyTarget.scrollIntoView?.({ block: 'center', inline: 'center' });
+  bodyTarget.click?.();
+  placeCaretAtEnd(bodyTarget);
+  const result = await typeBodySegments(bodyTarget, job, images);
+  const categorySelected = selectCategoryByName(job.category || job.category_guess || job.target_category || '');
+  return {
+    ok: true,
+    note: `본문/이미지/CTA 입력 완료 · 이미지 ${result.imageCount}장${categorySelected ? ' · 카테고리 선택 시도 완료' : ''}`,
+  };
+}
+
 function currentBlogUrl() {
   try {
     const parsed = new URL(location.href);
@@ -1831,11 +1922,27 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
-  if (message?.type !== 'NAVIWRITE_FILL_JOB') return false;
-
   const job = message.job || {};
-  fillJobLikeTyping(job, message.images || [])
-    .then((result) => sendResponse(result))
-    .catch((err) => sendResponse({ ok: false, error: err.message }));
-  return true;
+  if (message?.type === 'NAVIWRITE_WRITE_TITLE_ONLY') {
+    writeJobTitleOnly(job)
+      .then((result) => sendResponse(result))
+      .catch((err) => sendResponse({ ok: false, error: err.message }));
+    return true;
+  }
+
+  if (message?.type === 'NAVIWRITE_FILL_BODY_ONLY') {
+    fillJobBodyOnly(job, message.images || [])
+      .then((result) => sendResponse(result))
+      .catch((err) => sendResponse({ ok: false, error: err.message }));
+    return true;
+  }
+
+  if (message?.type === 'NAVIWRITE_FILL_JOB') {
+    fillJobLikeTyping(job, message.images || [])
+      .then((result) => sendResponse(result))
+      .catch((err) => sendResponse({ ok: false, error: err.message }));
+    return true;
+  }
+
+  return false;
 });

@@ -877,11 +877,11 @@ async function startSelectedJobs() {
       const job = await claimSelectedJob(jobId);
       if (!job) throw new Error(`#${jobId} 작업을 준비하지 못했습니다.`);
 
-      setStep('images', 'active', `#${job.id} 이미지 초안을 자동으로 불러오는 중입니다.`);
-      const images = await fetchJobImages(job.id);
-      await setActiveJob(job, images);
+      setStep('images', 'pending', '제목 입력 후 이미지 초안을 불러옵니다.');
+      await setActiveJob(job, []);
+      let images = [];
       setStep('claim', 'done', `#${job.id} 작업 준비 완료`);
-      setStep('images', 'done', `${images.length}장 자동 확인`);
+      setStep('images', 'pending', '제목 입력 대기');
 
       ensureBatchNotStopped();
       setBatchStatus(`${index + 1}/${plannedIds.length} 작성창을 열고 있습니다: ${job.title || job.keyword || `#${job.id}`}`);
@@ -890,7 +890,19 @@ async function startSelectedJobs() {
       await delay(2500);
       ensureBatchNotStopped();
       setBatchStatus(`${index + 1}/${plannedIds.length} 제목/본문을 타이핑 중입니다: ${job.title || job.keyword || `#${job.id}`}`);
-      const insertResult = await insertIntoTab(tab?.id, { retryMs: 25000 });
+      const titleResult = await insertIntoTab(tab?.id, { retryMs: 10000, stage: 'title' });
+      if (!titleResult?.ok) throw new Error(titleResult?.error || `#${job.id} 제목 입력에 실패했습니다.`);
+      setStep('insert', 'done', `#${job.id} 제목 입력 완료`);
+
+      ensureBatchNotStopped();
+      setStep('images', 'active', `#${job.id} 제목 입력 후 이미지 초안을 불러오는 중입니다.`);
+      images = await fetchJobImages(job.id);
+      await setActiveJob(job, images);
+      setStep('images', 'done', `${images.length}장 자동 확인`);
+
+      ensureBatchNotStopped();
+      setBatchStatus(`${index + 1}/${plannedIds.length} 본문/이미지/CTA를 입력합니다: ${job.title || job.keyword || `#${job.id}`}`);
+      const insertResult = await insertIntoTab(tab?.id, { retryMs: 25000, stage: 'body' });
       if (!insertResult?.ok) throw new Error(insertResult?.error || `#${job.id} 작성창 삽입에 실패했습니다.`);
       setStep('insert', 'done', `#${job.id} 제목/본문/이미지/CTA 삽입 완료`);
       state.selectedJobIds = state.selectedJobIds.filter((id) => Number(id) !== Number(job.id));
@@ -966,9 +978,9 @@ async function openEditorForJob() {
   return tab;
 }
 
-async function sendFillMessageToFrame(tabId, frameId) {
+async function sendFillMessageToFrame(tabId, frameId, messageType = 'NAVIWRITE_FILL_JOB') {
   return chromePromise((done) => chrome.tabs.sendMessage(tabId, {
-    type: 'NAVIWRITE_FILL_JOB',
+    type: messageType,
     job: normalizeEditorJob(state.activeJob),
     images: state.images,
     mode: 'type',
@@ -985,12 +997,17 @@ async function sendMessageToAllFrames(tabId, message) {
   ));
 }
 
-async function insertIntoTab(tabId, { retryMs = 12000 } = {}) {
+async function insertIntoTab(tabId, { retryMs = 12000, stage = 'full' } = {}) {
   if (!state.activeJob) throw new Error('삽입할 작업이 없습니다.');
   if (!tabId) throw new Error('작성 탭을 찾을 수 없습니다.');
   setStep('insert', 'active', '작성창의 제목/본문 영역을 찾는 중입니다.');
   await sendMessageToAllFrames(tabId, { type: 'NAVIWRITE_DISMISS_DRAFT' });
   await delay(800);
+  const messageType = stage === 'title'
+    ? 'NAVIWRITE_WRITE_TITLE_ONLY'
+    : stage === 'body'
+      ? 'NAVIWRITE_FILL_BODY_ONLY'
+      : 'NAVIWRITE_FILL_JOB';
   const started = Date.now();
   let lastResponse = null;
   while (Date.now() - started < retryMs) {
@@ -998,7 +1015,7 @@ async function insertIntoTab(tabId, { retryMs = 12000 } = {}) {
       .catch(() => [{ frameId: 0 }]);
     const orderedFrames = (frames || [{ frameId: 0 }]).sort((a, b) => (a.frameId === 0 ? 1 : b.frameId === 0 ? -1 : 0));
     for (const frame of orderedFrames) {
-      const response = await sendFillMessageToFrame(tabId, frame.frameId);
+      const response = await sendFillMessageToFrame(tabId, frame.frameId, messageType);
       lastResponse = response;
       if (response?.ok) return response;
     }
