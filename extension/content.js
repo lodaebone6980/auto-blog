@@ -1,4 +1,13 @@
 let typingStopRequested = false;
+let typingSessionStartedAt = 0;
+
+chrome.storage?.onChanged?.addListener?.((changes, area) => {
+  if (area !== 'local') return;
+  const stopAt = Number(changes.naviwriteStopRequestedAt?.newValue || 0);
+  if (stopAt && (!typingSessionStartedAt || stopAt >= typingSessionStartedAt)) {
+    typingStopRequested = true;
+  }
+});
 
 function emitInput(node) {
   node.dispatchEvent(new Event('input', { bubbles: true }));
@@ -76,9 +85,8 @@ function findBodyTarget() {
   const titleBottom = titleTarget?.getBoundingClientRect?.().bottom || 0;
   const isTitleLike = (node) => {
     if (!node) return false;
-    if (node === titleTarget) return true;
-    const titleContainer = node.closest?.('.se-title, .se-title-text, [class*="title"]');
-    return Boolean(titleContainer && titleContainer.contains(titleTarget || titleContainer));
+    if (node === titleTarget || node.contains?.(titleTarget) || titleTarget?.contains?.(node)) return true;
+    return Boolean(node.closest?.('.se-title, .se-title-text, .se-documentTitle, [class*="title"], [class*="Title"]'));
   };
   const selectors = [
     '.se-main-container [contenteditable="true"]',
@@ -111,7 +119,7 @@ function findBodyTarget() {
         node.getAttribute?.('data-a11y-title'),
         node.className,
       ].join(' ')) ? 1500 : 0;
-      const belowTitleBonus = rect.top >= titleBottom - 5 ? 800 : 0;
+      const belowTitleBonus = !titleBottom || rect.top >= titleBottom + 8 ? 1200 : -5000;
       const area = Math.min(rect.width * rect.height, 4000);
       return { node, score: editableBonus + bodyHintBonus + belowTitleBonus + area };
     })
@@ -493,6 +501,91 @@ async function pasteImageFileAtCaret(node, blob, label) {
   return dropAccepted || editorImageCount() > beforeCount;
 }
 
+function findNaverPhotoButton() {
+  const selectors = ['button', 'a', '[role="button"]', 'label'];
+  const candidates = Array.from(document.querySelectorAll(selectors.join(',')))
+    .filter(visible)
+    .map((node) => {
+      const text = nodeText(node);
+      const meta = [
+        text,
+        node.className,
+        node.getAttribute?.('data-name'),
+        node.getAttribute?.('data-type'),
+        node.getAttribute?.('data-log'),
+      ].join(' ');
+      const textScore = /사진|이미지|photo|image|picture/i.test(meta) ? 5000 : 0;
+      const toolbarScore = node.closest?.('[class*="toolbar"], .se-toolbar, .se-menu') ? 1000 : 0;
+      const rect = node.getBoundingClientRect();
+      const topScore = Math.max(0, 500 - rect.top);
+      return { node, score: textScore + toolbarScore + topScore };
+    })
+    .filter((item) => item.score >= 5000)
+    .sort((a, b) => b.score - a.score);
+  return candidates[0]?.node || null;
+}
+
+function imageFileInputs() {
+  return Array.from(document.querySelectorAll('input[type="file"]'))
+    .filter((input) => {
+      const accept = input.getAttribute('accept') || '';
+      const meta = [accept, input.name, input.id, input.className].join(' ');
+      return !accept || /image|png|jpg|jpeg|gif|webp|\*/i.test(meta);
+    });
+}
+
+async function waitForImageFileInput(previousInputs = new Set(), timeoutMs = 5000) {
+  const started = Date.now();
+  let last = null;
+  while (Date.now() - started < timeoutMs) {
+    ensureTypingNotStopped();
+    const inputs = imageFileInputs();
+    last = inputs.find((input) => !previousInputs.has(input)) || inputs[inputs.length - 1] || null;
+    if (last) return last;
+    await sleep(150);
+  }
+  return last;
+}
+
+function setFileInput(input, file) {
+  try {
+    const transfer = new DataTransfer();
+    transfer.items.add(file);
+    input.files = transfer.files;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    return input.files?.length > 0;
+  } catch (err) {
+    console.warn('NaviWrite file input assignment failed', err);
+    return false;
+  }
+}
+
+async function uploadImageViaNaverPhoto(node, blob, label) {
+  const target = editableRoot(node);
+  const beforeCount = editorImageCount();
+  const beforeInputs = new Set(imageFileInputs());
+  placeCaretAtEnd(target);
+  const button = findNaverPhotoButton();
+  if (button) await clickNode(button, 350);
+  ensureTypingNotStopped();
+  const input = await waitForImageFileInput(beforeInputs, 5000);
+  if (!input) return false;
+  const file = new File([blob], `${safeImageFilename(label)}.png`, { type: 'image/png' });
+  const assigned = setFileInput(input, file);
+  if (!assigned) return false;
+  const started = Date.now();
+  while (Date.now() - started < 10000) {
+    ensureTypingNotStopped();
+    await sleep(250);
+    if (editorImageCount() > beforeCount) {
+      await sleep(500);
+      return true;
+    }
+  }
+  return editorImageCount() > beforeCount;
+}
+
 async function insertImageAtCaret(node, image, index) {
   const url = imageUrl(image);
   if (!url) return false;
@@ -504,7 +597,8 @@ async function insertImageAtCaret(node, image, index) {
   try {
     const pngBlob = await imageUrlToPngBlob(url);
     if (pngBlob) {
-      const insertedAsFile = await pasteImageFileAtCaret(target, pngBlob, label);
+      let insertedAsFile = await uploadImageViaNaverPhoto(target, pngBlob, label);
+      if (!insertedAsFile) insertedAsFile = await pasteImageFileAtCaret(target, pngBlob, label);
       if (insertedAsFile) {
         await pressEnter(target, 1);
         return true;
@@ -514,8 +608,6 @@ async function insertImageAtCaret(node, image, index) {
     console.warn('NaviWrite image conversion failed', err);
   }
   if (/^data:image\//i.test(url)) {
-    await typeTextLikeHuman(target, `[이미지: ${label}]`, { chunkSize: 3, minDelay: 8, maxDelay: 18 });
-    await pressEnter(target, 1);
     return false;
   }
   const imageHtml = `<img src="${escapeHtml(url)}" alt="${escapeHtml(label)}" style="display:block;width:500px;max-width:100%;height:auto;margin:0 auto;" />`;
@@ -729,7 +821,8 @@ async function typeBodySegments(node, job, images = []) {
     ensureTypingNotStopped();
     if (segment.type === 'image') {
       const inserted = await insertImageAtCaret(target, segment.image, segment.index);
-      if (inserted) imageCount += 1;
+      if (!inserted) throw new Error(`이미지 ${segment.index + 1} 업로드에 실패했습니다. 사진 버튼 또는 이미지 형식을 확인해 주세요.`);
+      imageCount += 1;
       continue;
     }
     if (segment.type === 'quote') {
@@ -767,22 +860,18 @@ async function typeBodySegments(node, job, images = []) {
 
 async function fillJobLikeTyping(job, images = []) {
   typingStopRequested = false;
+  typingSessionStartedAt = Date.now();
   await dismissResumeDraftDialog();
   await sleep(220);
   const title = job.title || job.keyword || '';
   const body = plainBody(job);
   const titleTarget = editableRoot(findTitleTargetV2());
-  let bodyTarget = editableRoot(findBodyTarget());
-  if (!bodyTarget && body) {
-    activateBodyArea();
-    await sleep(250);
-    bodyTarget = editableRoot(findBodyTarget());
-  }
+  let bodyTarget = titleTarget ? null : editableRoot(findBodyTarget());
 
   if (!titleTarget && !bodyTarget) {
     throw new Error('현재 프레임에서 제목/본문 입력 영역을 찾지 못했습니다. 작성창을 클릭한 뒤 다시 시도하세요.');
   }
-  if (body && !bodyTarget) {
+  if (body && !bodyTarget && !titleTarget) {
     throw new Error('제목 영역은 찾았지만 본문 입력 영역을 찾지 못했습니다. 본문 영역을 한 번 클릭한 뒤 다시 삽입하세요.');
   }
 
@@ -791,6 +880,17 @@ async function fillJobLikeTyping(job, images = []) {
     clearEditable(titleTarget);
     await typeTextLikeHuman(titleTarget, title, { chunkSize: 4, minDelay: 12, maxDelay: 28 });
     await sleep(180);
+  }
+  if (body) {
+    bodyTarget = editableRoot(findBodyTarget());
+    if (!bodyTarget) {
+      activateBodyArea();
+      await sleep(300);
+      bodyTarget = editableRoot(findBodyTarget());
+    }
+  }
+  if (body && !bodyTarget) {
+    throw new Error('본문 입력 영역을 찾지 못했습니다. 제목 입력 뒤 본문 영역을 한 번 클릭하고 다시 시도해 주세요.');
   }
   if (bodyTarget && body) {
     bodyTarget.scrollIntoView?.({ block: 'center', inline: 'center' });
@@ -1043,6 +1143,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === 'NAVIWRITE_STOP_TYPING') {
     typingStopRequested = true;
     sendResponse({ ok: true, note: '타이핑 중지 요청을 받았습니다.' });
+    return true;
+  }
+
+  if (message?.type === 'NAVIWRITE_DISMISS_DRAFT') {
+    dismissResumeDraftDialog()
+      .then((dismissed) => sendResponse({ ok: true, dismissed }))
+      .catch((err) => sendResponse({ ok: false, error: err.message }));
     return true;
   }
 

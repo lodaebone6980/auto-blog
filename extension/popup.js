@@ -975,10 +975,22 @@ async function sendFillMessageToFrame(tabId, frameId) {
   }, { frameId }, done)).catch((err) => ({ ok: false, error: err.message }));
 }
 
+async function sendMessageToAllFrames(tabId, message) {
+  if (!tabId) return [];
+  const frames = await chromePromise((done) => chrome.webNavigation.getAllFrames({ tabId }, done))
+    .catch(() => [{ frameId: 0 }]);
+  return Promise.all((frames || [{ frameId: 0 }]).map((frame) =>
+    chromePromise((done) => chrome.tabs.sendMessage(tabId, message, { frameId: frame.frameId }, done))
+      .catch((err) => ({ ok: false, error: err.message, frameId: frame.frameId }))
+  ));
+}
+
 async function insertIntoTab(tabId, { retryMs = 12000 } = {}) {
   if (!state.activeJob) throw new Error('삽입할 작업이 없습니다.');
   if (!tabId) throw new Error('작성 탭을 찾을 수 없습니다.');
   setStep('insert', 'active', '작성창의 제목/본문 영역을 찾는 중입니다.');
+  await sendMessageToAllFrames(tabId, { type: 'NAVIWRITE_DISMISS_DRAFT' });
+  await delay(800);
   const started = Date.now();
   let lastResponse = null;
   while (Date.now() - started < retryMs) {
@@ -1036,12 +1048,18 @@ async function clearJob() {
 }
 
 async function sendStopToTab(tabId) {
-  if (!tabId) return;
-  const frames = await chromePromise((done) => chrome.webNavigation.getAllFrames({ tabId }, done))
-    .catch(() => [{ frameId: 0 }]);
-  await Promise.all((frames || [{ frameId: 0 }]).map((frame) =>
-    chrome.tabs.sendMessage(tabId, { type: 'NAVIWRITE_STOP_TYPING' }, { frameId: frame.frameId }).catch(() => null)
-  ));
+  await chromePromise((done) => chrome.storage.local.set({ naviwriteStopRequestedAt: Date.now() }, done));
+  const targets = tabId
+    ? [{ id: tabId }]
+    : await chromePromise((done) => chrome.tabs.query({ url: ['https://blog.naver.com/*', 'https://cafe.naver.com/*', 'https://contents.premium.naver.com/*', 'https://brunch.co.kr/*'] }, done)).catch(() => []);
+  await Promise.all((targets || []).map(async (tab) => {
+    if (!tab?.id) return;
+    const frames = await chromePromise((done) => chrome.webNavigation.getAllFrames({ tabId: tab.id }, done))
+      .catch(() => [{ frameId: 0 }]);
+    await Promise.all((frames || [{ frameId: 0 }]).map((frame) =>
+      chrome.tabs.sendMessage(tab.id, { type: 'NAVIWRITE_STOP_TYPING' }, { frameId: frame.frameId }).catch(() => null)
+    ));
+  }));
 }
 
 async function stopBatch() {
