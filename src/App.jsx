@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 
 const API = '/api';
-const EXTENSION_ZIP_PATH = '/downloads/naviwrite-extension.zip?v=1.4.6';
+const EXTENSION_ZIP_PATH = '/downloads/naviwrite-extension.zip?v=1.4.7';
 const RUNNER_ZIP_PATH = '/downloads/naviwrite-runner.zip';
 
 const COLORS = {
@@ -1278,6 +1278,16 @@ function SourceCollectionPanel({ onOpenRewrite }) {
     });
   }, [links]);
 
+  useEffect(() => {
+    setCtaDrafts((prev) => {
+      const next = { ...prev };
+      jobs.forEach((job) => {
+        if (next[job.id] === undefined) next[job.id] = job.cta_url || job.qr_target_url || '';
+      });
+      return next;
+    });
+  }, [jobs]);
+
   const urlCount = useMemo(
     () => urlsText.split(/\r?\n/).map((line) => line.trim()).filter((line) => /^https?:\/\//i.test(line)).length,
     [urlsText]
@@ -2328,6 +2338,8 @@ function RewritePanel() {
   const [reprocessingIds, setReprocessingIds] = useState([]);
   const [keywordDrafts, setKeywordDrafts] = useState({});
   const [savingKeywordIds, setSavingKeywordIds] = useState([]);
+  const [ctaDrafts, setCtaDrafts] = useState({});
+  const [savingCtaIds, setSavingCtaIds] = useState([]);
   const [keywordsText, setKeywordsText] = useState('');
   const [targetTopic, setTargetTopic] = useState('');
   const [customTitle, setCustomTitle] = useState('');
@@ -2554,6 +2566,30 @@ function RewritePanel() {
       await loadRewriteData();
     } else {
       setMessage(res?.error || 'RSS 선택 키워드 저장에 실패했습니다.');
+    }
+  };
+
+  const saveRewriteCta = async (job) => {
+    const value = (ctaDrafts[job.id] || '').trim();
+    if (value && !/^https?:\/\//i.test(value)) {
+      setMessage('CTA 링크는 http:// 또는 https:// 로 시작해야 합니다.');
+      return;
+    }
+    setSavingCtaIds((prev) => [...new Set([...prev, job.id])]);
+    const res = await safeFetch(`${API}/rewrite-jobs/${job.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ctaUrl: value || null,
+        qrTargetUrl: value || null,
+      }),
+    });
+    setSavingCtaIds((prev) => prev.filter((id) => id !== job.id));
+    if (res?.ok) {
+      setMessage(value ? `CTA 링크 저장 완료: ${value}` : 'CTA 링크를 비웠습니다.');
+      await loadRewriteData();
+    } else {
+      setMessage(res?.error || 'CTA 링크 저장에 실패했습니다.');
     }
   };
 
@@ -3748,6 +3784,8 @@ function RewritePanel() {
                   const expanded = expandedRewriteJobIds.includes(job.id);
                   const busy = reprocessingIds.includes(job.id);
                   const selected = selectedRewriteJobIds.includes(job.id);
+                  const ctaDraft = ctaDrafts[job.id] ?? job.cta_url ?? job.qr_target_url ?? '';
+                  const ctaSaving = savingCtaIds.includes(job.id);
                   return [
                     <tr key={`row-${job.id}`} style={{ fontSize: 12, borderBottom: `1px solid ${COLORS.border}`, verticalAlign: 'top', background: selected ? '#f0f7ff' : 'white' }}>
                       <td style={{ padding: '12px' }}>
@@ -3796,7 +3834,20 @@ function RewritePanel() {
                         <p>{job.use_naver_qr ? '네이버 QR 사용' : '링크만 사용'}</p>
                         {job.naver_qr_short_url && <p style={{ marginTop: 4, fontSize: 10, color: COLORS.success, fontWeight: 850, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 160 }}>{job.naver_qr_short_url}</p>}
                         {job.use_naver_qr && !job.naver_qr_short_url && <p style={{ marginTop: 4, fontSize: 10, color: COLORS.warning, fontWeight: 850 }}>{job.qr_status || 'QR 생성 필요'}</p>}
-                        <p style={{ marginTop: 4, fontSize: 10, color: COLORS.textMuted, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 160 }}>{job.cta_url || 'CTA 링크 미입력'}</p>
+                        <input
+                          value={ctaDraft}
+                          onChange={(event) => setCtaDrafts((prev) => ({ ...prev, [job.id]: event.target.value }))}
+                          placeholder="https:// CTA link"
+                          style={{ width: '100%', height: 30, marginTop: 7, border: `1px solid ${COLORS.border}`, borderRadius: 7, padding: '0 8px', fontSize: 11, outline: 'none' }}
+                        />
+                        <button
+                          type="button"
+                          disabled={ctaSaving}
+                          onClick={() => saveRewriteCta(job)}
+                          style={{ width: '100%', height: 28, marginTop: 6, borderRadius: 7, border: 'none', background: COLORS.success, color: 'white', fontSize: 10, fontWeight: 850, cursor: ctaSaving ? 'wait' : 'pointer' }}
+                        >
+                          {ctaSaving ? 'CTA saving...' : 'CTA 저장'}
+                        </button>
                       </td>
                       <td style={{ padding: '12px', minWidth: 230 }}>
                         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>

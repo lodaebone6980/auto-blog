@@ -6545,6 +6545,39 @@ router.get('/rewrite-jobs/:id', async (req, res) => {
   }
 });
 
+router.patch('/rewrite-jobs/:id', async (req, res) => {
+  try {
+    const current = await pool.query('SELECT * FROM rewrite_jobs WHERE id = $1', [req.params.id]);
+    if (current.rows.length === 0) return res.status(404).json({ error: 'Rewrite job not found' });
+
+    const hasCta = Object.prototype.hasOwnProperty.call(req.body || {}, 'ctaUrl')
+      || Object.prototype.hasOwnProperty.call(req.body || {}, 'cta_url');
+    const hasQrTarget = Object.prototype.hasOwnProperty.call(req.body || {}, 'qrTargetUrl')
+      || Object.prototype.hasOwnProperty.call(req.body || {}, 'qr_target_url');
+    const ctaUrl = hasCta ? (req.body.ctaUrl ?? req.body.cta_url ?? null) : current.rows[0].cta_url;
+    const qrTargetUrl = hasQrTarget
+      ? (req.body.qrTargetUrl ?? req.body.qr_target_url ?? null)
+      : (hasCta ? ctaUrl : current.rows[0].qr_target_url);
+
+    const { rows } = await pool.query(
+      `UPDATE rewrite_jobs
+       SET cta_url = $2,
+           qr_target_url = $3,
+           updated_at = NOW()
+       WHERE id = $1
+       RETURNING *`,
+      [req.params.id, ctaUrl || null, qrTargetUrl || null]
+    );
+    await addRewriteEvent(req.params.id, 'cta_updated', 'CTA link updated', {
+      ctaUrl: ctaUrl || null,
+      qrTargetUrl: qrTargetUrl || null,
+    });
+    res.json({ ok: true, job: rows[0] });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.post('/rewrite-jobs', async (req, res) => {
   try {
     const tenantId = tenantIdFromReq(req);

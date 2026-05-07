@@ -815,9 +815,48 @@ function editorImageCount() {
   return document.querySelectorAll('.se-component-image, .se-module-image, img[src]').length;
 }
 
+function editorImageNodes() {
+  return Array.from(document.querySelectorAll('.se-component-image, .se-module-image, img[src]'))
+    .filter(visible);
+}
+
+function applyImageCenterMode(target) {
+  try {
+    target?.focus?.();
+    document.execCommand?.('justifyCenter', false);
+  } catch {}
+}
+
+async function centerEditorImages(beforeCount = 0) {
+  await sleep(120);
+  const images = editorImageNodes();
+  const recentImages = images.slice(Math.max(0, beforeCount));
+  const targets = recentImages.length ? recentImages : images.slice(-1);
+  targets.forEach((node) => {
+    const wrappers = [
+      node,
+      node.closest?.('.se-component-image'),
+      node.closest?.('.se-module-image'),
+      node.closest?.('.se-component'),
+      node.closest?.('.se-section'),
+      node.parentElement,
+    ].filter(Boolean);
+    wrappers.forEach((wrapper) => {
+      wrapper.style.textAlign = 'center';
+      wrapper.style.marginLeft = 'auto';
+      wrapper.style.marginRight = 'auto';
+      if (wrapper.tagName === 'IMG') wrapper.style.display = 'block';
+    });
+  });
+  try {
+    document.execCommand?.('justifyCenter', false);
+  } catch {}
+}
+
 async function pasteImageFileAtCaret(node, blob, label) {
   const target = editableRoot(node);
   const beforeCount = editorImageCount();
+  applyImageCenterMode(target);
   placeCaretAtEnd(target);
   const file = new File([blob], `${safeImageFilename(label)}.png`, { type: 'image/png' });
   const pasteData = new DataTransfer();
@@ -831,7 +870,10 @@ async function pasteImageFileAtCaret(node, blob, label) {
   const pasteAccepted = !target.dispatchEvent(pasteEvent);
   emitInput(target);
   await sleep(1100);
-  if (pasteAccepted || editorImageCount() > beforeCount) return true;
+  if (pasteAccepted || editorImageCount() > beforeCount) {
+    await centerEditorImages(beforeCount);
+    return true;
+  }
 
   const rect = target.getBoundingClientRect();
   const dropData = new DataTransfer();
@@ -846,7 +888,11 @@ async function pasteImageFileAtCaret(node, blob, label) {
   const dropAccepted = !target.dispatchEvent(dropEvent);
   emitInput(target);
   await sleep(1300);
-  return dropAccepted || editorImageCount() > beforeCount;
+  if (dropAccepted || editorImageCount() > beforeCount) {
+    await centerEditorImages(beforeCount);
+    return true;
+  }
+  return false;
 }
 
 function findNaverPhotoButton() {
@@ -913,6 +959,7 @@ async function uploadImageViaNaverPhoto(node, blob, label) {
   const target = editableRoot(node);
   const beforeCount = editorImageCount();
   const beforeInputs = new Set(imageFileInputs());
+  applyImageCenterMode(target);
   placeCaretAtEnd(target);
   const button = findNaverPhotoButton();
   if (button) await clickNode(button, 350);
@@ -928,10 +975,13 @@ async function uploadImageViaNaverPhoto(node, blob, label) {
     await sleep(250);
     if (editorImageCount() > beforeCount) {
       await sleep(500);
+      await centerEditorImages(beforeCount);
       return true;
     }
   }
-  return editorImageCount() > beforeCount;
+  const inserted = editorImageCount() > beforeCount;
+  if (inserted) await centerEditorImages(beforeCount);
+  return inserted;
 }
 
 async function insertImageAtCaret(node, image, index) {
@@ -948,6 +998,7 @@ async function insertImageAtCaret(node, image, index) {
       let insertedAsFile = await uploadImageViaNaverPhoto(target, pngBlob, label);
       if (!insertedAsFile) insertedAsFile = await pasteImageFileAtCaret(target, pngBlob, label);
       if (insertedAsFile) {
+        await centerEditorImages();
         await pressEnter(target, 1, { useCurrentCaret: true });
         return true;
       }
@@ -966,6 +1017,7 @@ async function insertImageAtCaret(node, image, index) {
   const inserted = pasteHtmlAtCaret(html, link ? `[${label}] ${link}` : `[${label}]`);
   emitInput(target);
   await sleep(180);
+  await centerEditorImages();
   await pressEnter(target, 1, { useCurrentCaret: true });
   return inserted;
 }
