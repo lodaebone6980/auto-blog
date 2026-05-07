@@ -408,8 +408,28 @@ function findVisibleNode(selectors, matcher) {
 
 async function clickNode(node, waitMs = 160) {
   if (!node) return false;
-  node.scrollIntoView?.({ block: 'center', inline: 'center' });
-  node.click?.();
+  const target = node.closest?.('button, a, [role="button"], input[type="button"]') || node;
+  target.scrollIntoView?.({ block: 'center', inline: 'center' });
+  target.focus?.({ preventScroll: true });
+  const rect = target.getBoundingClientRect();
+  const eventOptions = {
+    bubbles: true,
+    cancelable: true,
+    composed: true,
+    view: window,
+    clientX: Math.round(rect.left + rect.width / 2),
+    clientY: Math.round(rect.top + rect.height / 2),
+    button: 0,
+    buttons: 1,
+  };
+  ['pointerover', 'mouseover', 'pointermove', 'mousemove', 'pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']
+    .forEach((type) => {
+      try {
+        const EventCtor = type.startsWith('pointer') && window.PointerEvent ? PointerEvent : MouseEvent;
+        target.dispatchEvent(new EventCtor(type, eventOptions));
+      } catch {}
+    });
+  target.click?.();
   await sleep(waitMs);
   return true;
 }
@@ -417,6 +437,7 @@ async function clickNode(node, waitMs = 160) {
 async function dismissResumeDraftDialog() {
   const draftPattern = /(?:\uC791\uC131\s*\uC911\uC778\s*\uAE00|\uC774\uC5B4\uC11C\s*\uC791\uC131|\uC791\uC131\uD558\uC2DC\uACA0\uC2B5\uB2C8\uAE4C)/;
   const cancelPattern = /(?:\uCDE8\uC18C|\uC0C8\uB85C|\uC544\uB2C8\uC624|cancel|no)/i;
+  const popupRootSelector = '.se-popup, .se-popup-alert-confirm, .se-popup-container, .se-pop-layer, .se-layer, [role="dialog"]';
   const dialogSelectors = [
     '[role="dialog"]',
     '.se-popup',
@@ -429,11 +450,28 @@ async function dismissResumeDraftDialog() {
     '.se-dialog-container',
   ];
   for (let attempt = 0; attempt < 30; attempt += 1) {
+    const explicitCancel = Array.from(document.querySelectorAll([
+      'button.se-popup-button-cancel',
+      '.se-popup-button-cancel',
+      'button[class*="cancel"]',
+      '.se-popup-button-container button:first-child',
+    ].join(',')))
+      .filter(visible)
+      .find((node) => {
+        const popup = node.closest?.(popupRootSelector);
+        const text = `${popup?.textContent || ''}\n${document.body?.textContent || ''}`;
+        return cancelPattern.test(nodeText(node)) && draftPattern.test(text);
+      });
+    if (explicitCancel) {
+      await clickNode(explicitCancel, 900);
+      return true;
+    }
+
     const directCancel = Array.from(document.querySelectorAll('button, a, [role="button"], input[type="button"]'))
       .filter(visible)
       .find((node) => {
-        const container = node.closest?.('div, section, article, [role="dialog"]');
-        const nearby = container?.textContent || document.body?.textContent || '';
+        const container = node.closest?.(`${popupRootSelector}, div, section, article`);
+        const nearby = `${container?.textContent || ''}\n${document.body?.textContent || ''}`;
         return cancelPattern.test(nodeText(node)) && draftPattern.test(nearby);
       });
     if (directCancel) {
