@@ -887,7 +887,7 @@ async function startSelectedJobs() {
       setBatchStatus(`${index + 1}/${plannedIds.length} 작성창을 열고 있습니다: ${job.title || job.keyword || `#${job.id}`}`);
       const tab = await openEditorForJob();
       state.currentTabId = tab?.id || null;
-      await delay(2500);
+      await waitForEditorStageReady(tab?.id, 'title', 12000);
       ensureBatchNotStopped();
       setBatchStatus(`${index + 1}/${plannedIds.length} 제목/본문을 타이핑 중입니다: ${job.title || job.keyword || `#${job.id}`}`);
       const titleResult = await insertIntoTab(tab?.id, { retryMs: 10000, stage: 'title' });
@@ -997,12 +997,71 @@ async function sendMessageToAllFrames(tabId, message) {
   ));
 }
 
+function frameUrlScore(frame = {}) {
+  const url = String(frame.url || '');
+  let score = 0;
+  if (/PostWrite|postwrite|PostWriteForm/i.test(url)) score += 10000;
+  if (/blog\.naver\.com/i.test(url)) score += 1200;
+  if (/mainFrame|redirect=Write|widgetTypeCall=true/i.test(url)) score += 800;
+  if (frame.frameId && frame.frameId !== 0) score += 200;
+  if (/ssl\.pstatic|static|about:blank/i.test(url)) score -= 5000;
+  return score;
+}
+
+async function probeEditorFrame(tabId, frame, stage = 'full') {
+  const response = await chromePromise((done) => chrome.tabs.sendMessage(tabId, {
+    type: 'NAVIWRITE_PROBE_EDITOR',
+    stage,
+  }, { frameId: frame.frameId }, done)).catch((err) => ({ ok: false, error: err.message }));
+  return {
+    ...frame,
+    probe: response,
+    score: frameUrlScore(frame) + (response?.score || 0),
+  };
+}
+
+async function editorFramesForStage(tabId, stage = 'full') {
+  const frames = await chromePromise((done) => chrome.webNavigation.getAllFrames({ tabId }, done))
+    .catch(() => [{ frameId: 0, url: '' }]);
+  const likelyFrames = (frames || [{ frameId: 0, url: '' }])
+    .map((frame) => ({ ...frame, score: frameUrlScore(frame) }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 8);
+
+  const probed = await Promise.all(likelyFrames.map((frame) => probeEditorFrame(tabId, frame, stage)));
+  const filtered = probed
+    .filter((frame) => {
+      if (!frame.probe?.ok) return false;
+      if (stage === 'title') return frame.probe.hasTitle;
+      if (stage === 'body') return frame.probe.hasBody;
+      return frame.probe.hasTitle || frame.probe.hasBody;
+    })
+    .sort((a, b) => b.score - a.score);
+  return filtered.length ? filtered : likelyFrames;
+}
+
+async function waitForEditorStageReady(tabId, stage = 'title', timeoutMs = 12000) {
+  const started = Date.now();
+  let last = [];
+  while (Date.now() - started < timeoutMs) {
+    last = await editorFramesForStage(tabId, stage);
+    const ready = last.find((frame) => {
+      if (stage === 'title') return frame.probe?.hasTitle;
+      if (stage === 'body') return frame.probe?.hasBody;
+      return frame.probe?.hasTitle || frame.probe?.hasBody;
+    });
+    if (ready) return ready;
+    await delay(250);
+  }
+  return last[0] || null;
+}
+
 async function insertIntoTab(tabId, { retryMs = 12000, stage = 'full' } = {}) {
   if (!state.activeJob) throw new Error('삽입할 작업이 없습니다.');
   if (!tabId) throw new Error('작성 탭을 찾을 수 없습니다.');
   setStep('insert', 'active', '작성창의 제목/본문 영역을 찾는 중입니다.');
   await sendMessageToAllFrames(tabId, { type: 'NAVIWRITE_DISMISS_DRAFT' });
-  await delay(800);
+  await delay(stage === 'title' ? 150 : 450);
   const messageType = stage === 'title'
     ? 'NAVIWRITE_WRITE_TITLE_ONLY'
     : stage === 'body'
@@ -1010,16 +1069,17 @@ async function insertIntoTab(tabId, { retryMs = 12000, stage = 'full' } = {}) {
       : 'NAVIWRITE_FILL_JOB';
   const started = Date.now();
   let lastResponse = null;
+  let orderedFrames = await editorFramesForStage(tabId, stage);
   while (Date.now() - started < retryMs) {
-    const frames = await chromePromise((done) => chrome.webNavigation.getAllFrames({ tabId }, done))
-      .catch(() => [{ frameId: 0 }]);
-    const orderedFrames = (frames || [{ frameId: 0 }]).sort((a, b) => (a.frameId === 0 ? 1 : b.frameId === 0 ? -1 : 0));
+    if (!orderedFrames.length || Date.now() - started > 1200) {
+      orderedFrames = await editorFramesForStage(tabId, stage);
+    }
     for (const frame of orderedFrames) {
       const response = await sendFillMessageToFrame(tabId, frame.frameId, messageType);
       lastResponse = response;
       if (response?.ok) return response;
     }
-    await delay(900);
+    await delay(stage === 'title' ? 220 : 650);
   }
   return lastResponse || { ok: false, error: '작성 영역을 찾지 못했습니다.' };
 }

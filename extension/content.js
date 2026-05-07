@@ -254,15 +254,15 @@ function titleTextPresent(title, knownTarget = null) {
   const wanted = String(title || '').trim();
   if (!wanted) return true;
   const area = findTitleArea(knownTarget);
-  const chunks = [];
-  if (area) {
-    chunks.push(area.textContent || '');
-    chunks.push(area.value || '');
-    area.querySelectorAll?.('input, textarea, [contenteditable="true"]').forEach((node) => {
-      chunks.push(node.value || node.textContent || '');
-    });
-  }
-  return chunks.some((chunk) => String(chunk || '').includes(wanted));
+  const targets = uniqueNodes([
+    editableRoot(knownTarget),
+    knownTarget && ('value' in knownTarget || knownTarget.isContentEditable) ? knownTarget : null,
+    ...Array.from(area?.querySelectorAll?.('input, textarea, [contenteditable="true"]') || []),
+  ])
+    .map((node) => editableRoot(node) || node)
+    .filter(Boolean)
+    .filter((node) => visible(node) && (closestTitleContainer(node) || hasTitleHint(node)));
+  return targets.some((node) => currentTextValue(node).trim().includes(wanted));
 }
 
 function activeTitleEditable() {
@@ -411,7 +411,7 @@ function requestMainWorldTitleWrite(text) {
       resolve(false);
       return;
     }
-    const timer = setTimeout(() => resolve(false), 2500);
+    const timer = setTimeout(() => resolve(false), 900);
     chrome.runtime.sendMessage(
       { type: 'NAVIWRITE_WRITE_TITLE_MAIN_WORLD', title: text },
       (response) => {
@@ -1653,6 +1653,22 @@ async function fillJobBodyOnly(job, images = []) {
   };
 }
 
+function probeEditorTarget(stage = 'full') {
+  const titleTarget = stage === 'body' ? null : findStrictTitleEditable();
+  const bodyTarget = stage === 'title' ? null : editableRoot(findBodyTarget());
+  const titleRect = titleTarget?.getBoundingClientRect?.();
+  const bodyRect = bodyTarget?.getBoundingClientRect?.();
+  const titleScore = titleTarget ? 6000 + Math.max(0, 1200 - Math.abs((titleRect?.top || 160) - 160)) : 0;
+  const bodyScore = bodyTarget ? 3500 + Math.max(0, 800 - Math.abs((bodyRect?.top || 320) - 320)) : 0;
+  return {
+    ok: true,
+    hasTitle: Boolean(titleTarget),
+    hasBody: Boolean(bodyTarget),
+    score: titleScore + bodyScore,
+    url: location.href,
+  };
+}
+
 function currentBlogUrl() {
   try {
     const parsed = new URL(location.href);
@@ -1907,6 +1923,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       title: job.title || job.keyword || '',
       note: 'NaviWrite content script is ready.',
     });
+    return true;
+  }
+
+  if (message?.type === 'NAVIWRITE_PROBE_EDITOR') {
+    try {
+      sendResponse(probeEditorTarget(message.stage || 'full'));
+    } catch (err) {
+      sendResponse({ ok: false, error: err.message });
+    }
     return true;
   }
 
