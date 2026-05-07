@@ -102,6 +102,24 @@ function findTitleTargetV2() {
   return candidates[0]?.node || null;
 }
 
+function findTitlePlaceholder() {
+  return Array.from(document.querySelectorAll('.se-title, .se-title-text, .se-documentTitle, [class*="title"], [class*="Title"], div, span, p'))
+    .filter(visible)
+    .find((node) => /\uC81C\uBAA9/.test(node.textContent || node.getAttribute?.('placeholder') || node.getAttribute?.('aria-label') || '')) || null;
+}
+
+async function focusTitleTarget() {
+  let target = editableRoot(findTitleTargetV2());
+  if (target && visible(target)) return target;
+  const placeholder = findTitlePlaceholder();
+  if (placeholder) {
+    await clickNode(placeholder, 250);
+    target = editableRoot(document.activeElement) || selectionEditable();
+    if (target && visible(target)) return target;
+  }
+  return null;
+}
+
 function findBodyTarget() {
   const titleTarget = findTitleTargetV2();
   const titleBottom = titleTarget?.getBoundingClientRect?.().bottom || 0;
@@ -597,6 +615,49 @@ function pasteHtmlAtCaret(html, fallbackText = '') {
   return Boolean(document.execCommand?.('insertHTML', false, html));
 }
 
+async function pastePlainTextAtCaret(node, text, options = {}) {
+  let target = resolveTypingTarget(node, { useCurrentCaret: true });
+  target.focus?.();
+  if (isPlaceholderOnly(target)) clearEditable(target);
+  if (!selectionEditable()) placeCaretAtEnd(target);
+  const before = currentTextValue(target);
+  try {
+    const data = new DataTransfer();
+    data.setData('text/plain', text);
+    const event = new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true });
+    target.dispatchEvent(event);
+    await sleep(120);
+  } catch {}
+  target = resolveTypingTarget(target, { useCurrentCaret: true });
+  if (!currentTextValue(target).includes(text) && currentTextValue(target) === before) {
+    target.dispatchEvent(new InputEvent('beforeinput', {
+      bubbles: true,
+      cancelable: true,
+      inputType: 'insertText',
+      data: text,
+    }));
+    const inserted = document.execCommand?.('insertText', false, text);
+    target.dispatchEvent(new InputEvent('input', {
+      bubbles: true,
+      cancelable: false,
+      inputType: 'insertText',
+      data: text,
+    }));
+    await sleep(80);
+    if (!inserted && !currentTextValue(target).includes(text)) {
+      await typeTextLikeHuman(target, text, {
+        chunkSize: options.chunkSize || 3,
+        minDelay: options.minDelay ?? 8,
+        maxDelay: options.maxDelay ?? 20,
+        useCurrentCaret: true,
+      });
+    }
+  }
+  target = resolveTypingTarget(target, { useCurrentCaret: true });
+  emitInput(target);
+  return currentTextValue(target).includes(text);
+}
+
 function safeImageFilename(value = 'naviwrite-image') {
   return String(value || 'naviwrite-image')
     .replace(/[\\/:*?"<>|]+/g, ' ')
@@ -1009,10 +1070,47 @@ function buildTypingSegments(job, images = []) {
   return segments;
 }
 
+function buildPublishingSegments(job, images = []) {
+  const lines = cleanBodyLines(job);
+  const segments = [];
+  let imageIndex = 0;
+  const link = validHyperlink(ctaUrl(job));
+
+  if (images[imageIndex]) {
+    segments.push({ type: 'image', role: 'thumbnail', image: { ...images[imageIndex], ctaLink: link }, index: imageIndex });
+    imageIndex += 1;
+  }
+
+  lines.forEach((line, index) => {
+    if (isQrPlaceholder(line)) {
+      if (link) segments.push({ type: 'cta', text: `바로 확인하기\n${link}` });
+      return;
+    }
+    if (isQuoteLine(line)) {
+      segments.push({ type: 'quote', text: cleanQuoteLine(line) });
+      if (images[imageIndex]) {
+        segments.push({ type: 'image', image: { ...images[imageIndex], ctaLink: '' }, index: imageIndex });
+        imageIndex += 1;
+      }
+      return;
+    }
+    if (isHeadingLine(line, index)) {
+      segments.push({ type: 'heading', text: line });
+      return;
+    }
+    segments.push({ type: 'paragraph', text: line });
+  });
+
+  if (link && !segments.some((segment) => segment.type === 'cta')) {
+    segments.push({ type: 'cta', text: `바로 확인하기\n${link}` });
+  }
+  return segments;
+}
+
 async function typeBodySegments(node, job, images = []) {
   const target = editableRoot(node);
   clearEditable(target);
-  const segments = buildTypingSegments(job, images);
+  const segments = buildPublishingSegments(job, images);
   let imageCount = 0;
   let quoteCount = 0;
   let typedSegments = 0;
@@ -1029,7 +1127,8 @@ async function typeBodySegments(node, job, images = []) {
       const quote2Applied = await applyNaverQuote2();
       if (!quote2Applied) applyFormatBlock('blockquote');
       await sleep(120);
-      await typeTextLikeHuman(target, segment.text, { chunkSize: 3, minDelay: 9, maxDelay: 23, useCurrentCaret: true });
+      const written = await pastePlainTextAtCaret(target, segment.text, { chunkSize: 3, minDelay: 9, maxDelay: 23 });
+      if (!written) throw new Error('인용구 본문 입력에 실패했습니다.');
       quoteCount += 1;
       await pressEnter(target, 1, { useCurrentCaret: true });
       applyFormatBlock('p');
@@ -1038,7 +1137,8 @@ async function typeBodySegments(node, job, images = []) {
     }
     if (segment.type === 'heading') {
       applyFormatBlock('h3');
-      await typeTextLikeHuman(target, segment.text, { chunkSize: 3, minDelay: 9, maxDelay: 22, useCurrentCaret: true });
+      const written = await pastePlainTextAtCaret(target, segment.text, { chunkSize: 3, minDelay: 9, maxDelay: 22 });
+      if (!written) throw new Error('소제목 입력에 실패했습니다.');
       await pressEnter(target, 1, { useCurrentCaret: true });
       applyFormatBlock('p');
       typedSegments += 1;
@@ -1046,13 +1146,15 @@ async function typeBodySegments(node, job, images = []) {
     }
     if (segment.type === 'cta') {
       applyFormatBlock('p');
-      await typeTextLikeHuman(target, segment.text, { chunkSize: 3, minDelay: 9, maxDelay: 22, useCurrentCaret: true });
+      const written = await pastePlainTextAtCaret(target, segment.text, { chunkSize: 3, minDelay: 9, maxDelay: 22 });
+      if (!written) throw new Error('CTA 입력에 실패했습니다.');
       await pressEnter(target, 2, { useCurrentCaret: true });
       typedSegments += 1;
       continue;
     }
     applyFormatBlock('p');
-    await typeTextLikeHuman(target, segment.text, { chunkSize: 3, minDelay: 8, maxDelay: 20, useCurrentCaret: true });
+    const written = await pastePlainTextAtCaret(target, segment.text, { chunkSize: 3, minDelay: 8, maxDelay: 20 });
+    if (!written) throw new Error('본문 입력에 실패했습니다.');
     await pressEnter(target, 2, { useCurrentCaret: true });
     typedSegments += 1;
   }
@@ -1066,9 +1168,12 @@ async function fillJobLikeTyping(job, images = []) {
   await sleep(220);
   const title = job.title || job.keyword || '';
   const body = plainBody(job);
-  const titleTarget = editableRoot(findTitleTargetV2());
+  const titleTarget = title ? await focusTitleTarget() : editableRoot(findTitleTargetV2());
   let bodyTarget = titleTarget ? null : editableRoot(findBodyTarget());
 
+  if (title && !titleTarget) {
+    throw new Error('제목 입력칸을 찾지 못했습니다. 이 프레임은 작성 에디터가 아닙니다.');
+  }
   if (!titleTarget && !bodyTarget) {
     throw new Error('현재 프레임에서 제목/본문 입력 영역을 찾지 못했습니다. 작성창을 클릭한 뒤 다시 시도하세요.');
   }
