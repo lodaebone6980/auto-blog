@@ -38,6 +38,8 @@ function findTitleTarget() {
 }
 
 function findTitleTargetV2() {
+  const strict = findStrictTitleEditable();
+  if (strict) return strict;
   const selectors = [
     '.se-title textarea',
     '.se-title input',
@@ -102,22 +104,142 @@ function findTitleTargetV2() {
   return candidates[0]?.node || null;
 }
 
-function findTitlePlaceholder() {
-  return Array.from(document.querySelectorAll('.se-title, .se-title-text, .se-documentTitle, [class*="title"], [class*="Title"], div, span, p'))
-    .filter(visible)
-    .find((node) => /\uC81C\uBAA9/.test(node.textContent || node.getAttribute?.('placeholder') || node.getAttribute?.('aria-label') || '')) || null;
+const TITLE_CONTAINER_SELECTOR = [
+  '.se-title',
+  '.se-title-text',
+  '.se-documentTitle',
+  '[class*="se-title"]',
+  '[class*="se_title"]',
+  '[class*="documentTitle"]',
+  '[class*="DocumentTitle"]',
+].join(',');
+
+function nodeMeta(node) {
+  if (!node) return '';
+  return [
+    node.textContent,
+    node.value,
+    node.getAttribute?.('placeholder'),
+    node.getAttribute?.('aria-label'),
+    node.getAttribute?.('data-placeholder'),
+    node.getAttribute?.('data-a11y-title'),
+    node.getAttribute?.('title'),
+    node.className,
+    node.closest?.('[class]')?.className,
+  ].join(' ');
 }
 
-function findTitleArea() {
-  const target = findTitleTargetV2();
-  if (target) return target.closest?.('.se-title, .se-title-text, .se-documentTitle, [class*="title"], [class*="Title"]') || target;
+function hasTitleHint(node) {
+  return /\uC81C\uBAA9|title|documentTitle|se-title/i.test(nodeMeta(node));
+}
+
+function hasBodyHint(node) {
+  return /\uBCF8\uBB38|\uB0B4\uC6A9|content|paragraph|se-section-text|se-main-container/i.test(nodeMeta(node));
+}
+
+function closestTitleContainer(node) {
+  if (!node) return null;
+  if (node.matches?.(TITLE_CONTAINER_SELECTOR)) return node;
+  return node.closest?.(TITLE_CONTAINER_SELECTOR) || null;
+}
+
+function uniqueNodes(nodes) {
+  return nodes.filter(Boolean).filter((node, index, list) => list.indexOf(node) === index);
+}
+
+function titleCandidateScore(node) {
+  const rect = node.getBoundingClientRect?.() || { top: 9999, width: 0, height: 0 };
+  const titleScore = hasTitleHint(node) ? 5000 : 0;
+  const topScore = Math.max(0, 1500 - Math.abs(rect.top - 160));
+  const bodyPenalty = hasBodyHint(node) && !closestTitleContainer(node) ? 2600 : 0;
+  const sizePenalty = rect.height > 220 ? 1200 : 0;
+  return titleScore + topScore + Math.min(rect.width, 900) - bodyPenalty - sizePenalty;
+}
+
+function findStrictTitleContainer() {
+  const containers = uniqueNodes([
+    ...Array.from(document.querySelectorAll(TITLE_CONTAINER_SELECTOR)),
+    ...Array.from(document.querySelectorAll('[data-placeholder*="\uC81C\uBAA9"], [aria-label*="\uC81C\uBAA9"], [placeholder*="\uC81C\uBAA9"]'))
+      .map((node) => closestTitleContainer(node) || node),
+  ])
+    .filter(visible)
+    .filter((node) => hasTitleHint(node) && !(hasBodyHint(node) && !closestTitleContainer(node)))
+    .sort((a, b) => titleCandidateScore(b) - titleCandidateScore(a));
+  if (containers[0]) return containers[0];
+  const placeholder = findTitlePlaceholder();
+  return placeholder ? closestTitleContainer(placeholder) || placeholder : null;
+}
+
+function editableInsideTitleContainer(container) {
+  if (!container) return null;
+  const candidates = uniqueNodes([
+    container,
+    ...Array.from(container.querySelectorAll?.([
+      'textarea',
+      'input',
+      '[contenteditable="true"]',
+      '.se-text-paragraph',
+      '[data-placeholder*="\uC81C\uBAA9"]',
+      '[aria-label*="\uC81C\uBAA9"]',
+      '[placeholder*="\uC81C\uBAA9"]',
+    ].join(',')) || []),
+  ])
+    .map((node) => editableRoot(node) || (node.isContentEditable || 'value' in node ? node : null))
+    .filter(Boolean)
+    .filter((node) => visible(node) && !(hasBodyHint(node) && !closestTitleContainer(node)))
+    .sort((a, b) => titleCandidateScore(b) - titleCandidateScore(a));
+  return candidates[0] || null;
+}
+
+function findStrictTitleEditable() {
+  const container = findStrictTitleContainer();
+  const inside = editableInsideTitleContainer(container);
+  if (inside) return inside;
+  const direct = uniqueNodes(Array.from(document.querySelectorAll([
+    'textarea[placeholder*="\uC81C\uBAA9"]',
+    'input[placeholder*="\uC81C\uBAA9"]',
+    '[contenteditable="true"][aria-label*="\uC81C\uBAA9"]',
+    '[contenteditable="true"][data-placeholder*="\uC81C\uBAA9"]',
+    '[contenteditable="true"][data-a11y-title*="\uC81C\uBAA9"]',
+    '[contenteditable="true"][title*="\uC81C\uBAA9"]',
+  ].join(',')))
+    .map((node) => editableRoot(node) || node))
+    .filter((node) => visible(node) && hasTitleHint(node) && !(hasBodyHint(node) && !closestTitleContainer(node)))
+    .sort((a, b) => titleCandidateScore(b) - titleCandidateScore(a));
+  return direct[0] || null;
+}
+
+function findTitlePlaceholder() {
+  const candidates = Array.from(document.querySelectorAll([
+    '.se-title',
+    '.se-title-text',
+    '.se-documentTitle',
+    '[data-placeholder*="\uC81C\uBAA9"]',
+    '[aria-label*="\uC81C\uBAA9"]',
+    '[placeholder*="\uC81C\uBAA9"]',
+    'div',
+    'span',
+    'p',
+  ].join(',')))
+    .filter(visible)
+    .filter((node) => /\uC81C\uBAA9/.test(node.textContent || node.getAttribute?.('placeholder') || node.getAttribute?.('aria-label') || node.getAttribute?.('data-placeholder') || ''))
+    .filter((node) => !(hasBodyHint(node) && !closestTitleContainer(node)))
+    .sort((a, b) => titleCandidateScore(b) - titleCandidateScore(a));
+  return candidates[0] || null;
+}
+
+function findTitleArea(knownTarget = null) {
+  const strictContainer = closestTitleContainer(knownTarget) || findStrictTitleContainer();
+  if (strictContainer) return strictContainer;
+  const target = knownTarget || findStrictTitleEditable() || findTitleTargetV2();
+  if (target) return closestTitleContainer(target) || target;
   return findTitlePlaceholder();
 }
 
-function titleTextPresent(title) {
+function titleTextPresent(title, knownTarget = null) {
   const wanted = String(title || '').trim();
   if (!wanted) return true;
-  const area = findTitleArea();
+  const area = findTitleArea(knownTarget);
   const chunks = [];
   if (area) {
     chunks.push(area.textContent || '');
@@ -129,14 +251,34 @@ function titleTextPresent(title) {
   return chunks.some((chunk) => String(chunk || '').includes(wanted));
 }
 
+function activeTitleEditable() {
+  const active = editableRoot(document.activeElement);
+  if (active && visible(active) && (closestTitleContainer(active) || hasTitleHint(active)) && !(hasBodyHint(active) && !closestTitleContainer(active))) {
+    return active;
+  }
+  const selected = selectionEditable({ allowTitle: true });
+  if (selected && visible(selected) && (closestTitleContainer(selected) || hasTitleHint(selected)) && !(hasBodyHint(selected) && !closestTitleContainer(selected))) {
+    return selected;
+  }
+  return null;
+}
+
 async function focusTitleTarget() {
-  let target = editableRoot(findTitleTargetV2());
-  if (target && visible(target)) return target;
-  const placeholder = findTitlePlaceholder();
-  if (placeholder) {
-    await clickNode(placeholder, 250);
-    target = editableRoot(document.activeElement) || selectionEditable({ allowTitle: true });
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    await dismissResumeDraftDialog();
+    let target = activeTitleEditable() || findStrictTitleEditable();
+    if (target && visible(target)) {
+      await clickNode(target, 120);
+      target = activeTitleEditable() || target;
+      if (target && visible(target)) return target;
+    }
+    const area = findTitleArea();
+    const placeholder = findTitlePlaceholder();
+    const clickTarget = placeholder || area;
+    if (clickTarget) await clickNode(clickTarget, 180);
+    target = activeTitleEditable() || findStrictTitleEditable();
     if (target && visible(target)) return target;
+    await sleep(150);
   }
   return null;
 }
@@ -246,31 +388,60 @@ function currentTextValue(node) {
 
 async function setTitleText(node, text) {
   const target = editableRoot(node);
-  await selectAllAndDelete(target);
+  if (!target) return false;
+  clearEditable(target);
   await typeTextLikeHuman(target, text, { chunkSize: 1, minDelay: 10, maxDelay: 24 });
   await sleep(180);
   emitInput(target);
-  return currentTextValue(target).includes(text) || titleTextPresent(text);
+  if (currentTextValue(target).includes(text) || titleTextPresent(text, target)) return true;
+
+  clearEditable(target);
+  target.focus?.();
+  placeCaretAtEnd(target);
+  target.dispatchEvent(new InputEvent('beforeinput', {
+    bubbles: true,
+    cancelable: true,
+    inputType: 'insertText',
+    data: text,
+  }));
+  document.execCommand?.('insertText', false, text);
+  target.dispatchEvent(new InputEvent('input', {
+    bubbles: true,
+    cancelable: false,
+    inputType: 'insertText',
+    data: text,
+  }));
+  emitInput(target);
+  await sleep(180);
+  if (currentTextValue(target).includes(text) || titleTextPresent(text, target)) return true;
+
+  if ('value' in target) {
+    const prototype = target.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    const setter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
+    if (setter) setter.call(target, text);
+    else target.value = text;
+  } else {
+    target.textContent = text;
+  }
+  emitInput(target);
+  await sleep(180);
+  return currentTextValue(target).includes(text) || titleTextPresent(text, target);
 }
 
 async function typeTitleText(title) {
-  const area = findTitleArea();
-  if (area) await clickNode(area, 250);
-  let target = editableRoot(document.activeElement)
-    || editableRoot(findTitleTargetV2())
-    || selectionEditable({ allowTitle: true });
-  if (!target && area) target = editableRoot(area);
+  await dismissResumeDraftDialog();
+  let target = await focusTitleTarget();
   if (!target) return false;
-  await setTitleText(target, title);
-  if (titleTextPresent(title)) return true;
-  await clickNode(area || target, 250);
-  target = editableRoot(document.activeElement)
-    || selectionEditable({ allowTitle: true })
-    || editableRoot(target);
+  target = activeTitleEditable() || editableRoot(target);
+  if (!target || (hasBodyHint(target) && !closestTitleContainer(target))) return false;
   if (!target) return false;
-  await typeTextLikeHuman(target, title, { chunkSize: 1, minDelay: 10, maxDelay: 24 });
-  await sleep(180);
-  return titleTextPresent(title);
+  const written = await setTitleText(target, title);
+  if (written && titleTextPresent(title, target)) return true;
+
+  await clickNode(findTitlePlaceholder() || findTitleArea(target) || target, 250);
+  target = activeTitleEditable() || findStrictTitleEditable() || target;
+  if (!target || (hasBodyHint(target) && !closestTitleContainer(target))) return false;
+  return setTitleText(target, title);
 }
 
 function setRichText(node, html, fallbackText) {
@@ -596,6 +767,15 @@ async function dismissResumeDraftDialog() {
     .some((node) => draftPattern.test(node.textContent || ''));
   const forceRemoveDraftLayer = () => {
     let removed = false;
+    Array.from(document.querySelectorAll('button.se-popup-button-cancel, .se-popup-button-cancel'))
+      .forEach((node) => {
+        const popup = node.closest?.(`${popupRootSelector}, .se-popup-button-container, .se-popup-alert-confirm`);
+        const container = popup?.closest?.(`${popupRootSelector}, .se-popup-alert-confirm`) || popup;
+        if (container && draftPattern.test(`${container.textContent || ''}\n${document.body?.textContent || ''}`)) {
+          container.remove?.();
+          removed = true;
+        }
+      });
     Array.from(document.querySelectorAll(`${popupRootSelector}, .se-popup-dim, .se-dim, .dimmed, .se-popup-dim-white`))
       .filter((node) => draftPattern.test(node.textContent || '') || /dim|popup/i.test(String(node.className || '')))
       .forEach((node) => {
@@ -1324,22 +1504,11 @@ async function fillJobLikeTyping(job, images = []) {
   await sleep(220);
   const title = job.title || job.keyword || '';
   const body = plainBody(job);
-  const titleTarget = title ? await focusTitleTarget() : editableRoot(findTitleTargetV2());
   let titleWritten = false;
-  let bodyTarget = titleTarget ? null : editableRoot(findBodyTarget());
-
-  if (title && !titleTarget) {
-    throw new Error('제목 입력칸을 찾지 못했습니다. 이 프레임은 작성 에디터가 아닙니다.');
-  }
-  if (!titleTarget && !bodyTarget) {
-    throw new Error('현재 프레임에서 제목/본문 입력 영역을 찾지 못했습니다. 작성창을 클릭한 뒤 다시 시도하세요.');
-  }
-  if (body && !bodyTarget && !titleTarget) {
-    throw new Error('제목 영역은 찾았지만 본문 입력 영역을 찾지 못했습니다. 본문 영역을 한 번 클릭한 뒤 다시 삽입하세요.');
-  }
+  let bodyTarget = null;
 
   let categorySelected = false;
-  if (titleTarget && title) {
+  if (title) {
     titleWritten = await typeTitleText(title);
     if (!titleWritten) throw new Error('제목 입력에 실패했습니다. 제목 영역을 클릭한 뒤 다시 시도해 주세요.');
   }
