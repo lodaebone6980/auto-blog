@@ -463,17 +463,18 @@ async function pasteTitleText(target, text) {
 async function setTitleText(node, text) {
   const target = editableRoot(node);
   if (!target) return false;
-  if (await pasteTitleText(target, text)) return true;
-
-  const mainWorldWritten = await requestMainWorldTitleWrite(text);
-  await sleep(220);
-  if (mainWorldWritten && titleTextPresent(text, target)) return true;
 
   clearEditable(target);
   await typeTextLikeHuman(target, text, { chunkSize: 1, minDelay: 10, maxDelay: 24 });
   await sleep(180);
   emitInput(target);
   if (currentTextValue(target).includes(text) || titleTextPresent(text, target)) return true;
+
+  const mainWorldWritten = await requestMainWorldTitleWrite(text);
+  await sleep(220);
+  if (mainWorldWritten && titleTextPresent(text, target)) return true;
+
+  if (await pasteTitleText(target, text)) return true;
 
   clearEditable(target);
   target.focus?.();
