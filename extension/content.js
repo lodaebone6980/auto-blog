@@ -915,8 +915,7 @@ function lastEmptyBodyEditable() {
     .map(editableRoot)
     .filter(Boolean)
     .filter((node, index, list) => list.indexOf(node) === index)
-    .filter((node) => !isQuoteEditable(node))
-    .filter((node) => isBodyEditable(node) || (!isTitleEditable(node) && visible(node)))
+    .filter((node) => usableBodyEditable(node))
     .filter((node) => {
       const text = (node.textContent || node.value || '').replace(/\s+/g, '').trim();
       const placeholder = [
@@ -926,39 +925,39 @@ function lastEmptyBodyEditable() {
       ].join(' ');
       return !text
         || /\uB0B4\uC6A9\uC744?\s*\uC785\uB825|\uB0B4\uC6A9\uC744?\s*\uC785\uB825\uD558\uC138\uC694|content/i.test(placeholder)
-        || /\uB0B4\uC6A9\uC744?\s*\uC785\uB825|\uB0B4\uC6A9\uC744?\s*\uC785\uB825\uD558\uC138\uC694/.test(text);
+        || hasEditorAuxPlaceholder(text);
     })
     .sort((a, b) => b.getBoundingClientRect().top - a.getBoundingClientRect().top)[0] || null;
 }
 
 function bodyTypingTarget(preferred) {
   const selected = selectionEditable();
-  if (selected && isBodyEditable(selected) && !isQuoteEditable(selected) && !isPlaceholderOnly(selected)) return selected;
+  if (selected && usableBodyEditable(selected) && !isPlaceholderOnly(selected)) return selected;
   const preferredEditable = editableRoot(preferred);
-  if (preferredEditable && isBodyEditable(preferredEditable) && !isQuoteEditable(preferredEditable)) return preferredEditable;
+  if (preferredEditable && usableBodyEditable(preferredEditable)) return preferredEditable;
   const active = activeEditable();
-  if (active && isBodyEditable(active) && !isQuoteEditable(active)) return active;
+  if (active && usableBodyEditable(active)) return active;
   const empty = lastEmptyBodyEditable();
   if (empty) return empty;
   const fallback = editableRoot(findBodyTarget());
-  return (selected && isBodyEditable(selected) && !isQuoteEditable(selected) ? selected : null)
-    || (fallback && !isQuoteEditable(fallback) ? fallback : null);
+  return (selected && usableBodyEditable(selected) ? selected : null)
+    || (fallback && usableBodyEditable(fallback) ? fallback : null);
 }
 
 function currentBodyTypingTarget(preferred) {
   const selected = selectionEditable();
-  if (selected && isBodyEditable(selected) && !isQuoteEditable(selected)) return selected;
+  if (selected && usableBodyEditable(selected)) return selected;
   const active = activeEditable();
-  if (active && isBodyEditable(active) && !isQuoteEditable(active)) return active;
+  if (active && usableBodyEditable(active)) return active;
   const preferredEditable = editableRoot(preferred);
-  if (preferredEditable && isBodyEditable(preferredEditable) && !isQuoteEditable(preferredEditable)) return preferredEditable;
+  if (preferredEditable && usableBodyEditable(preferredEditable)) return preferredEditable;
   const fallback = editableRoot(findBodyTarget());
-  return fallback && !isQuoteEditable(fallback) ? fallback : null;
+  return fallback && usableBodyEditable(fallback) ? fallback : null;
 }
 
 async function prepareBodyTypingTarget(preferred, { placeAtEnd = true, preserveCaret = false } = {}) {
   const current = currentBodyTypingTarget(preferred);
-  if (preserveCaret && current && selectionEditable() && isBodyEditable(current)) {
+  if (preserveCaret && current && selectionEditable() && usableBodyEditable(current)) {
     if (isPlaceholderOnly(current)) clearEditable(current);
     return current;
   }
@@ -976,26 +975,70 @@ function sequentialBodyTarget(preferred) {
   const active = activeEditable();
   const preferredEditable = editableRoot(preferred);
   const empty = lastEmptyBodyEditable();
-  const current = (selected && isBodyEditable(selected) && !isQuoteEditable(selected) ? selected : null)
-    || (active && isBodyEditable(active) && !isQuoteEditable(active) ? active : null)
-    || (preferredEditable && isBodyEditable(preferredEditable) && !isQuoteEditable(preferredEditable) ? preferredEditable : null)
+  const current = (selected && usableBodyEditable(selected) ? selected : null)
+    || (active && usableBodyEditable(active) ? active : null)
+    || (preferredEditable && usableBodyEditable(preferredEditable) ? preferredEditable : null)
     || empty
     || (() => {
       const fallback = editableRoot(findBodyTarget());
-      return fallback && !isQuoteEditable(fallback) ? fallback : null;
+      return fallback && usableBodyEditable(fallback) ? fallback : null;
     })();
   if (!current) {
     const preferredFallback = editableRoot(preferred);
-    return preferredFallback && !isQuoteEditable(preferredFallback) ? preferredFallback : null;
+    return preferredFallback && usableBodyEditable(preferredFallback) ? preferredFallback : null;
   }
   if (isPlaceholderOnly(current)) clearEditable(current);
   if (!selectionEditable()) placeCaretAtEnd(current);
   return current;
 }
 
+const EDITOR_AUX_PLACEHOLDER_SOURCE = [
+  '\\uB0B4\\uC6A9\\uC744?\\s*\\uC785\\uB825(?:\\uD558\\uC138\\uC694)?\\.?',
+  '\\uC0AC\\uC9C4\\s*\\uC124\\uBA85\\uC744?\\s*\\uC785\\uB825(?:\\uD558\\uC138\\uC694)?\\.?',
+  '\\uCD9C\\uCC98\\s*\\uC785\\uB825',
+  'AI\\s*\\uD65C\\uC6A9\\s*\\uC124\\uC815',
+].join('|');
+
+function stripEditorAuxPlaceholders(value = '') {
+  return String(value || '').replace(new RegExp(EDITOR_AUX_PLACEHOLDER_SOURCE, 'gi'), ' ');
+}
+
+function hasEditorAuxPlaceholder(value = '') {
+  return new RegExp(EDITOR_AUX_PLACEHOLDER_SOURCE, 'i').test(String(value || ''));
+}
+
+function isEditorAuxPlaceholderText(value = '') {
+  const raw = String(value || '');
+  if (!hasEditorAuxPlaceholder(raw)) return false;
+  return stripEditorAuxPlaceholders(raw).replace(/[“”"'`‘’\s.]/g, '').trim().length === 0;
+}
+
+function hasNonBodyEditorPlaceholder(value = '') {
+  return /(?:\uC0AC\uC9C4\s*\uC124\uBA85\uC744?\s*\uC785\uB825(?:\uD558\uC138\uC694)?\.?|\uCD9C\uCC98\s*\uC785\uB825|AI\s*\uD65C\uC6A9\s*\uC124\uC815)/i
+    .test(String(value || ''));
+}
+
 function isPlaceholderOnly(node) {
   const text = String(node?.textContent || node?.value || '').replace(/\s+/g, '').trim();
-  return Boolean(text) && /^\uB0B4\uC6A9\uC744?\uC785\uB825\uD558\uC138\uC694\.?$/.test(text);
+  return Boolean(text) && isEditorAuxPlaceholderText(text);
+}
+
+function isEditorAuxiliaryEditable(node) {
+  const editable = editableRoot(node);
+  if (!editable) return false;
+  const meta = nodeMeta(editable);
+  if (hasNonBodyEditorPlaceholder(meta)) return true;
+  if (isQuoteSourceEditable(editable)) return true;
+  if (editable.closest?.('.se-component-image, .se-module-image, .se-section-image, [class*="image"], [class*="photo"], [class*="caption"]')) return true;
+  return false;
+}
+
+function usableBodyEditable(node) {
+  const editable = editableRoot(node);
+  return Boolean(editable)
+    && isBodyEditable(editable)
+    && !isQuoteEditable(editable)
+    && !isEditorAuxiliaryEditable(editable);
 }
 
 function resolveTypingTarget(fallback, options = {}) {
@@ -1665,6 +1708,35 @@ async function uploadImageViaNaverPhoto(node, blob, label) {
   return inserted;
 }
 
+async function settleCaretAfterImage(target) {
+  await sleep(180);
+  await centerEditorImages();
+  await requestNativeKey('Escape', { count: 1 });
+  await sleep(80);
+  await requestNativeKey('ArrowDown', { count: 1 });
+  await sleep(140);
+  applyFormatBlock('p');
+  const selected = selectionEditable();
+  if (selected && usableBodyEditable(selected)) return selected;
+  const empty = lastEmptyBodyEditable();
+  if (empty) {
+    await clickNode(empty, 80);
+    if (isPlaceholderOnly(empty)) clearEditable(empty);
+    placeCaretAtEnd(empty);
+    applyFormatBlock('p');
+    return empty;
+  }
+  const base = usableBodyEditable(target) ? target : editableRoot(findBodyTarget());
+  if (base && usableBodyEditable(base)) {
+    await clickNode(base, 80);
+    placeCaretAtEnd(base);
+    await pressEnter(base, 1, { useCurrentCaret: false });
+    applyFormatBlock('p');
+    return selectionEditable() || base;
+  }
+  return target;
+}
+
 async function insertImageAtCaret(node, image, index) {
   const url = imageUrl(image);
   if (!url) return false;
@@ -1679,7 +1751,7 @@ async function insertImageAtCaret(node, image, index) {
       const insertedAsFile = await pasteImageFileAtCaret(target, pngBlob, label);
       if (insertedAsFile) {
         await centerEditorImages();
-        await pressEnter(target, 1, { useCurrentCaret: true });
+        await settleCaretAfterImage(target);
         return true;
       }
     }
@@ -1698,7 +1770,7 @@ async function insertImageAtCaret(node, image, index) {
   emitInput(target);
   await sleep(180);
   await centerEditorImages();
-  await pressEnter(target, 1, { useCurrentCaret: true });
+  await settleCaretAfterImage(target);
   return inserted;
 }
 
@@ -1883,7 +1955,8 @@ function stripLeadingSectionNumber(line = '') {
 }
 
 function sanitizeEditorLine(line = '') {
-  return stripLeadingSectionNumber(stripInlinePlaceholders(line))
+  return stripLeadingSectionNumber(stripInlinePlaceholders(stripEditorAuxPlaceholders(line)))
+    .replace(/([가-힣A-Za-z0-9][^\n]{7,80})\1+/g, '$1')
     .replace(/\s{2,}/g, ' ')
     .trim();
 }
@@ -1906,7 +1979,7 @@ function cleanQuoteLine(line) {
   );
 }
 
-const EMPTY_QUOTE_PLACEHOLDER_RE = /내용을?\s*입력(?:하세요)?\.?|출처\s*입력/gi;
+const EMPTY_QUOTE_PLACEHOLDER_RE = new RegExp(EDITOR_AUX_PLACEHOLDER_SOURCE, 'gi');
 const QUOTE_CONTAINER_SELECTOR = [
   '.se-component.se-quotation',
   '.se-component[class*="quotation"]',
@@ -2019,12 +2092,15 @@ async function pressArrowDownFromQuote(node, count = 1) {
 }
 
 async function exitQuoteBlock(node) {
-  // Keep the caret in the quote until the next body/image segment begins.
-  // That next segment calls ensureBodyTargetOutsideQuote(), which moves down
-  // exactly once. Moving here as well made the editor look like it pressed
-  // Enter/Down twice after every quote.
-  await sleep(80);
-  return quoteEditableTarget(node) || node;
+  const quoteTarget = quoteEditableTarget(node) || editableRoot(node) || selectionEditable();
+  if (quoteTarget) {
+    await pressArrowDownFromQuote(quoteTarget, 1);
+    await sleep(130);
+    applyFormatBlock('p');
+  }
+  const selected = selectionEditable();
+  if (selected && usableBodyEditable(selected)) return selected;
+  return await ensureBodyTargetOutsideQuote(node) || selected || node;
 }
 
 async function ensureBodyTargetOutsideQuote(preferred) {
@@ -2034,18 +2110,18 @@ async function ensureBodyTargetOutsideQuote(preferred) {
     await sleep(120);
     applyFormatBlock('p');
     const afterArrow = selectionEditable();
-    if (afterArrow && !isQuoteEditable(afterArrow)) return afterArrow;
+    if (afterArrow && usableBodyEditable(afterArrow)) return afterArrow;
   }
   const target = sequentialBodyTarget(preferred);
   const selected = selectionEditable();
-  if (selected && !isQuoteEditable(selected) && isBodyEditable(selected)) return selected;
-  if (target && !isQuoteEditable(target)) {
+  if (selected && usableBodyEditable(selected)) return selected;
+  if (target && usableBodyEditable(target)) {
     target.click?.();
     placeCaretAtEnd(target);
     return target;
   }
   const preferredEditable = editableRoot(preferred);
-  return preferredEditable && !isQuoteEditable(preferredEditable) ? preferredEditable : null;
+  return preferredEditable && usableBodyEditable(preferredEditable) ? preferredEditable : null;
 }
 
 function isHeadingLine(line, index) {
@@ -2062,6 +2138,7 @@ function cleanBodyLines(job) {
     .split(/\n+/)
     .map((line) => sanitizeEditorLine(line.trim()))
     .filter(Boolean)
+    .filter((line) => !isEditorAuxPlaceholderText(line))
     .filter((line, index) => !(index === 0 && title && line === title))
     .filter((line) => !/(참고 글의 문장|검색 의도는|주제 범위는|새로 작성한 초안|글 구성과 분량)/.test(line))
     .filter((line) => !isImagePlaceholderV2(line));

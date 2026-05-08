@@ -2678,23 +2678,39 @@ function safeJsonFromModelText(text = '') {
   }
 }
 
+const GENERATED_EDITOR_PLACEHOLDER_PATTERN = '(?:내용을?\\s*입력(?:하세요)?\\.?|사진\\s*설명을?\\s*입력(?:하세요)?\\.?|출처\\s*입력|AI\\s*활용\\s*설정)';
+const GENERATED_EDITOR_PLACEHOLDER_RE = new RegExp(GENERATED_EDITOR_PLACEHOLDER_PATTERN, 'gi');
+const GENERATED_EDITOR_PLACEHOLDER_TEST_RE = new RegExp(GENERATED_EDITOR_PLACEHOLDER_PATTERN, 'i');
+
+function fixCommonKoreanParticleMistakes(line = '') {
+  return String(line || '')
+    .replace(/(반값여행|지원금|민생회복지원금|신청|정책|사업|일정|기간|홈페이지|기준|방법|절차|공고|환급)를/g, '$1을')
+    .replace(/(반값여행|지원금|민생회복지원금|신청|정책|사업|일정|기간|홈페이지|기준|방법|절차|공고|환급)는/g, '$1은');
+}
+
 function cleanGeneratedArticleBody(text = '') {
   const seenParagraphs = new Set();
+  const seenNearParagraphs = [];
   return String(text || '')
     .replace(/\[글별 CTA 링크 입력 필요\]/g, '')
     .replace(/\[네이버 QR 삽입(?: 위치)?:\s*\[글별 CTA 링크 입력 필요\]\]/g, '')
+    .replace(GENERATED_EDITOR_PLACEHOLDER_RE, '')
     .replace(/^\s*\d+[.)]\s+/gm, '')
     .replace(/([가-힣A-Za-z0-9][^\n]{7,80})\1+/g, '$1')
     .split(/\n+/)
-    .map((line) => line.replace(/\s+/g, ' ').trim())
+    .map((line) => fixCommonKoreanParticleMistakes(line.replace(/\s+/g, ' ').trim()))
     .filter(Boolean)
     .filter((line) => !/^>\s*$/.test(line))
+    .filter((line) => !GENERATED_EDITOR_PLACEHOLDER_TEST_RE.test(line))
     .filter((line) => !/(참고 글의 문장|검색 의도는|주제 범위는|새로 작성한 초안|글 구성과 분량)/.test(line))
     .filter((line) => {
       const key = line.replace(/\s+/g, '');
       if (key.length < 18) return true;
       if (seenParagraphs.has(key)) return false;
+      const nearKey = key.slice(0, 60);
+      if (nearKey.length >= 36 && seenNearParagraphs.some((prev) => prev.includes(nearKey) || nearKey.includes(prev))) return false;
       seenParagraphs.add(key);
+      seenNearParagraphs.push(nearKey);
       return true;
     })
     .join('\n\n')
@@ -3102,6 +3118,28 @@ function buildOpenAiRewritePrompt({ job, analyses = [], pattern = {}, settings =
         exactKeywordPolicy: `Do not repeat the exact main keyword '${keyword}' in every paragraph or every section title. Use the exact phrase about ${range.minKwCount}-${range.maxKwCount} times total, then distribute natural variants and related terms.`,
         benchmarkInterpretation: 'Benchmark posts repeat important keywords, but the output must not look mechanically stuffed. Mix headings with action terms such as 대상, 신청 방법, 기간, 홈페이지, 서류, 주의사항, 확인.',
       },
+      qualityGate: {
+        seo: [
+          `Title must combine 2-3 non-overlapping search phrases around '${keyword}', ordered from strongest intent to supporting intent.`,
+          `The first 3 paragraphs must contain the main keyword naturally, but the same sentence frame must not repeat.`,
+          `Use exact keyword ${range.minKwCount}-${range.maxKwCount} times total; after that use synonyms, topic nouns, and action terms.`,
+        ],
+        aeo: [
+          'Each section should answer one concrete user question first, then explain details.',
+          'Include practical answer blocks for target/eligibility, period/date, application path, documents, cautions, and final checklist when relevant.',
+          'Avoid vague filler such as "there is a lot of information"; write the answer the reader can act on.',
+        ],
+        geo: [
+          'Do not invent dates, amounts, agencies, or official URLs. If the source is uncertain, phrase it as a confirmation step.',
+          'Mention official notice/page verification where facts may change.',
+          'Separate confirmed facts, checking order, and user action so generative search can quote concise answers.',
+        ],
+        hardBans: [
+          'No SmartEditor placeholder text: AI 활용 설정, 사진 설명을 입력하세요, 내용을 입력하세요, 출처 입력.',
+          'No empty quote markers and no duplicated heading text.',
+          'No numbered section prefixes such as 1., 2., 3. in body paragraphs.',
+        ],
+      },
       requiredJsonShape: {
         title: 'string',
         body: 'string with title, intro, CTA, quote headings, image placeholders, conclusion',
@@ -3184,6 +3222,28 @@ function buildOpenAiRewritePromptV2({ job, analyses = [], pattern = {}, settings
         exactKeywordPolicy: `Do not repeat the exact main keyword '${keyword}' in every paragraph or every section title. Use the exact phrase about ${range.minKwCount}-${range.maxKwCount} times total, then distribute natural variants and related terms.`,
         benchmarkInterpretation: 'Benchmark posts repeat important keywords, but the output must not look mechanically stuffed. Mix headings with action terms such as 대상, 신청 방법, 기간, 홈페이지, 서류, 주의사항, 확인.',
       },
+      qualityGate: {
+        seo: [
+          `Title must combine 2-3 non-overlapping search phrases around '${keyword}', ordered from strongest intent to supporting intent.`,
+          `The first 3 paragraphs must contain the main keyword naturally, but the same sentence frame must not repeat.`,
+          `Use exact keyword ${range.minKwCount}-${range.maxKwCount} times total; after that use synonyms, topic nouns, and action terms.`,
+        ],
+        aeo: [
+          'Each section should answer one concrete user question first, then explain details.',
+          'Include practical answer blocks for target/eligibility, period/date, application path, documents, cautions, and final checklist when relevant.',
+          'Avoid vague filler such as "there is a lot of information"; write the answer the reader can act on.',
+        ],
+        geo: [
+          'Do not invent dates, amounts, agencies, or official URLs. If the source is uncertain, phrase it as a confirmation step.',
+          'Mention official notice/page verification where facts may change.',
+          'Separate confirmed facts, checking order, and user action so generative search can quote concise answers.',
+        ],
+        hardBans: [
+          'No SmartEditor placeholder text: AI 활용 설정, 사진 설명을 입력하세요, 내용을 입력하세요, 출처 입력.',
+          'No empty quote markers and no duplicated heading text.',
+          'No numbered section prefixes such as 1., 2., 3. in body paragraphs.',
+        ],
+      },
       requiredJsonShape: {
         title: 'string',
         body: 'string',
@@ -3264,7 +3324,7 @@ async function buildOpenAiRewriteDraft({ tenantId, job, analyses, pattern, setti
     `문의처나 담당 부서가 따로 안내되어 있다면 접수 전 한 번 확인해 두는 것이 좋습니다. 작은 기준 차이도 실제 처리 결과에는 영향을 줄 수 있습니다.`,
   ];
   let metricSupplementCount = 0;
-  while ((cleanedMetrics.charCount < targetRange.minCharCount || cleanedMetrics.kwCount < targetRange.minKwCount) && metricSupplementCount < supplementNotes.length) {
+  while (cleanedMetrics.charCount < targetRange.minCharCount && metricSupplementCount < Math.min(2, supplementNotes.length)) {
     body = cleanGeneratedArticleBody(`${body}\n\n${supplementNotes[metricSupplementCount]}`);
     body = limitImagePlaceholders(body, requiredImageCount);
     body = limitExactKeywordRepetition(body, job.target_keyword, targetRange.maxKwCount, job.target_topic);
