@@ -11,22 +11,36 @@ chrome.storage?.onChanged?.addListener?.((changes, area) => {
 });
 
 function emitInput(node) {
-  node.dispatchEvent(new Event('input', { bubbles: true }));
-  node.dispatchEvent(new Event('change', { bubbles: true }));
+  if (!node) return;
+  const targets = [node, node.closest?.('.se-text-paragraph'), node.closest?.('.se-module-text'), node.closest?.('.se-component')]
+    .filter(Boolean)
+    .filter((item, index, list) => list.indexOf(item) === index);
+  targets.forEach((target) => {
+    target.dispatchEvent(new Event('input', { bubbles: true }));
+    target.dispatchEvent(new Event('change', { bubbles: true }));
+  });
 }
 
 function visible(node) {
+  if (!node) return false;
   const rect = node.getBoundingClientRect();
   const style = window.getComputedStyle(node);
   return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
 }
 
+function editorVisible(node) {
+  return Boolean(node) && (
+    visible(node)
+    || visible(node.closest?.('.se-text-paragraph, .se-module-text, .se-component') || null)
+  );
+}
+
 function findTitleTarget() {
   const selectors = [
-    '[data-a11y-title*="\uBCF8\uBB38"] .__se-node',
-    '[data-a11y-title*="\uBCF8\uBB38"] .se-text-paragraph',
-    '[data-a11y-title*="\uBCF8\uBB38"] .se-module-text',
-    '[data-a11y-title*="\uBCF8\uBB38"]',
+    '[data-a11y-title*="\uC81C\uBAA9"] .__se-node',
+    '[data-a11y-title*="\uC81C\uBAA9"] .se-text-paragraph',
+    '[data-a11y-title*="\uC81C\uBAA9"] .se-module-text',
+    '[data-a11y-title*="\uC81C\uBAA9"]',
     'textarea[placeholder*="제목"]',
     'input[placeholder*="제목"]',
     '[contenteditable="true"][aria-label*="제목"]',
@@ -38,6 +52,17 @@ function findTitleTarget() {
   for (const selector of selectors) {
     const node = Array.from(document.querySelectorAll(selector)).find(visible);
     if (node) return node;
+  }
+  return null;
+}
+
+function firstVisibleEditable(selectors) {
+  for (const selector of selectors) {
+    const found = Array.from(document.querySelectorAll(selector))
+      .map((node) => ({ node, target: editableRoot(node) || node }))
+      .filter((item) => item.target && (editorVisible(item.target) || visible(item.node)))
+      .find(Boolean);
+    if (found) return found.target;
   }
   return null;
 }
@@ -184,10 +209,22 @@ function uniqueNodes(nodes) {
   return nodes.filter(Boolean).filter((node, index, list) => list.indexOf(node) === index);
 }
 
+function findExactTitleEditable() {
+  const target = firstVisibleEditable([
+    '[data-a11y-title*="\uC81C\uBAA9"] .__se-node',
+    '[data-a11y-title*="\uC81C\uBAA9"] .se-text-paragraph',
+    '[data-a11y-title*="\uC81C\uBAA9"] .se-module-text',
+    '[data-a11y-title*="\uC81C\uBAA9"]',
+    '.se-component-documentTitle .__se-node',
+    '.se-documentTitle .__se-node',
+  ]);
+  return target && usableTitleEditable(target) ? target : null;
+}
+
 function usableTitleEditable(node) {
   return node
     && document.contains(node)
-    && visible(node)
+    && editorVisible(node)
     && (closestTitleContainer(node) || hasTitleHint(node))
     && !(hasBodyHint(node) && !closestTitleContainer(node));
 }
@@ -243,6 +280,11 @@ function findStrictTitleEditable() {
   if (active) {
     cachedTitleTarget = active;
     return active;
+  }
+  const exact = findExactTitleEditable();
+  if (exact) {
+    cachedTitleTarget = exact;
+    return exact;
   }
   const container = findStrictTitleContainer();
   const inside = editableInsideTitleContainer(container);
@@ -322,10 +364,17 @@ function activeTitleEditable() {
 }
 
 async function focusTitleTarget() {
-  for (let attempt = 0; attempt < 4; attempt += 1) {
+  const exact = findExactTitleEditable();
+  if (exact) {
+    cachedTitleTarget = exact;
+    await clickNode(exact, 20);
+    return exact;
+  }
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
     let target = activeTitleEditable() || findStrictTitleEditable();
     if (target && visible(target)) {
-      await clickNode(target, 45);
+      await clickNode(target, 25);
       target = activeTitleEditable() || target;
       if (target && visible(target)) {
         cachedTitleTarget = target;
@@ -335,19 +384,29 @@ async function focusTitleTarget() {
     const area = findTitleArea();
     const placeholder = findTitlePlaceholder();
     const clickTarget = placeholder || area;
-    if (clickTarget) await clickNode(clickTarget, 70);
+    if (clickTarget) await clickNode(clickTarget, 45);
     target = activeTitleEditable() || findStrictTitleEditable();
     if (target && visible(target)) {
       cachedTitleTarget = target;
       return target;
     }
-    await sleep(70);
+    await sleep(35);
   }
   return null;
 }
 
 function findBodyTarget() {
-  const titleTarget = findTitleTargetV2();
+  const exactBody = firstVisibleEditable([
+    '[data-a11y-title*="\uBCF8\uBB38"] .__se-node',
+    '[data-a11y-title*="\uBCF8\uBB38"] .se-text-paragraph',
+    '[data-a11y-title*="\uBCF8\uBB38"] .se-module-text',
+    '[data-a11y-title*="\uBCF8\uBB38"]',
+    '.se-component.se-text .__se-node',
+    '.se-section-text .__se-node',
+  ]);
+  if (exactBody && !isTitleEditable(exactBody)) return exactBody;
+
+  const titleTarget = findStrictTitleEditable();
   const titleBottom = titleTarget?.getBoundingClientRect?.().bottom || 0;
   const isTitleLike = (node) => {
     if (!node) return false;
@@ -355,6 +414,10 @@ function findBodyTarget() {
     return Boolean(node.closest?.('.se-title, .se-title-text, .se-documentTitle, [class*="title"], [class*="Title"]'));
   };
   const selectors = [
+    '[data-a11y-title*="\uBCF8\uBB38"] .__se-node',
+    '[data-a11y-title*="\uBCF8\uBB38"] .se-text-paragraph',
+    '[data-a11y-title*="\uBCF8\uBB38"] .se-module-text',
+    '[data-a11y-title*="\uBCF8\uBB38"]',
     '.se-main-container [contenteditable="true"]',
     '.se-content [contenteditable="true"]',
     '.se-section-text [contenteditable="true"]',
@@ -655,18 +718,28 @@ function activeEditable() {
   return editable && visible(editable) && !isTitleEditable(editable) ? editable : null;
 }
 
+function isBodyEditable(node) {
+  return Boolean(node)
+    && editorVisible(node)
+    && !isTitleEditable(node)
+    && (closestBodyContainer(node) || hasBodyHint(node));
+}
+
 function lastEmptyBodyEditable() {
   return Array.from(document.querySelectorAll([
     '[data-a11y-title*="\uBCF8\uBB38"] .__se-node',
     '[data-a11y-title*="\uBCF8\uBB38"] .se-text-paragraph',
+    '[data-a11y-title*="\uBCF8\uBB38"] .se-module-text',
     '[data-a11y-title*="\uBCF8\uBB38"]',
+    '.se-component.se-text .__se-node',
+    '.se-section-text .__se-node',
     '[contenteditable="true"]',
     'textarea',
   ].join(',')))
     .map(editableRoot)
     .filter(Boolean)
     .filter((node, index, list) => list.indexOf(node) === index)
-    .filter((node) => visible(node) && !isTitleEditable(node))
+    .filter((node) => isBodyEditable(node) || (!isTitleEditable(node) && visible(node)))
     .filter((node) => {
       const text = (node.textContent || node.value || '').replace(/\s+/g, '').trim();
       const placeholder = [
@@ -683,11 +756,13 @@ function lastEmptyBodyEditable() {
 
 function bodyTypingTarget(preferred) {
   const selected = selectionEditable();
-  if (selected && !isPlaceholderOnly(selected)) return selected;
-  return lastEmptyBodyEditable()
-    || selected
-    || activeEditable()
-    || editableRoot(preferred)
+  if (selected && isBodyEditable(selected) && !isPlaceholderOnly(selected)) return selected;
+  const empty = lastEmptyBodyEditable();
+  if (empty) return empty;
+  const preferredEditable = editableRoot(preferred);
+  if (preferredEditable && isBodyEditable(preferredEditable)) return preferredEditable;
+  return (selected && isBodyEditable(selected) ? selected : null)
+    || (activeEditable() && isBodyEditable(activeEditable()) ? activeEditable() : null)
     || editableRoot(findBodyTarget());
 }
 
@@ -786,6 +861,10 @@ async function typeTextLikeHuman(node, text, options = {}) {
         range.collapse(false);
         selection.removeAllRanges();
         selection.addRange(range);
+      }
+      if ((target.textContent || '') === before) {
+        target.textContent = `${before}${chunk}`;
+        placeCaretAtEnd(target);
       }
     }
     target.dispatchEvent(new InputEvent('input', {
@@ -897,6 +976,21 @@ async function dismissResumeDraftDialog() {
     '.se-popup-container',
     '.se-dialog-container',
   ];
+  const bodyText = document.body?.textContent || '';
+  const hasPopupShell = document.querySelector(`${popupRootSelector}, ${dialogSelectors.join(',')}`);
+  if (!draftPattern.test(bodyText) && !hasPopupShell) return false;
+
+  const fastCancel = Array.from(document.querySelectorAll('button.se-popup-button-cancel, .se-popup-button-cancel'))
+    .filter(visible)
+    .find((node) => {
+      const container = node.closest?.(`${popupRootSelector}, .se-popup-alert-confirm`) || node.parentElement;
+      return draftPattern.test(`${container?.textContent || ''}\n${bodyText}`) || cancelPattern.test(nodeText(node));
+    });
+  if (fastCancel) {
+    await clickNode(fastCancel, 120);
+    if (!draftPattern.test(document.body?.textContent || '')) return true;
+  }
+
   const isDraftLayerVisible = () => Array.from(document.querySelectorAll(`${popupRootSelector}, ${dialogSelectors.join(',')}`))
     .filter(visible)
     .some((node) => draftPattern.test(node.textContent || ''));
@@ -921,15 +1015,15 @@ async function dismissResumeDraftDialog() {
     document.body?.style?.removeProperty?.('overflow');
     return removed;
   };
-  const clickDraftCancel = async (node, waitMs = 700) => {
+  const clickDraftCancel = async (node, waitMs = 220) => {
     await clickNode(node, waitMs);
-    for (let i = 0; i < 8; i += 1) {
+    for (let i = 0; i < 4; i += 1) {
       if (!isDraftLayerVisible()) return true;
-      await sleep(120);
+      await sleep(70);
     }
     return forceRemoveDraftLayer();
   };
-  for (let attempt = 0; attempt < 30; attempt += 1) {
+  for (let attempt = 0; attempt < 8; attempt += 1) {
     const explicitCancel = Array.from(document.querySelectorAll([
       'button.se-popup-button-cancel',
       '.se-popup-button-cancel',
@@ -975,7 +1069,7 @@ async function dismissResumeDraftDialog() {
         return clickDraftCancel(cancel, 700);
       }
     }
-    await sleep(150);
+    await sleep(70);
   }
   return false;
 }

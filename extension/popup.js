@@ -887,10 +887,10 @@ async function startSelectedJobs() {
       setBatchStatus(`${index + 1}/${plannedIds.length} 작성창을 열고 있습니다: ${job.title || job.keyword || `#${job.id}`}`);
       const tab = await openEditorForJob();
       state.currentTabId = tab?.id || null;
-      await waitForEditorStageReady(tab?.id, 'title', 12000);
+      await waitForEditorStageReady(tab?.id, 'title', 5000);
       ensureBatchNotStopped();
       setBatchStatus(`${index + 1}/${plannedIds.length} 제목/본문을 타이핑 중입니다: ${job.title || job.keyword || `#${job.id}`}`);
-      const titleResult = await insertIntoTab(tab?.id, { retryMs: 10000, stage: 'title' });
+      const titleResult = await insertIntoTab(tab?.id, { retryMs: 5000, stage: 'title' });
       if (!titleResult?.ok) throw new Error(titleResult?.error || `#${job.id} 제목 입력에 실패했습니다.`);
       setStep('insert', 'done', `#${job.id} 제목 입력 완료`);
 
@@ -902,7 +902,7 @@ async function startSelectedJobs() {
 
       ensureBatchNotStopped();
       setBatchStatus(`${index + 1}/${plannedIds.length} 본문/이미지/CTA를 입력합니다: ${job.title || job.keyword || `#${job.id}`}`);
-      const insertResult = await insertIntoTab(tab?.id, { retryMs: 25000, stage: 'body' });
+      const insertResult = await insertIntoTab(tab?.id, { retryMs: 12000, stage: 'body' });
       if (!insertResult?.ok) throw new Error(insertResult?.error || `#${job.id} 작성창 삽입에 실패했습니다.`);
       setStep('insert', 'done', `#${job.id} 제목/본문/이미지/CTA 삽입 완료`);
       state.selectedJobIds = state.selectedJobIds.filter((id) => Number(id) !== Number(job.id));
@@ -1061,7 +1061,7 @@ async function insertIntoTab(tabId, { retryMs = 12000, stage = 'full' } = {}) {
   if (!tabId) throw new Error('작성 탭을 찾을 수 없습니다.');
   setStep('insert', 'active', '작성창의 제목/본문 영역을 찾는 중입니다.');
   await sendMessageToAllFrames(tabId, { type: 'NAVIWRITE_DISMISS_DRAFT' });
-  await delay(stage === 'title' ? 150 : 450);
+  await delay(stage === 'title' ? 50 : 160);
   const messageType = stage === 'title'
     ? 'NAVIWRITE_WRITE_TITLE_ONLY'
     : stage === 'body'
@@ -1079,7 +1079,7 @@ async function insertIntoTab(tabId, { retryMs = 12000, stage = 'full' } = {}) {
       lastResponse = response;
       if (response?.ok) return response;
     }
-    await delay(stage === 'title' ? 220 : 650);
+    await delay(stage === 'title' ? 120 : 320);
   }
   return lastResponse || { ok: false, error: '작성 영역을 찾지 못했습니다.' };
 }

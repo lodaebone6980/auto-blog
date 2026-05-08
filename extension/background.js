@@ -29,10 +29,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const style = window.getComputedStyle(node);
         return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
       };
+      const editorVisible = (node) => Boolean(node) && (
+        visible(node)
+        || visible(node.closest?.('.se-text-paragraph, .se-module-text, .se-component') || null)
+      );
       const titleContainerSelector = [
         '.se-title',
         '.se-title-text',
         '.se-documentTitle',
+        '[data-a11y-title="\uC81C\uBAA9"]',
+        '[data-a11y-title*="\uC81C\uBAA9"]',
+        '.se-component-documentTitle',
         '[class*="se-title"]',
         '[class*="se_title"]',
         '[class*="documentTitle"]',
@@ -58,6 +65,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const editableRoot = (node) => {
         if (!node) return null;
         if ('value' in node || node.isContentEditable) return node;
+        if (node.matches?.('.__se-node')) return node;
+        if (node.matches?.('.se-text-paragraph')) return node.querySelector?.('.__se-node') || node;
+        const paragraph = node.closest?.('.se-text-paragraph');
+        if (paragraph) return paragraph.querySelector?.('.__se-node') || paragraph;
+        const component = node.matches?.(titleContainerSelector)
+          ? node
+          : node.closest?.(titleContainerSelector);
+        if (component) {
+          return component.querySelector?.('.__se-node')
+            || component.querySelector?.('.se-text-paragraph')
+            || component.querySelector?.('.se-module-text')
+            || component;
+        }
         return node.closest?.('[contenteditable="true"]')
           || node.querySelector?.('[contenteditable="true"], textarea, input')
           || null;
@@ -67,20 +87,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const activeTitle = active && visible(active) && (closestTitleContainer(active) || hasTitleHint(active)) ? active : null;
       const containers = unique([
         ...Array.from(document.querySelectorAll(titleContainerSelector)),
-        ...Array.from(document.querySelectorAll('[data-placeholder*="\uC81C\uBAA9"], [aria-label*="\uC81C\uBAA9"], [placeholder*="\uC81C\uBAA9"]'))
+        ...Array.from(document.querySelectorAll('[data-a11y-title*="\uC81C\uBAA9"], [data-placeholder*="\uC81C\uBAA9"], [aria-label*="\uC81C\uBAA9"], [placeholder*="\uC81C\uBAA9"]'))
           .map((node) => closestTitleContainer(node) || node),
       ]).filter(visible);
       const candidates = unique([
         activeTitle,
+        ...Array.from(document.querySelectorAll('[data-a11y-title*="\uC81C\uBAA9"] .__se-node, [data-a11y-title*="\uC81C\uBAA9"] .se-text-paragraph, [data-a11y-title*="\uC81C\uBAA9"] .se-module-text, [data-a11y-title*="\uC81C\uBAA9"]'))
+          .map(editableRoot),
         ...containers.flatMap((container) => [
           editableRoot(container),
-          ...Array.from(container.querySelectorAll?.('textarea,input,[contenteditable="true"],.se-text-paragraph,[data-placeholder*="\uC81C\uBAA9"],[aria-label*="\uC81C\uBAA9"],[placeholder*="\uC81C\uBAA9"]') || [])
+          ...Array.from(container.querySelectorAll?.('textarea,input,[contenteditable="true"],.__se-node,.se-text-paragraph,.se-module-text,[data-a11y-title*="\uC81C\uBAA9"],[data-placeholder*="\uC81C\uBAA9"],[aria-label*="\uC81C\uBAA9"],[placeholder*="\uC81C\uBAA9"]') || [])
             .map(editableRoot),
         ]),
         ...Array.from(document.querySelectorAll('textarea[placeholder*="\uC81C\uBAA9"],input[placeholder*="\uC81C\uBAA9"],[contenteditable="true"][aria-label*="\uC81C\uBAA9"],[contenteditable="true"][data-placeholder*="\uC81C\uBAA9"]'))
           .map(editableRoot),
       ])
-        .filter((node) => node && visible(node))
+        .filter((node) => node && editorVisible(node))
         .sort((a, b) => {
           const ar = a.getBoundingClientRect();
           const br = b.getBoundingClientRect();
