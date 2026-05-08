@@ -966,11 +966,12 @@ async function prepareBodyTypingTarget(preferred, { placeAtEnd = true, preserveC
 function sequentialBodyTarget(preferred) {
   const selected = selectionEditable();
   const active = activeEditable();
+  const preferredEditable = editableRoot(preferred);
   const empty = lastEmptyBodyEditable();
   const current = (selected && isBodyEditable(selected) ? selected : null)
     || (active && isBodyEditable(active) ? active : null)
+    || (preferredEditable && isBodyEditable(preferredEditable) ? preferredEditable : null)
     || empty
-    || (editableRoot(preferred) && isBodyEditable(editableRoot(preferred)) ? editableRoot(preferred) : null)
     || editableRoot(findBodyTarget());
   if (!current) return editableRoot(preferred);
   if (isPlaceholderOnly(current)) clearEditable(current);
@@ -986,7 +987,7 @@ function isPlaceholderOnly(node) {
 function resolveTypingTarget(fallback, options = {}) {
   const base = editableRoot(fallback);
   if (options.useCurrentCaret) {
-    return selectionEditable() || activeEditable() || lastEmptyBodyEditable() || base;
+    return selectionEditable() || activeEditable() || base || lastEmptyBodyEditable();
   }
   return base;
 }
@@ -1129,11 +1130,8 @@ async function pressEnter(node, count = 1, options = {}) {
     if ('value' in target) {
       await typeTextLikeHuman(target, '\n', { chunkSize: 1, minDelay: 5, maxDelay: 10 });
     } else {
-      const nativePressed = await requestNativeKey('Enter', { count: 1 });
-      if (nativePressed) {
-        await sleep(randomDelay(40, 90));
-        continue;
-      }
+      target.focus?.();
+      if (!selectionEditable()) placeCaretAtEnd(target);
       target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true }));
       document.execCommand?.('insertParagraph', false);
       emitInput(target);
