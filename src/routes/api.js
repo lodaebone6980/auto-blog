@@ -7889,23 +7889,35 @@ router.patch('/rewrite-jobs/:id', async (req, res) => {
       || Object.prototype.hasOwnProperty.call(req.body || {}, 'cta_url');
     const hasQrTarget = Object.prototype.hasOwnProperty.call(req.body || {}, 'qrTargetUrl')
       || Object.prototype.hasOwnProperty.call(req.body || {}, 'qr_target_url');
+    const hasUseNaverQr = Object.prototype.hasOwnProperty.call(req.body || {}, 'useNaverQr')
+      || Object.prototype.hasOwnProperty.call(req.body || {}, 'use_naver_qr');
     const ctaUrl = hasCta ? (req.body.ctaUrl ?? req.body.cta_url ?? null) : current.rows[0].cta_url;
     const qrTargetUrl = hasQrTarget
       ? (req.body.qrTargetUrl ?? req.body.qr_target_url ?? null)
       : (hasCta ? ctaUrl : current.rows[0].qr_target_url);
+    const useNaverQr = hasUseNaverQr
+      ? Boolean(req.body.useNaverQr ?? req.body.use_naver_qr)
+      : Boolean(current.rows[0].use_naver_qr);
+    const qrStatus = useNaverQr
+      ? (current.rows[0].naver_qr_short_url ? 'QR 생성 완료' : 'QR 생성 필요')
+      : 'QR 미사용';
 
     const { rows } = await pool.query(
       `UPDATE rewrite_jobs
        SET cta_url = $2,
            qr_target_url = $3,
+           use_naver_qr = $4,
+           qr_status = $5,
            updated_at = NOW()
        WHERE id = $1
        RETURNING *`,
-      [req.params.id, ctaUrl || null, qrTargetUrl || null]
+      [req.params.id, ctaUrl || null, qrTargetUrl || null, useNaverQr, qrStatus]
     );
     await addRewriteEvent(req.params.id, 'cta_updated', 'CTA link updated', {
       ctaUrl: ctaUrl || null,
       qrTargetUrl: qrTargetUrl || null,
+      useNaverQr,
+      qrStatus,
     });
     res.json({ ok: true, job: attachRewriteMetricSummary(rows[0]) });
   } catch (err) {

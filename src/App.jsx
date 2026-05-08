@@ -974,6 +974,7 @@ function StatusPill({ value }) {
     '본문 생성 완료': COLORS.accent,
     '글생성 완료': COLORS.success,
     'QR 생성 필요': COLORS.warning,
+    'QR 미사용': COLORS.textMuted,
     'QR 생성 완료': COLORS.success,
     '에디터 삽입 완료': COLORS.primary,
     '검수 필요': COLORS.warning,
@@ -1396,16 +1397,6 @@ function SourceCollectionPanel({ onOpenRewrite }) {
       return next;
     });
   }, [links]);
-
-  useEffect(() => {
-    setCtaDrafts((prev) => {
-      const next = { ...prev };
-      jobs.forEach((job) => {
-        if (next[job.id] === undefined) next[job.id] = job.cta_url || job.qr_target_url || '';
-      });
-      return next;
-    });
-  }, [jobs]);
 
   const urlCount = useMemo(
     () => urlsText.split(/\r?\n/).map((line) => line.trim()).filter((line) => /^https?:\/\//i.test(line)).length,
@@ -2458,6 +2449,7 @@ function RewritePanel() {
   const [keywordDrafts, setKeywordDrafts] = useState({});
   const [savingKeywordIds, setSavingKeywordIds] = useState([]);
   const [ctaDrafts, setCtaDrafts] = useState({});
+  const [qrUseDrafts, setQrUseDrafts] = useState({});
   const [savingCtaIds, setSavingCtaIds] = useState([]);
   const [keywordsText, setKeywordsText] = useState('');
   const [benchmarkUrlsText, setBenchmarkUrlsText] = useState('');
@@ -2546,6 +2538,23 @@ function RewritePanel() {
   useEffect(() => {
     localStorage.setItem('naviwrite.rewrite.settings', JSON.stringify(rewriteSettings));
   }, [rewriteSettings]);
+
+  useEffect(() => {
+    setCtaDrafts((prev) => {
+      const next = { ...prev };
+      jobs.forEach((job) => {
+        if (next[job.id] === undefined) next[job.id] = job.cta_url || job.qr_target_url || '';
+      });
+      return next;
+    });
+    setQrUseDrafts((prev) => {
+      const next = { ...prev };
+      jobs.forEach((job) => {
+        if (next[job.id] === undefined) next[job.id] = Boolean(job.use_naver_qr);
+      });
+      return next;
+    });
+  }, [jobs]);
 
   const collectedLinks = useMemo(
     () => links.filter((link) => link.status === '수집완료' && link.source_analysis_id),
@@ -2759,6 +2768,7 @@ function RewritePanel() {
 
   const saveRewriteCta = async (job) => {
     const value = (ctaDrafts[job.id] || '').trim();
+    const useNaverQr = Boolean(qrUseDrafts[job.id]);
     if (value && !/^https?:\/\//i.test(value)) {
       setMessage('CTA 링크는 http:// 또는 https:// 로 시작해야 합니다.');
       return;
@@ -2770,15 +2780,26 @@ function RewritePanel() {
       body: JSON.stringify({
         ctaUrl: value || null,
         qrTargetUrl: value || null,
+        useNaverQr,
       }),
     });
     setSavingCtaIds((prev) => prev.filter((id) => id !== job.id));
     if (res?.ok) {
-      setMessage(value ? `CTA 링크 저장 완료: ${value}` : 'CTA 링크를 비웠습니다.');
+      setMessage(value
+        ? `CTA 링크 저장 완료 · ${useNaverQr ? '네이버 QR 생성 필요' : '링크만 사용'}`
+        : 'CTA 링크를 비웠습니다.');
       await loadRewriteData();
     } else {
       setMessage(res?.error || 'CTA 링크 저장에 실패했습니다.');
     }
+  };
+
+  const openCtaSearch = (job) => {
+    const query = [
+      job.target_keyword || job.keyword || job.title || '',
+      '공식 홈페이지 신청 바로가기',
+    ].filter(Boolean).join(' ');
+    window.open(`https://search.naver.com/search.naver?query=${encodeURIComponent(query)}`, '_blank', 'noopener,noreferrer');
   };
 
   const updateRewriteSetting = (key, value) => {
@@ -4105,23 +4126,42 @@ function RewritePanel() {
                         <p style={{ marginTop: 4, color: Number(job.similarity_risk || 0) >= 45 ? COLORS.danger : COLORS.success, fontWeight: 850 }}>유사도 {Number(job.similarity_risk || 0).toFixed(0)}</p>
                       </td>
                       <td style={{ padding: '12px', minWidth: 150, color: COLORS.textSecondary }}>
-                        <p>{job.use_naver_qr ? '네이버 QR 사용' : '링크만 사용'}</p>
-                        {job.naver_qr_short_url && <p style={{ marginTop: 4, fontSize: 10, color: COLORS.success, fontWeight: 850, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 160 }}>{job.naver_qr_short_url}</p>}
+                        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11, fontWeight: 900, color: COLORS.primary }}>
+                          <input
+                            type="checkbox"
+                            checked={Boolean(qrUseDrafts[job.id])}
+                            onChange={(event) => setQrUseDrafts((prev) => ({ ...prev, [job.id]: event.target.checked }))}
+                            style={{ width: 14, height: 14 }}
+                          />
+                          네이버 QR 변환
+                        </label>
+                        {job.naver_qr_short_url && <p style={{ marginTop: 4, fontSize: 10, color: COLORS.success, fontWeight: 850, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 180 }}>{job.naver_qr_short_url}</p>}
                         {job.use_naver_qr && !job.naver_qr_short_url && <p style={{ marginTop: 4, fontSize: 10, color: COLORS.warning, fontWeight: 850 }}>{job.qr_status || 'QR 생성 필요'}</p>}
+                        {job.qr_account_id && <p style={{ marginTop: 4, fontSize: 10, color: COLORS.textMuted }}>QR 계정 {job.qr_account_id}</p>}
+                        {job.naver_qr_name && <p style={{ marginTop: 2, fontSize: 10, color: COLORS.textMuted, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 180 }}>{job.naver_qr_name}</p>}
                         <input
                           value={ctaDraft}
                           onChange={(event) => setCtaDrafts((prev) => ({ ...prev, [job.id]: event.target.value }))}
-                          placeholder="https:// CTA link"
+                          placeholder="https:// CTA link 또는 공식 페이지"
                           style={{ width: '100%', height: 30, marginTop: 7, border: `1px solid ${COLORS.border}`, borderRadius: 7, padding: '0 8px', fontSize: 11, outline: 'none' }}
                         />
-                        <button
-                          type="button"
-                          disabled={ctaSaving}
-                          onClick={() => saveRewriteCta(job)}
-                          style={{ width: '100%', height: 28, marginTop: 6, borderRadius: 7, border: 'none', background: COLORS.success, color: 'white', fontSize: 10, fontWeight: 850, cursor: ctaSaving ? 'wait' : 'pointer' }}
-                        >
-                          {ctaSaving ? 'CTA saving...' : 'CTA 저장'}
-                        </button>
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginTop: 6 }}>
+                          <button
+                            type="button"
+                            onClick={() => openCtaSearch(job)}
+                            style={{ height: 28, borderRadius: 7, border: `1px solid ${COLORS.border}`, background: 'white', color: COLORS.primary, fontSize: 10, fontWeight: 850, cursor: 'pointer' }}
+                          >
+                            링크 검색
+                          </button>
+                          <button
+                            type="button"
+                            disabled={ctaSaving}
+                            onClick={() => saveRewriteCta(job)}
+                            style={{ height: 28, borderRadius: 7, border: 'none', background: COLORS.success, color: 'white', fontSize: 10, fontWeight: 850, cursor: ctaSaving ? 'wait' : 'pointer' }}
+                          >
+                            {ctaSaving ? '저장중' : 'CTA 저장'}
+                          </button>
+                        </div>
                       </td>
                       <td style={{ padding: '12px', minWidth: 230 }}>
                         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>

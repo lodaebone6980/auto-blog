@@ -294,6 +294,21 @@ button:disabled {
   line-height: 1.4;
 }
 
+.job-choice.done-card {
+  grid-template-columns: 40px 1fr;
+}
+
+.status-dot {
+  display: inline-grid;
+  place-items: center;
+  height: 22px;
+  border-radius: 999px;
+  background: #dcfce7;
+  color: #166534;
+  font-size: 10px;
+  font-weight: 900;
+}
+
 .job strong {
   display: block;
   margin-bottom: 4px;

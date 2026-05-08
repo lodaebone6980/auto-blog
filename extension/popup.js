@@ -23,8 +23,10 @@ const state = {
   activeQrJob: null,
   images: [],
   batchRunning: false,
+  qrRunning: false,
   abortRequested: false,
   currentTabId: null,
+  activeQrTabId: null,
   batchDelaySeconds: 60,
   loggedIn: false,
   steps: {},
@@ -601,15 +603,25 @@ function qrCandidateJobs() {
   });
 }
 
+function qrDoneJobs() {
+  return state.jobs.filter((job) => {
+    const shortUrl = qrShortForJob(job);
+    return Boolean(shortUrl) || job.qr_status === 'QR 생성 완료';
+  });
+}
+
 function renderQrList() {
   const box = $('qrJobList');
   if (!box) return;
   const jobs = qrCandidateJobs();
+  const doneJobs = qrDoneJobs();
   state.selectedQrJobIds = state.selectedQrJobIds
     .map((id) => Number(id))
     .filter((id) => jobs.some((job) => Number(job.id) === id));
   chrome.storage.local.set({ selectedQrJobIds: state.selectedQrJobIds });
-  setText('selectedQrCount', `선택 ${state.selectedQrJobIds.length}개 / QR 대상 ${jobs.length}개`);
+  setText('selectedQrCount', `미완료 ${jobs.length}개 · 완료 ${doneJobs.length}개 · 선택 ${state.selectedQrJobIds.length}개`);
+  setText('qrDoneCount', `${doneJobs.length}개`);
+  renderQrDoneList(doneJobs);
   renderActiveQrJob();
   if (!jobs.length) {
     box.textContent = 'CTA 링크가 있거나 네이버 QR 사용으로 표시된 작업이 없습니다.';
@@ -645,6 +657,27 @@ function renderQrList() {
   });
 }
 
+function renderQrDoneList(doneJobs = qrDoneJobs()) {
+  const box = $('qrDoneList');
+  if (!box) return;
+  if (!doneJobs.length) {
+    box.textContent = '아직 완료된 QR 작업이 없습니다.';
+    box.classList.add('muted');
+    return;
+  }
+  box.classList.remove('muted');
+  box.innerHTML = doneJobs.slice(0, 20).map((job) => {
+    const accountId = job.qr_account_id || job.qrAccountId || '계정 미기록';
+    return `<div class="job-choice done-card">
+      <span class="status-dot">완료</span>
+      <span>
+        <strong>${escapeHtml(job.title || job.target_keyword || job.keyword || '제목 없음')}</strong>
+        <span>${escapeHtml(`#${job.id} · ${accountId} · ${qrShortForJob(job)}`)}</span>
+      </span>
+    </div>`;
+  }).join('');
+}
+
 function renderActiveQrJob() {
   const box = $('qrActiveBox');
   if (!box) return;
@@ -658,7 +691,8 @@ function renderActiveQrJob() {
   box.innerHTML = `<strong>${escapeHtml(job.title || job.keyword || 'QR 작업')}</strong>
     <span class="muted">#${escapeHtml(job.id)} · ${escapeHtml(job.naverQrName || job.naver_qr_name || '')}</span>
     <pre>원본 링크: ${escapeHtml(qrTargetForJob(job))}
-단축 URL: ${escapeHtml(qrShortForJob(job) || '아직 수집 전')}</pre>`;
+단축 URL: ${escapeHtml(qrShortForJob(job) || '아직 수집 전')}
+QR 계정: ${escapeHtml(job.qr_account_id || job.qrAccountId || state.selectedQrAccountId || '선택 대기')}</pre>`;
 }
 
 async function selectAllVisibleQrJobs() {
@@ -696,7 +730,15 @@ async function sendQrMessageToTab(tabId, message, retryMs = 12000) {
   return lastResponse || { ok: false, error: 'QR 페이지와 연결하지 못했습니다.' };
 }
 
-async function openSelectedQrJob() {
+function setQrControls(running) {
+  state.qrRunning = running;
+  ['runQrAuto', 'openSelectedQr', 'collectQrResult', 'selectAllQrJobs', 'clearSelectedQrJobs'].forEach((id) => {
+    const node = $(id);
+    if (node) node.disabled = running;
+  });
+}
+
+async function openSelectedQrJob({ autoAdvance = false, jobId = null } = {}) {
   selectTab('qr');
   await loadAccounts();
   if (!state.jobs.length) await loadPublishJobs();
@@ -706,7 +748,7 @@ async function openSelectedQrJob() {
   const limit = Number(qrAccount.qrDailyLimit ?? qrAccount.dailyLimit ?? 10);
   const remaining = Math.max(0, Number(qrAccount.qrRemainingToday ?? (limit - used)));
   if (remaining <= 0) throw new Error(`${qrAccount.label || qrAccount.id} QR 계정은 오늘 한도 ${limit}개를 모두 사용했습니다. 다른 QR 계정으로 전환하세요.`);
-  const id = state.selectedQrJobIds[0];
+  const id = jobId || state.selectedQrJobIds[0];
   if (!id) throw new Error('QR 탭에서 만들 작업을 체크해 주세요.');
   const rawJob = qrCandidateJobs().find((job) => Number(job.id) === Number(id));
   if (!rawJob) throw new Error(`#${id} QR 작업을 찾지 못했습니다.`);
@@ -721,12 +763,14 @@ async function openSelectedQrJob() {
   setText('qrStatus', `${qrAccount.label || qrAccount.id} 계정 기준으로 QR을 만듭니다. 현재 Chrome이 이 네이버 ID로 로그인되어 있는지 확인하세요.`);
 
   let tab = await chrome.tabs.create({ url: 'https://qr.naver.com/', active: true });
+  state.activeQrTabId = tab.id;
   tab = await waitForTabComplete(tab.id, 15000);
   const response = await sendQrMessageToTab(tab.id, {
     type: 'NAVIWRITE_QR_PREFILL',
     job: state.activeQrJob,
     qrName,
     targetUrl,
+    autoAdvance,
   }, 15000);
 
   if (response?.ok) {
@@ -734,14 +778,17 @@ async function openSelectedQrJob() {
   } else {
     setText('qrStatus', `QR 페이지가 열렸습니다. 자동 입력이 안 되면 URL 링크 유형에 ${targetUrl}을 넣고 생성한 뒤 결과 수집을 누르세요.`);
   }
+  return { tab, response };
 }
 
-async function collectQrResult() {
+async function collectQrResult(tabIdOverride = null, { silent = false } = {}) {
   selectTab('qr');
   if (!state.activeQrJob?.id) throw new Error('먼저 QR 탭에서 선택 QR 만들기를 실행하세요.');
-  const tab = await getActiveTab();
+  const tab = tabIdOverride
+    ? { id: tabIdOverride }
+    : await getActiveTab();
   if (!tab?.id) throw new Error('현재 탭을 찾을 수 없습니다.');
-  setText('qrStatus', '현재 네이버 QR 페이지에서 m.site.naver.com 단축 URL을 찾는 중입니다.');
+  if (!silent) setText('qrStatus', '현재 네이버 QR 페이지에서 m.site.naver.com 단축 URL을 찾는 중입니다.');
   const result = await sendQrMessageToTab(tab.id, { type: 'NAVIWRITE_QR_COLLECT' }, 10000);
   if (!result?.ok || !result.shortUrl) {
     throw new Error(result?.error || '현재 페이지에서 m.site.naver.com 단축 URL을 찾지 못했습니다.');
@@ -772,6 +819,51 @@ async function collectQrResult() {
   renderJobList();
   await loadAccounts().catch(() => {});
   setText('qrStatus', `저장 완료: ${result.shortUrl}`);
+  return updated;
+}
+
+async function waitAndCollectQrResult(tabId, timeoutMs = 32000) {
+  const started = Date.now();
+  let lastError = '';
+  while (Date.now() - started < timeoutMs) {
+    try {
+      return await collectQrResult(tabId, { silent: true });
+    } catch (err) {
+      lastError = err.message;
+      await delay(1200);
+    }
+  }
+  throw new Error(lastError || '네이버 QR 단축 URL을 자동으로 찾지 못했습니다.');
+}
+
+async function runSelectedQrJobs() {
+  if (state.qrRunning) throw new Error('이미 QR 발행을 진행 중입니다.');
+  selectTab('qr');
+  await loadPublishJobs();
+  if (!state.selectedQrJobIds.length) throw new Error('QR 발행할 미완료 작업을 체크해 주세요.');
+  const plannedIds = [...state.selectedQrJobIds];
+  setQrControls(true);
+  let completed = 0;
+  try {
+    for (let index = 0; index < plannedIds.length; index += 1) {
+      const id = plannedIds[index];
+      setText('qrStatus', `${index + 1}/${plannedIds.length} QR 발행을 시작합니다.`);
+      const { tab } = await openSelectedQrJob({ autoAdvance: true, jobId: id });
+      try {
+        await waitAndCollectQrResult(tab.id, 32000);
+        completed += 1;
+        setText('qrStatus', `${completed}/${plannedIds.length} QR 발행 완료. 다음 작업을 준비합니다.`);
+        await delay(900);
+      } catch (err) {
+        setText('qrStatus', `${index + 1}번째 QR은 자동 완료되지 않았습니다. 네이버 화면에서 생성까지 마친 뒤 현재 QR 결과 수집을 누르세요. 사유: ${err.message}`);
+        break;
+      }
+    }
+  } finally {
+    setQrControls(false);
+    await loadPublishJobs().catch(() => {});
+    renderQrList();
+  }
 }
 
 async function checkQrLoginStatus() {
@@ -1194,6 +1286,7 @@ async function init() {
   $('openQrLogin').addEventListener('click', () => chrome.tabs.create({ url: 'https://nid.naver.com/nidlogin.login' }));
   $('selectAllQrJobs').addEventListener('click', () => selectAllVisibleQrJobs().catch((err) => setText('qrStatus', err.message)));
   $('clearSelectedQrJobs').addEventListener('click', () => clearSelectedQrJobs().catch((err) => setText('qrStatus', err.message)));
+  $('runQrAuto').addEventListener('click', () => runSelectedQrJobs().catch((err) => setText('qrStatus', err.message)));
   $('openSelectedQr').addEventListener('click', () => openSelectedQrJob().catch((err) => setText('qrStatus', err.message)));
   $('collectQrResult').addEventListener('click', () => collectQrResult().catch((err) => setText('qrStatus', err.message)));
   $('selectAllJobs').addEventListener('click', () => selectAllVisibleJobs().catch((err) => setText('loginText', err.message)));

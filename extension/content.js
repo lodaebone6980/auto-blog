@@ -2599,15 +2599,36 @@ function findQrField(includePatterns, excludePatterns = []) {
     .sort((a, b) => b.score - a.score)[0]?.node || null;
 }
 
-function clickQrNodeByText(patterns) {
+function clickQrNodeByText(patterns, excludePatterns = []) {
   const selectors = ['button', 'a', '[role="button"]', 'li', 'span'];
   const node = Array.from(document.querySelectorAll(selectors.join(',')))
     .filter(visible)
-    .find((item) => patterns.some((pattern) => pattern.test(nodeText(item))));
+    .find((item) => {
+      const text = nodeText(item);
+      return patterns.some((pattern) => pattern.test(text))
+        && !excludePatterns.some((pattern) => pattern.test(text));
+    });
   if (!node) return false;
   node.scrollIntoView?.({ block: 'center', inline: 'center' });
   node.click?.();
   return true;
+}
+
+async function autoAdvanceNaverQr(maxSteps = 8) {
+  const clicked = [];
+  const excludes = [/취소|삭제|초기화|로그아웃|관리\s*목록|목록|뒤로/i];
+  for (let step = 0; step < maxSteps; step += 1) {
+    const result = collectNaverQrResult();
+    if (result.shortUrl) return { ok: true, shortUrl: result.shortUrl, clicked };
+    const didClick = clickQrNodeByText([
+      /다음|완료|생성|저장|만들기|URL\s*링크|링크\s*입력/i,
+    ], excludes);
+    if (!didClick) break;
+    clicked.push(step + 1);
+    await sleep(950);
+  }
+  const result = collectNaverQrResult();
+  return { ok: Boolean(result.shortUrl), shortUrl: result.shortUrl, clicked };
 }
 
 async function prefillNaverQr(message = {}) {
@@ -2631,12 +2652,20 @@ async function prefillNaverQr(message = {}) {
     setText(urlField, targetUrl);
     filled += 1;
   }
+  const advanced = message.autoAdvance && filled > 0
+    ? await autoAdvanceNaverQr()
+    : null;
   return {
-    ok: filled > 0,
+    ok: filled > 0 || Boolean(advanced?.shortUrl),
     note: filled > 0
-      ? `네이버 QR 입력칸 ${filled}개에 값을 넣었습니다. 화면에서 다음/생성을 완료한 뒤 결과 수집을 누르세요.`
+      ? advanced?.shortUrl
+        ? `네이버 QR 입력과 생성 자동 진행을 완료했습니다. 단축 URL ${advanced.shortUrl}을 수집할 수 있습니다.`
+        : message.autoAdvance
+          ? `네이버 QR 입력칸 ${filled}개에 값을 넣고 생성 버튼까지 자동 시도했습니다. 보안/약관 화면이 멈추면 직접 확인 후 결과 수집을 누르세요.`
+          : `네이버 QR 입력칸 ${filled}개에 값을 넣었습니다. 화면에서 다음/생성을 완료한 뒤 결과 수집을 누르세요.`
       : 'QR 생성 화면은 열었지만 입력칸을 찾지 못했습니다. URL 링크 유형을 선택한 뒤 다시 눌러보세요.',
     filled,
+    advanced,
   };
 }
 
