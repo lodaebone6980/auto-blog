@@ -36,18 +36,18 @@ const DEFAULT_REWRITE_SETTINGS = {
   contentSkillKey: 'adsense_traffic',
   generatorMode: 'openai',
   openaiModel: 'gpt-5-mini',
-  targetCharCount: 2200,
-  sectionCharCount: 300,
+  targetCharCount: 2500,
+  sectionCharCount: 350,
   sectionCount: 7,
   targetKwCount: 11,
-  imageCount: 6,
+  imageCount: 8,
   benchmarkUrl: 'https://blog.naver.com/openmind200/224258533599',
-  benchmarkSampleCount: 20,
-  benchmarkMedianCharCount: 1940,
+  benchmarkSampleCount: 30,
+  benchmarkMedianCharCount: 2480,
   benchmarkMedianSectionCount: 7,
-  benchmarkMedianSectionCharCount: 280,
-  benchmarkMedianKwCount: 12,
-  benchmarkMedianImageCount: 6,
+  benchmarkMedianSectionCharCount: 350,
+  benchmarkMedianKwCount: 11,
+  benchmarkMedianImageCount: 8,
 };
 
 const CONTENT_SKILL_LABELS = {
@@ -2356,9 +2356,11 @@ function RewritePanel() {
       const saved = JSON.parse(localStorage.getItem('naviwrite.rewrite.settings') || 'null') || {};
       const merged = { ...DEFAULT_REWRITE_SETTINGS, ...saved };
       if (!saved.openaiModel || saved.openaiModel === 'gpt-4.1-mini') merged.openaiModel = DEFAULT_REWRITE_SETTINGS.openaiModel;
-      if (!saved.settingsVersion || saved.imageCount === 12) merged.imageCount = DEFAULT_REWRITE_SETTINGS.imageCount;
+      if (!saved.settingsVersion || saved.imageCount === 12 || saved.imageCount === 6) merged.imageCount = DEFAULT_REWRITE_SETTINGS.imageCount;
       if (!saved.settingsVersion || saved.targetKwCount === 15) merged.targetKwCount = DEFAULT_REWRITE_SETTINGS.targetKwCount;
-      merged.settingsVersion = 2;
+      if (!saved.settingsVersion || saved.targetCharCount === 2200) merged.targetCharCount = DEFAULT_REWRITE_SETTINGS.targetCharCount;
+      if (!saved.settingsVersion || saved.sectionCharCount === 300) merged.sectionCharCount = DEFAULT_REWRITE_SETTINGS.sectionCharCount;
+      merged.settingsVersion = 3;
       return merged;
     } catch {
       return DEFAULT_REWRITE_SETTINGS;
@@ -2665,13 +2667,13 @@ function RewritePanel() {
 
   const resetRewriteSettings = () => {
     setRewriteSettings(DEFAULT_REWRITE_SETTINGS);
-    setMessage('최근 20개 벤치마크 기준값으로 복원했습니다.');
+    setMessage('최근 30개 벤치마크 기준값으로 복원했습니다.');
   };
 
   const benchmarkRewriteSettings = async () => {
     setBenchmarking(true);
-    setMessage('최근 글 20개를 읽어서 기준값을 계산 중입니다.');
-    const res = await safeFetch(`${API}/rewrite-settings/benchmark?limit=20&url=${encodeURIComponent(rewriteSettings.benchmarkUrl || DEFAULT_REWRITE_SETTINGS.benchmarkUrl)}`);
+    setMessage('최근 글 30개를 읽어서 기준값을 계산 중입니다.');
+    const res = await safeFetch(`${API}/rewrite-settings/benchmark?limit=30&url=${encodeURIComponent(rewriteSettings.benchmarkUrl || DEFAULT_REWRITE_SETTINGS.benchmarkUrl)}`);
     setBenchmarking(false);
     if (res?.ok && res.settings) {
       setRewriteSettings((prev) => ({ ...prev, ...res.settings }));
@@ -3323,8 +3325,8 @@ function RewritePanel() {
             <div>
               <h3 style={{ fontSize: 14, fontWeight: 900, color: COLORS.primary, marginBottom: 4 }}>발행 생성 기준값</h3>
               <p style={{ fontSize: 11, color: COLORS.textSecondary, lineHeight: 1.6 }}>
-                openmind200 최근 20개 자동 중앙값은 1,940자 · 7섹션 · 섹션당 약 280자 · KW 19회 · 이미지 12장입니다.
-                운영 기본값은 2,200자 · KW 15회로 보정했습니다.
+                최근 30개 벤치마킹 기준은 약 2,500자 · 7섹션 · 섹션당 약 350자 · KW 11회 · 이미지 8장입니다.
+                운영 기본값은 SEO/AEO/GEO와 유사도 위험을 함께 보정해 적용했습니다.
               </p>
               <p style={{ marginTop: 6, fontSize: 11, color: COLORS.primary, fontWeight: 900 }}>
                 적용 스킬: {CONTENT_SKILL_LABELS[rewriteSettings.contentSkillKey] || '애드센스 유입용'} · 서버 사전 생성 이미지 → 확장프로그램 업로드
@@ -3347,7 +3349,7 @@ function RewritePanel() {
                   cursor: benchmarking ? 'wait' : 'pointer',
                 }}
               >
-                {benchmarking ? '계산 중' : '최근 20개 재계산'}
+                {benchmarking ? '계산 중' : '최근 30개 재계산'}
               </button>
               <button
                 type="button"
