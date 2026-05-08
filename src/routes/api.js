@@ -1247,6 +1247,83 @@ function metricDistanceToRange(metrics = {}, range = {}) {
   return distance;
 }
 
+function rewriteMetricSummary(row = {}) {
+  const pattern = parseJsonObject(row.pattern_json, {});
+  const savedSettings = parseJsonObject(row.settings_json, {});
+  const patternSettings = parseJsonObject(pattern.settings, {});
+  const settings = parseRewriteSettings({
+    ...savedSettings,
+    ...patternSettings,
+    targetCharCount: pattern.targetCharCount || patternSettings.targetCharCount || savedSettings.targetCharCount,
+    sectionCharCount: pattern.sectionCharCount || patternSettings.sectionCharCount || savedSettings.sectionCharCount,
+    sectionCount: pattern.sectionCount || patternSettings.sectionCount || savedSettings.sectionCount,
+    targetKwCount: pattern.targetKwCount || patternSettings.targetKwCount || savedSettings.targetKwCount,
+    imageCount: pattern.imageCount || patternSettings.imageCount || savedSettings.imageCount,
+  });
+  const targetRange = metricTargetRange(settings);
+  const imageTarget = clampNumber(
+    parseInt(pattern.imageCount ?? settings.imageCount ?? DEFAULT_REWRITE_SETTINGS.imageCount, 10) || DEFAULT_REWRITE_SETTINGS.imageCount,
+    0,
+    20
+  );
+  const quoteTarget = clampNumber(
+    parseInt(pattern.quoteCount ?? pattern.sectionCount ?? settings.sectionCount ?? DEFAULT_REWRITE_SETTINGS.sectionCount, 10) || DEFAULT_REWRITE_SETTINGS.sectionCount,
+    0,
+    20
+  );
+  const quoteMin = Math.max(0, quoteTarget - 1);
+  const quoteMax = quoteTarget + 1;
+  const actual = {
+    charCount: Number(row.char_count || 0),
+    kwCount: Number(row.kw_count || 0),
+    imageCount: Number(row.image_count || 0),
+    quoteCount: Number(row.quote_count || 0),
+  };
+  const pass = {
+    charCount: actual.charCount >= targetRange.minCharCount && actual.charCount <= targetRange.maxCharCount,
+    kwCount: actual.kwCount >= targetRange.minKwCount && actual.kwCount <= targetRange.maxKwCount,
+    imageCount: actual.imageCount === imageTarget,
+    quoteCount: actual.quoteCount >= quoteMin && actual.quoteCount <= quoteMax,
+  };
+  const failedKeys = Object.entries(pass)
+    .filter(([, ok]) => !ok)
+    .map(([key]) => key);
+  return {
+    status: failedKeys.length ? 'review_needed' : 'passed',
+    failedKeys,
+    target: {
+      charCount: targetRange.targetCharCount,
+      minCharCount: targetRange.minCharCount,
+      maxCharCount: targetRange.maxCharCount,
+      sectionCharCount: targetRange.sectionCharCount,
+      sectionCount: targetRange.sectionCount,
+      kwCount: targetRange.targetKwCount,
+      minKwCount: targetRange.minKwCount,
+      maxKwCount: targetRange.maxKwCount,
+      imageCount: imageTarget,
+      quoteCount: quoteTarget,
+      minQuoteCount: quoteMin,
+      maxQuoteCount: quoteMax,
+    },
+    actual,
+    delta: {
+      charCount: actual.charCount - targetRange.targetCharCount,
+      kwCount: actual.kwCount - targetRange.targetKwCount,
+      imageCount: actual.imageCount - imageTarget,
+      quoteCount: actual.quoteCount - quoteTarget,
+    },
+    pass,
+  };
+}
+
+function attachRewriteMetricSummary(row = {}) {
+  if (!row || typeof row !== 'object') return row;
+  return {
+    ...row,
+    metric_summary: rewriteMetricSummary(row),
+  };
+}
+
 function metricSupplementParagraph({ keyword = '', topic = '', category = '', index = 0, includeKeyword = true } = {}) {
   const keyPhrase = includeKeyword ? normalizeKeywordValue(keyword) : (isPolicySupportKeyword(`${keyword} ${topic} ${category}`) ? '해당 지원 정보' : '이 주제');
   const subject = normalizeKeywordValue(topic) || keyPhrase;
@@ -4236,7 +4313,7 @@ async function processRewriteJob(jobId, options = {}) {
     openai: output.openaiUsage || null,
     variantIndex,
   });
-  return { ...rows[0], generator_mode: output.generatorMode || 'server_template', elapsed_ms: elapsedMs, variant_index: variantIndex };
+  return attachRewriteMetricSummary({ ...rows[0], generator_mode: output.generatorMode || 'server_template', elapsed_ms: elapsedMs, variant_index: variantIndex });
 }
 
 async function mapLimit(items, limit, mapper) {
@@ -7783,7 +7860,7 @@ router.get('/rewrite-jobs', async (req, res) => {
        LIMIT $${values.length}`,
       values
     );
-    res.json(rows);
+    res.json(rows.map(attachRewriteMetricSummary));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -7797,7 +7874,7 @@ router.get('/rewrite-jobs/:id', async (req, res) => {
       'SELECT * FROM rewrite_job_events WHERE rewrite_job_id = $1 ORDER BY created_at DESC LIMIT 50',
       [req.params.id]
     );
-    res.json({ ...job.rows[0], events: events.rows });
+    res.json({ ...attachRewriteMetricSummary(job.rows[0]), events: events.rows });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -7830,7 +7907,7 @@ router.patch('/rewrite-jobs/:id', async (req, res) => {
       ctaUrl: ctaUrl || null,
       qrTargetUrl: qrTargetUrl || null,
     });
-    res.json({ ok: true, job: rows[0] });
+    res.json({ ok: true, job: attachRewriteMetricSummary(rows[0]) });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

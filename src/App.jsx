@@ -158,6 +158,123 @@ function formatKrw(value) {
   return `${numeric.toLocaleString()}원`;
 }
 
+function formatMetricValue(value) {
+  const numeric = Number(value || 0);
+  return Number.isFinite(numeric) ? numeric.toLocaleString() : '0';
+}
+
+function metricSummaryForJob(job = {}) {
+  return job.metric_summary || job.metricSummary || null;
+}
+
+function metricPassStyle(pass) {
+  return {
+    color: pass ? COLORS.success : COLORS.warning,
+    background: pass ? '#ecfdf5' : '#fff7ed',
+    border: `1px solid ${pass ? '#bbf7d0' : '#fed7aa'}`,
+  };
+}
+
+function MetricCheckLine({ label, actual, targetText, pass }) {
+  const tone = metricPassStyle(pass);
+  return (
+    <div style={{
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      gap: 8,
+      padding: '4px 6px',
+      borderRadius: 7,
+      ...tone,
+    }}>
+      <span style={{ fontWeight: 850 }}>{label}</span>
+      <span style={{ fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>
+        {actual} / {targetText}
+      </span>
+    </div>
+  );
+}
+
+function RewriteMetricCell({ job }) {
+  const summary = metricSummaryForJob(job);
+  const actual = summary?.actual || {};
+  const target = summary?.target || {};
+  const pass = summary?.pass || {};
+  const charActual = formatMetricValue(actual.charCount ?? job.char_count);
+  const charTarget = target.minCharCount && target.maxCharCount
+    ? `${formatMetricValue(target.minCharCount)}~${formatMetricValue(target.maxCharCount)}자`
+    : '목표 미정';
+  const kwTarget = target.minKwCount && target.maxKwCount
+    ? `${target.minKwCount}~${target.maxKwCount}회`
+    : '목표 미정';
+  const imageTarget = target.imageCount !== undefined ? `${target.imageCount}장` : '목표 미정';
+  const quoteTarget = target.minQuoteCount !== undefined && target.maxQuoteCount !== undefined
+    ? `${target.minQuoteCount}~${target.maxQuoteCount}개`
+    : '목표 미정';
+  return (
+    <div style={{ display: 'grid', gap: 5, minWidth: 180 }}>
+      <MetricCheckLine
+        label="글자수"
+        actual={`${charActual}자`}
+        targetText={charTarget}
+        pass={summary ? pass.charCount : true}
+      />
+      <MetricCheckLine
+        label="KW"
+        actual={`${actual.kwCount ?? job.kw_count ?? 0}회`}
+        targetText={kwTarget}
+        pass={summary ? pass.kwCount : true}
+      />
+      <MetricCheckLine
+        label="이미지"
+        actual={`${actual.imageCount ?? job.image_count ?? 0}장`}
+        targetText={imageTarget}
+        pass={summary ? pass.imageCount : true}
+      />
+      <MetricCheckLine
+        label="인용구"
+        actual={`${actual.quoteCount ?? job.quote_count ?? 0}개`}
+        targetText={quoteTarget}
+        pass={summary ? pass.quoteCount : true}
+      />
+      <p style={{ marginTop: 2, fontSize: 10, color: job.generator_mode === 'openai' ? COLORS.success : COLORS.textMuted, fontWeight: 850 }}>
+        {job.generator_mode === 'openai' ? `OpenAI ${formatUsd(job.openai_estimated_cost_usd || 0)}` : '템플릿'}
+      </p>
+    </div>
+  );
+}
+
+function RewriteMetricDetail({ summary }) {
+  if (!summary) return null;
+  const actual = summary.actual || {};
+  const target = summary.target || {};
+  const pass = summary.pass || {};
+  const rows = [
+    ['글자수', `${formatMetricValue(actual.charCount)}자`, `${formatMetricValue(target.minCharCount)}~${formatMetricValue(target.maxCharCount)}자`, pass.charCount],
+    ['키워드 반복', `${actual.kwCount || 0}회`, `${target.minKwCount || 0}~${target.maxKwCount || 0}회`, pass.kwCount],
+    ['이미지', `${actual.imageCount || 0}장`, `${target.imageCount || 0}장`, pass.imageCount],
+    ['인용구', `${actual.quoteCount || 0}개`, `${target.minQuoteCount || 0}~${target.maxQuoteCount || 0}개`, pass.quoteCount],
+  ];
+  return (
+    <div style={{ marginBottom: 10, padding: 10, borderRadius: 10, border: `1px solid ${COLORS.border}`, background: '#f8fafc' }}>
+      <p style={{ fontSize: 11, color: COLORS.primary, fontWeight: 900, marginBottom: 8 }}>
+        지표 검수 {summary.status === 'passed' ? '통과' : '검수 필요'}
+      </p>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(110px, 1fr))', gap: 6 }}>
+        {rows.map(([label, actualText, targetText, ok]) => (
+          <MetricCheckLine
+            key={label}
+            label={label}
+            actual={actualText}
+            targetText={targetText}
+            pass={ok}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function keywordDemandBadge(candidate) {
   if (candidate?.searchVolume !== null && candidate?.searchVolume !== undefined) {
     return {
@@ -3947,6 +4064,7 @@ function RewritePanel() {
                   const selected = selectedRewriteJobIds.includes(job.id);
                   const ctaDraft = ctaDrafts[job.id] ?? job.cta_url ?? job.qr_target_url ?? '';
                   const ctaSaving = savingCtaIds.includes(job.id);
+                  const metricSummary = metricSummaryForJob(job);
                   return [
                     <tr key={`row-${job.id}`} style={{ fontSize: 12, borderBottom: `1px solid ${COLORS.border}`, verticalAlign: 'top', background: selected ? '#f0f7ff' : 'white' }}>
                       <td style={{ padding: '12px' }}>
@@ -3979,13 +4097,8 @@ function RewritePanel() {
                         <p>{platformLabel[job.platform] || job.platform || '-'}</p>
                         <p style={{ marginTop: 4, fontSize: 10, color: COLORS.textMuted }}>{job.category || 'general'}</p>
                       </td>
-                      <td style={{ padding: '12px', minWidth: 150, color: COLORS.textSecondary }}>
-                        <p>{Number(job.char_count || 0).toLocaleString()}자</p>
-                        <p style={{ marginTop: 4 }}>KW {job.kw_count || 0} · 이미지 {job.image_count || 0}</p>
-                        <p style={{ marginTop: 4, fontSize: 10, color: COLORS.textMuted }}>인용구 {job.quote_count || 0}</p>
-                        <p style={{ marginTop: 4, fontSize: 10, color: job.generator_mode === 'openai' ? COLORS.success : COLORS.textMuted, fontWeight: 850 }}>
-                          {job.generator_mode === 'openai' ? `OpenAI ${formatUsd(job.openai_estimated_cost_usd || 0)}` : '템플릿'}
-                        </p>
+                      <td style={{ padding: '12px', minWidth: 210, color: COLORS.textSecondary }}>
+                        <RewriteMetricCell job={job} />
                       </td>
                       <td style={{ padding: '12px', minWidth: 150, color: COLORS.textSecondary }}>
                         <p>SEO {Number(job.seo_score || 0).toFixed(0)} · GEO {Number(job.geo_score || 0).toFixed(0)} · AEO {Number(job.aeo_score || 0).toFixed(0)}</p>
@@ -4025,6 +4138,7 @@ function RewritePanel() {
                     expanded ? (
                       <tr key={`detail-${job.id}`} style={{ background: '#fbfdff', borderBottom: `1px solid ${COLORS.border}` }}>
                         <td colSpan={9} style={{ padding: 16 }}>
+                          <RewriteMetricDetail summary={metricSummary} />
                           <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 260px', gap: 14 }}>
                             <div style={{
                               maxHeight: 360,
