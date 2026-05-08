@@ -1208,8 +1208,8 @@ function metricTargetRange(settingsInput = {}) {
     sectionCharCount: settings.sectionCharCount,
     sectionCount: settings.sectionCount,
     targetKwCount: settings.targetKwCount,
-    minKwCount: settings.targetKwCount,
-    maxKwCount: settings.targetKwCount + 4,
+    minKwCount: Math.max(5, settings.targetKwCount - 1),
+    maxKwCount: settings.targetKwCount + 2,
   };
 }
 
@@ -1302,6 +1302,66 @@ function clampNumber(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
+function plannedArticleImageCount(input = {}, sectionCountInput) {
+  const rawSectionCount = Number(sectionCountInput ?? input.sectionCount ?? input.section_count ?? DEFAULT_REWRITE_SETTINGS.sectionCount);
+  const sectionCount = clampNumber(Number.isFinite(rawSectionCount) && rawSectionCount > 0 ? Math.round(rawSectionCount) : DEFAULT_REWRITE_SETTINGS.sectionCount, 1, 10);
+  const naturalTotal = 1 + Math.min(5, Math.max(2, sectionCount - 1));
+  const rawImageCount = Number(input.imageCount ?? input.image_count ?? naturalTotal);
+  const requested = Number.isFinite(rawImageCount) && rawImageCount > 0 ? Math.round(rawImageCount) : naturalTotal;
+  return clampNumber(Math.min(requested, naturalTotal), 1, 1 + sectionCount);
+}
+
+function keywordVariantPool(keyword = '', topic = '') {
+  const clean = normalizeKeywordValue(keyword);
+  const subject = naturalTitleSubject(keyword, topic);
+  const pool = new Set();
+  if (/완도/.test(`${clean} ${topic}`) && /반값|반갑/.test(`${clean} ${topic}`)) {
+    ['완도 여행 지원', '반값여행 신청', '완도군 여행비 지원', '여행 환급 신청', '공식 홈페이지 안내', '신청 기간 확인'].forEach((term) => pool.add(term));
+  }
+  if (/민생회복|지원금/.test(`${clean} ${topic}`)) {
+    ['지원금 신청', '민생 지원 안내', '신청 기간 확인', '대상자 조회', '지역별 지급 기준', '공식 접수처'].forEach((term) => pool.add(term));
+  }
+  [subject, clean.replace(/\s*신청$/g, ''), clean.replace(/\s*방법$/g, '')]
+    .map((term) => normalizeKeywordValue(term))
+    .filter((term) => term && term !== clean)
+    .forEach((term) => pool.add(term));
+  ['대상 기준', '신청 방법', '일정 확인', '주의사항', '공식 안내'].forEach((term) => pool.add(term));
+  return [...pool].filter(Boolean);
+}
+
+function limitExactKeywordRepetition(body = '', keyword = '', maxExact = 12, topic = '') {
+  const cleanKeyword = normalizeKeywordValue(keyword);
+  if (!cleanKeyword || maxExact <= 0) return body;
+  const variants = keywordVariantPool(cleanKeyword, topic);
+  if (variants.length === 0) return body;
+  const pattern = new RegExp(escapeRegExp(cleanKeyword), 'g');
+  let count = 0;
+  return String(body || '').split('\n').map((line, lineIndex) => {
+    if (lineIndex === 0 || /^\s*\[/.test(line)) return line;
+    return line.replace(pattern, (match) => {
+      count += 1;
+      if (count <= maxExact) return match;
+      return variants[(count - maxExact - 1) % variants.length] || match;
+    });
+  }).join('\n');
+}
+
+function limitImagePlaceholders(body = '', maxTotal = DEFAULT_REWRITE_SETTINGS.imageCount) {
+  let count = 0;
+  const maxImages = Math.max(0, Number(maxTotal) || 0);
+  return String(body || '').split('\n').filter((line) => {
+    if (!/^\s*\[(?:대표이미지|대표 이미지|이미지|보조 이미지)\b/.test(line)) return true;
+    count += 1;
+    return count <= maxImages;
+  }).join('\n');
+}
+
+function imageKeywordLabel(keyword = '', topic = '', index = 0) {
+  if (index === 0) return normalizeKeywordValue(keyword);
+  const variants = keywordVariantPool(keyword, topic);
+  return variants[(index - 1) % Math.max(variants.length, 1)] || normalizeKeywordValue(keyword);
+}
+
 const DEFAULT_REWRITE_SETTINGS = {
   contentSkillKey: 'adsense_traffic',
   generatorMode: 'openai',
@@ -1309,15 +1369,15 @@ const DEFAULT_REWRITE_SETTINGS = {
   targetCharCount: 2200,
   sectionCharCount: 300,
   sectionCount: 7,
-  targetKwCount: 15,
-  imageCount: 12,
+  targetKwCount: 11,
+  imageCount: 6,
   benchmarkUrl: 'https://blog.naver.com/openmind200/224258533599',
   benchmarkSampleCount: 20,
   benchmarkMedianCharCount: 1940,
   benchmarkMedianSectionCount: 7,
   benchmarkMedianSectionCharCount: 280,
-  benchmarkMedianKwCount: 19,
-  benchmarkMedianImageCount: 12,
+  benchmarkMedianKwCount: 12,
+  benchmarkMedianImageCount: 6,
 };
 
 const CONTENT_SKILLS = {
@@ -1404,6 +1464,7 @@ function buildPublishSpec(platform = 'blog', settingsInput = {}, overrides = {})
   const contentSkill = contentSkillFor(settings.contentSkillKey);
   const normalizedPlatform = normalizePlatform(platform);
   const sectionCount = settings.sectionCount;
+  const plannedImageCount = plannedArticleImageCount(settings, sectionCount);
   const range = metricTargetRange(settings);
   const base = {
     mechanism: 'publish_generation',
@@ -1420,7 +1481,8 @@ function buildPublishSpec(platform = 'blog', settingsInput = {}, overrides = {})
     minKeywordRepeatCount: range.minKwCount,
     maxKeywordRepeatCount: range.maxKwCount,
     thumbnailCount: 1,
-    sectionImageCount: sectionCount,
+    sectionImageCount: Math.max(0, plannedImageCount - 1),
+    totalImageCount: plannedImageCount,
     imageSize: '500x500',
     imageAlignment: 'center',
     imageStyle: '상하좌우 여백 균형, 중앙정렬, 모바일에서 읽히는 고대비 텍스트 카드',
@@ -1540,7 +1602,7 @@ async function benchmarkRewriteSettingsFromUrl(sourceUrl, limit = 20) {
     sectionCharCount: clampNumber(roundToNearest(targetCharCount / sectionCount, 10), 150, 700),
     sectionCount,
     targetKwCount: Math.min(summary.medianKwCount || DEFAULT_REWRITE_SETTINGS.targetKwCount, DEFAULT_REWRITE_SETTINGS.targetKwCount),
-    imageCount: summary.medianImageCount || DEFAULT_REWRITE_SETTINGS.imageCount,
+    imageCount: plannedArticleImageCount({ imageCount: summary.medianImageCount || DEFAULT_REWRITE_SETTINGS.imageCount, sectionCount }),
     benchmarkUrl: sourceUrl,
     benchmarkSampleCount: summary.sampleCount,
     benchmarkMedianCharCount: summary.medianCharCount,
@@ -1583,7 +1645,8 @@ function buildRewritePattern(analyses = [], settingsInput = {}) {
     .filter((text) => text.length >= 120)
     .map((text) => text.slice(0, 5000))
     .slice(0, 10);
-  const targetKwCount = clampNumber((settings.targetKwCount || DEFAULT_REWRITE_SETTINGS.targetKwCount) + 1, 5, 31);
+  const targetKwCount = clampNumber((settings.targetKwCount || DEFAULT_REWRITE_SETTINGS.targetKwCount), 5, 24);
+  const plannedImages = plannedArticleImageCount(settings, settings.sectionCount);
 
   return {
     sampleCount: analyses.length,
@@ -1596,8 +1659,8 @@ function buildRewritePattern(analyses = [], settingsInput = {}) {
     targetCharCount: settings.targetCharCount,
     sectionCharCount: settings.sectionCharCount,
     targetKwCount,
-    keywordRepeatBuffer: 1,
-    imageCount: settings.imageCount,
+    keywordRepeatBuffer: 0,
+    imageCount: plannedImages,
     quoteCount: settings.sectionCount,
     sectionCount: settings.sectionCount,
     paragraphCount,
@@ -1611,7 +1674,8 @@ function buildRewritePattern(analyses = [], settingsInput = {}) {
     structure: {
       introParagraphs: 3,
       ctaAfterIntro: true,
-      imageAfterEachSection: true,
+      imageAfterEachSection: false,
+      imagePolicy: 'thumbnail_plus_first_core_sections_only',
       conclusionParagraphs: 3,
     },
   };
@@ -2448,10 +2512,8 @@ function buildRewriteDraft({ keyword, topic, platform, ctaUrl, useNaverQr, useAi
   const targetSectionChars = pattern.sectionCharCount || DEFAULT_REWRITE_SETTINGS.sectionCharCount;
   const desiredKwCount = pattern.targetKwCount || DEFAULT_REWRITE_SETTINGS.targetKwCount;
   const publishSpec = buildPublishSpec(platform, pattern.settings || pattern, { hasCtaUrl: Boolean(ctaUrl), useNaverQr });
-  const requiredImageCount = Math.max(
-    pattern.imageCount || 0,
-    (publishSpec.thumbnailCount || 1) + Math.max(sectionTitles.length, publishSpec.sectionImageCount || 0)
-  );
+  const requiredImageCount = plannedArticleImageCount(pattern.settings || pattern, sectionTitles.length);
+  const sectionImageLimit = Math.max(0, requiredImageCount - 1);
   const intro = rewriteIntroParagraphs({
     keyword,
     subject,
@@ -2876,10 +2938,8 @@ function buildRewriteDraftV2({ keyword, topic, platform, ctaUrl, useNaverQr, use
   const sectionTitles = naturalSectionTitles(keyword, topic, sectionCount, variantIndex);
   const isPolicy = naturalPolicyIntent(keyword, topic);
   const publishSpec = buildPublishSpec(platform, pattern.settings || pattern, { hasCtaUrl: Boolean(ctaUrl), useNaverQr });
-  const requiredImageCount = Math.max(
-    pattern.imageCount || 0,
-    (publishSpec.thumbnailCount || 1) + Math.max(sectionTitles.length, publishSpec.sectionImageCount || 0)
-  );
+  const requiredImageCount = plannedArticleImageCount(pattern.settings || pattern, sectionTitles.length);
+  const sectionImageLimit = Math.max(0, requiredImageCount - 1);
   const bodyParts = [title, ''];
   if (useAiImages) {
     bodyParts.push(`[대표이미지 500x500 중앙정렬: ${title}]`, '');
@@ -2894,7 +2954,7 @@ function buildRewriteDraftV2({ keyword, topic, platform, ctaUrl, useNaverQr, use
   }
   sectionTitles.forEach((section, index) => {
     bodyParts.push(`> ${section}`, '');
-    if (useAiImages) bodyParts.push(`[이미지 ${index + 1} 500x500 중앙정렬: ${section}]`, '');
+    if (useAiImages && index < sectionImageLimit) bodyParts.push(`[이미지 ${index + 1} 500x500 중앙정렬: ${section}]`, '');
     bodyParts.push(...naturalSectionParagraphsV2({ keyword, subject, section, index, isPolicy }), '');
   });
   bodyParts.push('> 마무리', '');
@@ -2907,9 +2967,11 @@ function buildRewriteDraftV2({ keyword, topic, platform, ctaUrl, useNaverQr, use
       : `비슷한 정보가 많을수록 제목이나 첫 문단만 보고 판단하기보다 실제 기준과 확인 경로를 같이 보는 습관이 도움이 됩니다.`
   );
 
-  let body = cleanGeneratedArticleBody(bodyParts.join('\n'));
-  let metrics = articleMetrics(body, keyword);
   const range = metricTargetRange(pattern);
+  let body = cleanGeneratedArticleBody(bodyParts.join('\n'));
+  body = limitImagePlaceholders(body, requiredImageCount);
+  body = limitExactKeywordRepetition(body, keyword, range.maxKwCount, topic);
+  let metrics = articleMetrics(body, keyword);
   const extraNotes = [
     `${keyword}은 공고명, 기준일, 접수처가 서로 맞는지 함께 보는 것이 좋습니다.`,
     `${keyword} 관련 안내가 여러 곳에 올라와도 최종 기준은 공식 페이지의 최신 공지에 두는 편이 안전합니다.`,
@@ -2922,6 +2984,8 @@ function buildRewriteDraftV2({ keyword, topic, platform, ctaUrl, useNaverQr, use
   let noteIndex = 0;
   while ((metrics.charCount < range.minCharCount || metrics.kwCount < range.minKwCount) && noteIndex < extraNotes.length) {
     body = cleanGeneratedArticleBody(`${body}\n\n${extraNotes[noteIndex]}`);
+    body = limitImagePlaceholders(body, requiredImageCount);
+    body = limitExactKeywordRepetition(body, keyword, range.maxKwCount, topic);
     metrics = articleMetrics(body, keyword);
     noteIndex += 1;
   }
@@ -2936,7 +3000,7 @@ function buildRewriteDraftV2({ keyword, topic, platform, ctaUrl, useNaverQr, use
           section,
           prompt: `${keyword} ${section} 정보형 카드 이미지`,
           url: makeTemplateImage({
-            keyword,
+            keyword: imageKeywordLabel(keyword, topic, index),
             section,
             subtitle: index === 0 ? '핵심 정보 정리' : '확인 포인트',
             index,
@@ -3033,6 +3097,11 @@ function buildOpenAiRewritePrompt({ job, analyses = [], pattern = {}, settings =
         '마무리에서는 핵심을 다시 정리하되 과장된 보장 표현은 피한다.',
       ],
       sourceBenchmarks: sourceSummaries,
+      naturalDensityRules: {
+        imagePolicy: `Use at most ${imageCount} image placeholders total: 1 cover image plus the first ${Math.max(0, imageCount - 1)} core section images only. Tail sections such as FAQ, tips, summary, and conclusion may have no image.`,
+        exactKeywordPolicy: `Do not repeat the exact main keyword '${keyword}' in every paragraph or every section title. Use the exact phrase about ${range.minKwCount}-${range.maxKwCount} times total, then distribute natural variants and related terms.`,
+        benchmarkInterpretation: 'Benchmark posts repeat important keywords, but the output must not look mechanically stuffed. Mix headings with action terms such as 대상, 신청 방법, 기간, 홈페이지, 서류, 주의사항, 확인.',
+      },
       requiredJsonShape: {
         title: 'string',
         body: 'string with title, intro, CTA, quote headings, image placeholders, conclusion',
@@ -3046,8 +3115,8 @@ function buildOpenAiRewritePrompt({ job, analyses = [], pattern = {}, settings =
 function buildOpenAiRewritePromptV2({ job, analyses = [], pattern = {}, settings = {}, variantIndex = 0 }) {
   const keyword = job.target_keyword;
   const topic = job.target_topic || keyword;
-  const imageCount = pattern.imageCount || settings.imageCount || DEFAULT_REWRITE_SETTINGS.imageCount;
   const sectionCount = pattern.sectionCount || settings.sectionCount || DEFAULT_REWRITE_SETTINGS.sectionCount;
+  const imageCount = plannedArticleImageCount({ ...settings, ...pattern }, sectionCount);
   const targetCharCount = pattern.targetCharCount || settings.targetCharCount || DEFAULT_REWRITE_SETTINGS.targetCharCount;
   const targetKwCount = pattern.targetKwCount || settings.targetKwCount || DEFAULT_REWRITE_SETTINGS.targetKwCount;
   const range = metricTargetRange({ ...settings, targetCharCount, targetKwCount, sectionCount });
@@ -3110,6 +3179,11 @@ function buildOpenAiRewritePromptV2({ job, analyses = [], pattern = {}, settings
         '말투는 광고 문구보다 정보형 블로그에 가깝게 쓴다. 너무 딱딱한 공문체나 과한 감탄문은 피한다.',
       ],
       sourceBenchmarks: sourceSummaries,
+      naturalDensityRules: {
+        imagePolicy: `Use at most ${imageCount} image placeholders total: 1 cover image plus the first ${Math.max(0, imageCount - 1)} core section images only. Tail sections such as FAQ, tips, summary, and conclusion may have no image.`,
+        exactKeywordPolicy: `Do not repeat the exact main keyword '${keyword}' in every paragraph or every section title. Use the exact phrase about ${range.minKwCount}-${range.maxKwCount} times total, then distribute natural variants and related terms.`,
+        benchmarkInterpretation: 'Benchmark posts repeat important keywords, but the output must not look mechanically stuffed. Mix headings with action terms such as 대상, 신청 방법, 기간, 홈페이지, 서류, 주의사항, 확인.',
+      },
       requiredJsonShape: {
         title: 'string',
         body: 'string',
@@ -3163,9 +3237,11 @@ async function buildOpenAiRewriteDraft({ tenantId, job, analyses, pattern, setti
   const sectionTitles = Array.isArray(parsed.sectionTitles) && parsed.sectionTitles.length
     ? parsed.sectionTitles.map((item) => String(item || '').replace(/^>\s*/, '').trim()).filter(Boolean)
     : makeSectionTitles(job.target_keyword, job.target_topic, Math.max(1, (pattern.sectionCount || settings.sectionCount || 7) - 1), variantIndex);
+  const requiredImageCount = plannedArticleImageCount({ ...settings, ...pattern }, sectionTitles.length);
+  const sectionImageLimit = Math.max(0, requiredImageCount - 1);
   sectionTitles.forEach((section, index) => {
     const markerPattern = new RegExp(`\\[(?:이미지|image|img)\\s*${index + 1}\\b`, 'i');
-    if (!markerPattern.test(body)) {
+    if (index < sectionImageLimit && !markerPattern.test(body)) {
       body += `\n\n[이미지 ${index + 1} 500x500 중앙정렬: ${section}]`;
     }
   });
@@ -3175,6 +3251,8 @@ async function buildOpenAiRewriteDraft({ tenantId, job, analyses, pattern, setti
     targetKwCount: pattern.targetKwCount || settings.targetKwCount,
   });
   body = cleanGeneratedArticleBody(body);
+  body = limitImagePlaceholders(body, requiredImageCount);
+  body = limitExactKeywordRepetition(body, job.target_keyword, targetRange.maxKwCount, job.target_topic);
   let cleanedMetrics = articleMetrics(body, job.target_keyword);
   const supplementNotes = [
     `${job.target_keyword}은 공고명과 접수처가 실제로 같은지 먼저 보는 것이 좋습니다.`,
@@ -3188,6 +3266,8 @@ async function buildOpenAiRewriteDraft({ tenantId, job, analyses, pattern, setti
   let metricSupplementCount = 0;
   while ((cleanedMetrics.charCount < targetRange.minCharCount || cleanedMetrics.kwCount < targetRange.minKwCount) && metricSupplementCount < supplementNotes.length) {
     body = cleanGeneratedArticleBody(`${body}\n\n${supplementNotes[metricSupplementCount]}`);
+    body = limitImagePlaceholders(body, requiredImageCount);
+    body = limitExactKeywordRepetition(body, job.target_keyword, targetRange.maxKwCount, job.target_topic);
     cleanedMetrics = articleMetrics(body, job.target_keyword);
     metricSupplementCount += 1;
   }
@@ -3199,17 +3279,13 @@ async function buildOpenAiRewriteDraft({ tenantId, job, analyses, pattern, setti
   const plainText = cleanedMetrics.plainText;
   const charCount = cleanedMetrics.charCount;
   const kwCount = cleanedMetrics.kwCount;
-  const requiredImageCount = Math.max(
-    pattern.imageCount || settings.imageCount || 0,
-    1 + sectionTitles.length
-  );
   const cards = Array.isArray(parsed.imageCards) ? parsed.imageCards : [];
   const images = job.use_ai_images
     ? Array.from({ length: requiredImageCount }, (_, index) => {
         const card = cards[index] || {};
         const section = index === 0 ? title : sectionTitles[(index - 1) % Math.max(sectionTitles.length, 1)] || title;
         return makeTemplateImage({
-          keyword: job.target_keyword,
+          keyword: imageKeywordLabel(job.target_keyword, job.target_topic, index),
           section: card.title || card.label || section,
           subtitle: card.subtitle || (index === 0 ? '핵심 요약' : `${index}번째 포인트`),
           index,

@@ -39,15 +39,15 @@ const DEFAULT_REWRITE_SETTINGS = {
   targetCharCount: 2200,
   sectionCharCount: 300,
   sectionCount: 7,
-  targetKwCount: 15,
-  imageCount: 12,
+  targetKwCount: 11,
+  imageCount: 6,
   benchmarkUrl: 'https://blog.naver.com/openmind200/224258533599',
   benchmarkSampleCount: 20,
   benchmarkMedianCharCount: 1940,
   benchmarkMedianSectionCount: 7,
   benchmarkMedianSectionCharCount: 280,
-  benchmarkMedianKwCount: 19,
-  benchmarkMedianImageCount: 12,
+  benchmarkMedianKwCount: 12,
+  benchmarkMedianImageCount: 6,
 };
 
 const CONTENT_SKILL_LABELS = {
@@ -2354,6 +2354,9 @@ function RewritePanel() {
       const saved = JSON.parse(localStorage.getItem('naviwrite.rewrite.settings') || 'null') || {};
       const merged = { ...DEFAULT_REWRITE_SETTINGS, ...saved };
       if (!saved.openaiModel || saved.openaiModel === 'gpt-4.1-mini') merged.openaiModel = DEFAULT_REWRITE_SETTINGS.openaiModel;
+      if (!saved.settingsVersion || saved.imageCount === 12) merged.imageCount = DEFAULT_REWRITE_SETTINGS.imageCount;
+      if (!saved.settingsVersion || saved.targetKwCount === 15) merged.targetKwCount = DEFAULT_REWRITE_SETTINGS.targetKwCount;
+      merged.settingsVersion = 2;
       return merged;
     } catch {
       return DEFAULT_REWRITE_SETTINGS;
