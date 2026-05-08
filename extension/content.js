@@ -1021,7 +1021,6 @@ function clearEditable(node) {
   selection.removeAllRanges();
   selection.addRange(range);
   document.execCommand?.('delete', false);
-  if ((node.textContent || '').trim()) node.innerHTML = '';
   emitInput(node);
 }
 
@@ -1089,10 +1088,6 @@ async function typeTextLikeHuman(node, text, options = {}) {
         selection.removeAllRanges();
         selection.addRange(range);
       }
-      if ((target.textContent || '') === before) {
-        target.textContent = `${before}${chunk}`;
-        placeCaretAtEnd(target);
-      }
     }
     target.dispatchEvent(new InputEvent('input', {
       bubbles: true,
@@ -1132,6 +1127,11 @@ async function pressEnter(node, count = 1, options = {}) {
     } else {
       target.focus?.();
       if (!selectionEditable()) placeCaretAtEnd(target);
+      const nativePressed = await requestNativeKey('Enter', { count: 1 });
+      if (nativePressed) {
+        await sleep(randomDelay(55, 110));
+        continue;
+      }
       target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true }));
       document.execCommand?.('insertParagraph', false);
       emitInput(target);
@@ -1253,25 +1253,11 @@ async function dismissResumeDraftDialog(options = {}) {
     .filter(visible)
     .some((node) => draftPattern.test(node.textContent || ''));
   const forceRemoveDraftLayer = () => {
-    let removed = false;
-    Array.from(document.querySelectorAll('button.se-popup-button-cancel, .se-popup-button-cancel'))
-      .forEach((node) => {
-        const popup = node.closest?.(`${popupRootSelector}, .se-popup-button-container, .se-popup-alert-confirm`);
-        const container = popup?.closest?.(`${popupRootSelector}, .se-popup-alert-confirm`) || popup;
-        if (container && draftPattern.test(`${container.textContent || ''}\n${document.body?.textContent || ''}`)) {
-          container.remove?.();
-          removed = true;
-        }
-      });
-    Array.from(document.querySelectorAll(`${popupRootSelector}, .se-popup-dim, .se-dim, .dimmed, .se-popup-dim-white`))
-      .filter((node) => draftPattern.test(node.textContent || '') || /dim|popup/i.test(String(node.className || '')))
-      .forEach((node) => {
-        node.remove?.();
-        removed = true;
-      });
+    // Naver SmartEditor owns these popup nodes. Removing them directly can
+    // desync the editor and trigger vendor removeChild NotFoundError.
     document.body?.removeAttribute?.('aria-hidden');
     document.body?.style?.removeProperty?.('overflow');
-    return removed;
+    return false;
   };
   const clickDraftCancel = async (node, waitMs = 220) => {
     await requestNativeClickNode(node, { holdMs: 30 });
@@ -1962,28 +1948,19 @@ function collapseDuplicateTextInEditable(node, text) {
   if (normalizedOccurrenceCount(current, text) < 2) return false;
   if ('value' in target) {
     target.value = text;
+    placeCaretAtEnd(target);
+    emitInput(target);
+    return true;
   } else {
-    target.textContent = text;
+    // Avoid direct textContent replacement inside SmartEditor-managed nodes.
+    return false;
   }
-  placeCaretAtEnd(target);
-  emitInput(target);
-  return true;
 }
 
 async function cleanupEmptyQuoteBlocks() {
-  const blocks = Array.from(document.querySelectorAll(`${QUOTE_CONTAINER_SELECTOR}, .se-component`))
-    .map((node) => node.closest?.('.se-component') || node)
-    .filter((node, index, list) => list.indexOf(node) === index)
-    .filter(visible)
-    .filter(isLikelyEmptyQuoteBlock);
-  if (!blocks.length) return 0;
-  blocks.forEach((block) => {
-    const parent = block.parentElement;
-    block.remove();
-    emitInput(parent || document.body);
-  });
-  await sleep(80);
-  return blocks.length;
+  // Do not remove SmartEditor components directly. Manual removal can make
+  // Naver's internal reconciliation throw NotFoundError while writing.
+  return 0;
 }
 
 async function exitQuoteBlock(node) {
