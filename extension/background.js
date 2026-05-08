@@ -54,12 +54,29 @@ async function nativeTypeIntoFocusedTarget(tabId, text, options = {}) {
     await debuggerAttach(target);
     attached = true;
     const value = String(text || '');
-    for (let index = 0; index < value.length; index += chunkSize) {
-      const chunk = value.slice(index, index + chunkSize);
-      await debuggerCommand(target, 'Input.insertText', { text: chunk });
-      if (index + chunkSize < value.length) await sleep(randomDelay(minDelay, maxDelay));
+    if (options.mode === 'insertText') {
+      for (let index = 0; index < value.length; index += chunkSize) {
+        const chunk = value.slice(index, index + chunkSize);
+        await debuggerCommand(target, 'Input.insertText', { text: chunk });
+        if (index + chunkSize < value.length) await sleep(randomDelay(minDelay, maxDelay));
+      }
+      return { ok: true, method: 'chrome-debugger-insertText' };
     }
-    return { ok: true, method: 'chrome-debugger' };
+    for (const char of value) {
+      if (char === '\n') {
+        const enter = { key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 };
+        await debuggerCommand(target, 'Input.dispatchKeyEvent', { type: 'rawKeyDown', ...enter });
+        await debuggerCommand(target, 'Input.dispatchKeyEvent', { type: 'keyUp', ...enter });
+      } else {
+        await debuggerCommand(target, 'Input.dispatchKeyEvent', {
+          type: 'char',
+          text: char,
+          unmodifiedText: char,
+        });
+      }
+      await sleep(randomDelay(minDelay, maxDelay));
+    }
+    return { ok: true, method: 'chrome-debugger-keyevent' };
   } finally {
     if (attached) await debuggerDetach(target);
   }
@@ -86,6 +103,27 @@ async function nativePressKey(tabId, key = 'Enter', options = {}) {
   }
 }
 
+async function nativeClick(tabId, point = {}, options = {}) {
+  if (!tabId) throw new Error('클릭할 탭을 찾지 못했습니다.');
+  const target = { tabId };
+  const x = Math.round(Number(point.x || 0));
+  const y = Math.round(Number(point.y || 0));
+  if (!Number.isFinite(x) || !Number.isFinite(y)) throw new Error('클릭 좌표가 올바르지 않습니다.');
+  let attached = false;
+  try {
+    await debuggerAttach(target);
+    attached = true;
+    const params = { x, y, button: 'left', clickCount: 1, pointerType: 'mouse' };
+    await debuggerCommand(target, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
+    await debuggerCommand(target, 'Input.dispatchMouseEvent', { type: 'mousePressed', ...params });
+    await sleep(Math.max(20, Number(options.holdMs || 35)));
+    await debuggerCommand(target, 'Input.dispatchMouseEvent', { type: 'mouseReleased', ...params });
+    return { ok: true, method: 'chrome-debugger-click' };
+  } finally {
+    if (attached) await debuggerDetach(target);
+  }
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === 'NAVIWRITE_NATIVE_TYPE_TEXT') {
     nativeTypeIntoFocusedTarget(sender.tab?.id, message.text || '', message.options || {})
@@ -96,6 +134,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message?.type === 'NAVIWRITE_NATIVE_PRESS_KEY') {
     nativePressKey(sender.tab?.id, message.key || 'Enter', message.options || {})
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
+    return true;
+  }
+
+  if (message?.type === 'NAVIWRITE_NATIVE_CLICK') {
+    nativeClick(sender.tab?.id, message.point || {}, message.options || {})
       .then((result) => sendResponse(result))
       .catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
     return true;

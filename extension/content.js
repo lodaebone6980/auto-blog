@@ -367,6 +367,7 @@ async function focusTitleTarget() {
   const exact = findExactTitleEditable();
   if (exact) {
     cachedTitleTarget = exact;
+    await requestNativeClickNode(exact, { holdMs: 25 });
     await clickNode(exact, 20);
     return exact;
   }
@@ -374,6 +375,7 @@ async function focusTitleTarget() {
   for (let attempt = 0; attempt < 2; attempt += 1) {
     let target = activeTitleEditable() || findStrictTitleEditable();
     if (target && visible(target)) {
+      await requestNativeClickNode(target, { holdMs: 25 });
       await clickNode(target, 25);
       target = activeTitleEditable() || target;
       if (target && visible(target)) {
@@ -384,7 +386,10 @@ async function focusTitleTarget() {
     const area = findTitleArea();
     const placeholder = findTitlePlaceholder();
     const clickTarget = placeholder || area;
-    if (clickTarget) await clickNode(clickTarget, 45);
+    if (clickTarget) {
+      await requestNativeClickNode(clickTarget, { holdMs: 25 });
+      await clickNode(clickTarget, 45);
+    }
     target = activeTitleEditable() || findStrictTitleEditable();
     if (target && visible(target)) {
       cachedTitleTarget = target;
@@ -514,6 +519,43 @@ function currentTextValue(node) {
   return String(('value' in node ? node.value : node.textContent) || '');
 }
 
+function normalizeEditorText(value = '') {
+  return String(value || '')
+    .replace(/[\u200b\u200c\u200d\ufeff]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function looseTextIncluded(haystack, needle) {
+  const hay = normalizeEditorText(haystack);
+  const expected = normalizeEditorText(needle);
+  if (!expected) return true;
+  if (hay.includes(expected)) return true;
+  if (expected.length <= 36) return false;
+  const head = expected.slice(0, Math.min(40, Math.floor(expected.length / 2)));
+  const tail = expected.slice(Math.max(0, expected.length - Math.min(40, Math.floor(expected.length / 2))));
+  return head.length >= 12 && tail.length >= 12 && hay.includes(head) && hay.includes(tail);
+}
+
+function textPresentAroundTarget(target, text, scope = 'body') {
+  if (!normalizeEditorText(text)) return true;
+  const base = editableRoot(target) || target;
+  const containers = scope === 'title'
+    ? [closestTitleContainer(base), findTitleArea(base)]
+    : [closestBodyContainer(base), base?.closest?.('.se-component'), base?.closest?.('.se-section')];
+  const candidates = uniqueNodes([
+    base,
+    target,
+    document.activeElement,
+    selectionEditable({ allowTitle: scope === 'title' }),
+    ...containers,
+  ])
+    .map((node) => editableRoot(node) || node)
+    .filter(Boolean)
+    .filter((node) => document.contains(node));
+  return candidates.some((node) => looseTextIncluded(currentTextValue(node), text));
+}
+
 function requestMainWorldTitleWrite(text) {
   return new Promise((resolve) => {
     if (!chrome.runtime?.sendMessage) {
@@ -574,7 +616,7 @@ async function setTitleText(node, text) {
   if (!target) return false;
 
   clearEditable(target);
-  await typeTextLikeHuman(target, text, { chunkSize: 1, minDelay: 10, maxDelay: 24 });
+  await typeTextLikeHuman(target, text, { chunkSize: 1, minDelay: 10, maxDelay: 24, scope: 'title' });
   await sleep(180);
   emitInput(target);
   if (currentTextValue(target).includes(text) || titleTextPresent(text, target)) return true;
@@ -684,6 +726,7 @@ function requestNativeTextInput(text, options = {}) {
         chunkSize: options.chunkSize || 1,
         minDelay: options.minDelay ?? 8,
         maxDelay: options.maxDelay ?? 24,
+        mode: options.mode || 'keyevent',
       },
     }, (response) => {
       if (chrome.runtime.lastError) {
@@ -704,6 +747,48 @@ function requestNativeKey(key = 'Enter', options = {}) {
     chrome.runtime.sendMessage({
       type: 'NAVIWRITE_NATIVE_PRESS_KEY',
       key,
+      options,
+    }, (response) => {
+      if (chrome.runtime.lastError) {
+        resolve(false);
+        return;
+      }
+      resolve(Boolean(response?.ok));
+    });
+  });
+}
+
+function viewportPointForNode(node) {
+  const rect = node?.getBoundingClientRect?.();
+  if (!rect) return null;
+  let x = rect.left + Math.min(rect.width / 2, Math.max(4, rect.width - 4));
+  let y = rect.top + Math.min(rect.height / 2, Math.max(4, rect.height - 4));
+  let currentWindow = window;
+  while (currentWindow && currentWindow !== currentWindow.parent) {
+    try {
+      const frame = currentWindow.frameElement;
+      if (!frame) break;
+      const frameRect = frame.getBoundingClientRect();
+      x += frameRect.left;
+      y += frameRect.top;
+      currentWindow = currentWindow.parent;
+    } catch {
+      break;
+    }
+  }
+  return { x, y };
+}
+
+function requestNativeClickNode(node, options = {}) {
+  return new Promise((resolve) => {
+    const point = viewportPointForNode(node);
+    if (!point || options.native === false || !chrome.runtime?.sendMessage) {
+      resolve(false);
+      return;
+    }
+    chrome.runtime.sendMessage({
+      type: 'NAVIWRITE_NATIVE_CLICK',
+      point,
       options,
     }, (response) => {
       if (chrome.runtime.lastError) {
@@ -871,6 +956,9 @@ async function typeTextLikeHuman(node, text, options = {}) {
   const chunkSize = options.chunkSize || 3;
   const minDelay = options.minDelay ?? 8;
   const maxDelay = options.maxDelay ?? 24;
+  const value = String(text || '');
+  const scope = options.scope || (isTitleEditable(target) ? 'title' : 'body');
+  if (!value) return true;
   if (!options.useCurrentCaret) placeCaretAtEnd(target);
   else {
     target.focus?.();
@@ -878,22 +966,27 @@ async function typeTextLikeHuman(node, text, options = {}) {
     if (!selectionEditable()) placeCaretAtEnd(target);
   }
 
-  const beforeNative = currentTextValue(target);
-  const beforeNativeDoc = document.body?.textContent || '';
-  const nativeTyped = await requestNativeTextInput(text, { ...options, chunkSize, minDelay, maxDelay });
+  const nativeTyped = await requestNativeTextInput(value, { ...options, chunkSize, minDelay, maxDelay });
   await sleep(nativeTyped ? 80 : 0);
   target = resolveTypingTarget(target, options);
-  if (nativeTyped && (
-    currentTextValue(target) !== beforeNative
-    || (document.body?.textContent || '') !== beforeNativeDoc
-  )) {
+  if (nativeTyped && textPresentAroundTarget(target, value, scope)) {
     emitInput(target);
-    return;
+    return true;
   }
 
-  for (let index = 0; index < text.length; index += chunkSize) {
+  const nativeInserted = nativeTyped
+    ? await requestNativeTextInput(value, { ...options, mode: 'insertText', chunkSize, minDelay, maxDelay })
+    : false;
+  await sleep(nativeInserted ? 80 : 0);
+  target = resolveTypingTarget(target, options);
+  if (nativeInserted && textPresentAroundTarget(target, value, scope)) {
+    emitInput(target);
+    return true;
+  }
+
+  for (let index = 0; index < value.length; index += chunkSize) {
     ensureTypingNotStopped();
-    const chunk = text.slice(index, index + chunkSize);
+    const chunk = value.slice(index, index + chunkSize);
     if (options.useCurrentCaret) target = resolveTypingTarget(target, options);
     target.dispatchEvent(new KeyboardEvent('keydown', { key: chunk, bubbles: true }));
     if ('value' in target) {
@@ -935,6 +1028,19 @@ async function typeTextLikeHuman(node, text, options = {}) {
     target.dispatchEvent(new KeyboardEvent('keyup', { key: chunk, bubbles: true }));
     await sleep(randomDelay(minDelay, maxDelay));
   }
+  target = resolveTypingTarget(target, options);
+  return textPresentAroundTarget(target, value, scope);
+}
+
+async function typeSegmentText(node, text, options = {}) {
+  const scope = options.scope || 'body';
+  let target = resolveTypingTarget(node, options);
+  const typed = await typeTextLikeHuman(target, text, { ...options, scope });
+  target = resolveTypingTarget(target, options);
+  if (typed || textPresentAroundTarget(target, text, scope)) return true;
+  const pasted = await pastePlainTextAtCaret(target, text, options);
+  target = resolveTypingTarget(target, options);
+  return Boolean(pasted || textPresentAroundTarget(target, text, scope));
 }
 
 async function pressEnter(node, count = 1, options = {}) {
@@ -1050,6 +1156,7 @@ async function dismissResumeDraftDialog() {
       return draftPattern.test(`${container?.textContent || ''}\n${bodyText}`) || cancelPattern.test(nodeText(node));
     });
   if (fastCancel) {
+    await requestNativeClickNode(fastCancel, { holdMs: 30 });
     await clickNode(fastCancel, 120);
     if (!draftPattern.test(document.body?.textContent || '')) return true;
   }
@@ -1079,6 +1186,7 @@ async function dismissResumeDraftDialog() {
     return removed;
   };
   const clickDraftCancel = async (node, waitMs = 220) => {
+    await requestNativeClickNode(node, { holdMs: 30 });
     await clickNode(node, waitMs);
     for (let i = 0; i < 4; i += 1) {
       if (!isDraftLayerVisible()) return true;
@@ -1755,7 +1863,8 @@ async function typeBodySegments(node, job, images = []) {
       const quote2Applied = await applyNaverQuote2();
       if (!quote2Applied) applyFormatBlock('blockquote');
       await sleep(120);
-      await typeTextLikeHuman(target, segment.text, { chunkSize: 1, minDelay: 9, maxDelay: 23, useCurrentCaret: true });
+      const typed = await typeSegmentText(target, segment.text, { chunkSize: 1, minDelay: 9, maxDelay: 23, useCurrentCaret: true, scope: 'body' });
+      if (!typed) throw new Error(`본문 인용구 입력 실패: ${segment.text.slice(0, 40)}`);
       quoteCount += 1;
       await pressEnter(target, 1, { useCurrentCaret: true });
       applyFormatBlock('p');
@@ -1765,7 +1874,8 @@ async function typeBodySegments(node, job, images = []) {
     if (segment.type === 'heading') {
       target = await prepareBodyTypingTarget(target) || target;
       applyFormatBlock('h3');
-      await typeTextLikeHuman(target, segment.text, { chunkSize: 1, minDelay: 9, maxDelay: 22, useCurrentCaret: true });
+      const typed = await typeSegmentText(target, segment.text, { chunkSize: 1, minDelay: 9, maxDelay: 22, useCurrentCaret: true, scope: 'body' });
+      if (!typed) throw new Error(`본문 소제목 입력 실패: ${segment.text.slice(0, 40)}`);
       await pressEnter(target, 1, { useCurrentCaret: true });
       target = await prepareBodyTypingTarget(target) || target;
       applyFormatBlock('p');
@@ -1775,14 +1885,16 @@ async function typeBodySegments(node, job, images = []) {
     if (segment.type === 'cta') {
       target = await prepareBodyTypingTarget(target) || target;
       applyFormatBlock('p');
-      await typeTextLikeHuman(target, segment.text, { chunkSize: 1, minDelay: 9, maxDelay: 22, useCurrentCaret: true });
+      const typed = await typeSegmentText(target, segment.text, { chunkSize: 1, minDelay: 9, maxDelay: 22, useCurrentCaret: true, scope: 'body' });
+      if (!typed) throw new Error(`CTA 입력 실패: ${segment.text.slice(0, 40)}`);
       await pressEnter(target, 2, { useCurrentCaret: true });
       typedSegments += 1;
       continue;
     }
     target = await prepareBodyTypingTarget(target) || target;
     applyFormatBlock('p');
-    await typeTextLikeHuman(target, segment.text, { chunkSize: 1, minDelay: 8, maxDelay: 20, useCurrentCaret: true });
+    const typed = await typeSegmentText(target, segment.text, { chunkSize: 1, minDelay: 8, maxDelay: 20, useCurrentCaret: true, scope: 'body' });
+    if (!typed) throw new Error(`본문 문단 입력 실패: ${segment.text.slice(0, 40)}`);
     await pressEnter(target, 2, { useCurrentCaret: true });
     typedSegments += 1;
   }
