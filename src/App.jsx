@@ -33,7 +33,7 @@ const SORT_OPTIONS = [
 ];
 
 const DEFAULT_REWRITE_SETTINGS = {
-  contentSkillKey: 'adsense_traffic',
+  contentSkillKey: 'adsense_verified_info',
   generatorMode: 'openai',
   openaiModel: 'gpt-5-mini',
   targetCharCount: 2500,
@@ -51,6 +51,7 @@ const DEFAULT_REWRITE_SETTINGS = {
 };
 
 const CONTENT_SKILL_LABELS = {
+  adsense_verified_info: '애드센스 정보검증형',
   adsense_traffic: '애드센스 유입용',
   clinic_marketing_manual: '병의원/마케팅 수동 이미지형',
 };
@@ -2360,7 +2361,10 @@ function RewritePanel() {
       if (!saved.settingsVersion || saved.targetKwCount === 15) merged.targetKwCount = DEFAULT_REWRITE_SETTINGS.targetKwCount;
       if (!saved.settingsVersion || saved.targetCharCount === 2200) merged.targetCharCount = DEFAULT_REWRITE_SETTINGS.targetCharCount;
       if (!saved.settingsVersion || saved.sectionCharCount === 300) merged.sectionCharCount = DEFAULT_REWRITE_SETTINGS.sectionCharCount;
-      merged.settingsVersion = 3;
+      if (!saved.settingsVersion || Number(saved.settingsVersion) < 4 || saved.contentSkillKey === 'adsense_traffic') {
+        merged.contentSkillKey = DEFAULT_REWRITE_SETTINGS.contentSkillKey;
+      }
+      merged.settingsVersion = 4;
       return merged;
     } catch {
       return DEFAULT_REWRITE_SETTINGS;
@@ -3423,6 +3427,18 @@ function RewritePanel() {
             }}
           />
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10, marginTop: 10 }}>
+            <label style={{ display: 'grid', gap: 5 }}>
+              <span style={{ fontSize: 11, color: COLORS.textSecondary, fontWeight: 800 }}>글쓰기 스킬</span>
+              <select
+                value={rewriteSettings.contentSkillKey || DEFAULT_REWRITE_SETTINGS.contentSkillKey}
+                onChange={(e) => updateRewriteSetting('contentSkillKey', e.target.value)}
+                style={{ ...inputStyle, height: 36, marginBottom: 0 }}
+              >
+                <option value="adsense_verified_info">애드센스 정보검증형</option>
+                <option value="adsense_traffic">애드센스 유입용</option>
+                <option value="clinic_marketing_manual">병의원/마케팅 수동 이미지형</option>
+              </select>
+            </label>
             <label style={{ display: 'grid', gap: 5 }}>
               <span style={{ fontSize: 11, color: COLORS.textSecondary, fontWeight: 800 }}>원고 생성 방식</span>
               <select

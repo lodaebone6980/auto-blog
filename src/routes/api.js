@@ -1363,7 +1363,7 @@ function imageKeywordLabel(keyword = '', topic = '', index = 0) {
 }
 
 const DEFAULT_REWRITE_SETTINGS = {
-  contentSkillKey: 'adsense_traffic',
+  contentSkillKey: 'adsense_verified_info',
   generatorMode: 'openai',
   openaiModel: 'gpt-5-mini',
   targetCharCount: 2500,
@@ -1381,6 +1381,60 @@ const DEFAULT_REWRITE_SETTINGS = {
 };
 
 const CONTENT_SKILLS = {
+  adsense_verified_info: {
+    key: 'adsense_verified_info',
+    name: '애드센스 정보검증형',
+    description: '검색 유입형 글을 쓰되 공식 기준, 비용, 기간, 신청 경로, 사용자가 바로 해야 할 행동을 먼저 확인하는 스킬입니다.',
+    articleGoal: 'verified_search_traffic_adsense',
+    targetPlatforms: ['naver_blog', 'naver_cafe', 'wordpress'],
+    imagePipeline: {
+      generationTiming: 'draft_generation',
+      storage: 'server_generated_images',
+      editorMode: 'extension_download_blob_then_upload',
+      defaultSize: '500x500',
+      alignment: 'center',
+      manualReviewRequired: false,
+      policy: '본문 생성 단계에서 대표 이미지와 섹션 이미지를 미리 만들고, 발행 단계에서는 서버 이미지를 받아 업로드만 수행',
+    },
+    writingRules: {
+      quotePerSection: true,
+      keywordRepeatBias: 'verified_natural',
+      similarityRiskTarget: 'very_low',
+      ctaPlacement: '도입 CTA 이후 또는 2번째 섹션 뒤',
+      promptRules: [
+        '각 섹션은 먼저 구체 답을 한 문단으로 제시한 뒤 세부 설명을 이어 쓴다. 단, "요약 답변:"과 "세부 설명:" 라벨을 반복하지 않는다.',
+        '공식 기준이 필요한 주제는 기관명, 과정명, 비용, 시간, 신청 경로, 등록/확인 절차를 먼저 확인한 것처럼 구조화한다.',
+        '확인되지 않은 환급, 서류, 지원금, 일정, 금액을 만들지 않는다. 근거가 없으면 "공식 공지에서 최종 확인" 단계로 처리한다.',
+        '금융/투자 교육 주제는 교육기관, 과정명, 수강료, 교육 시간, 수료번호 등록, 기본예탁금 또는 거래 제한을 핵심 섹션에 포함한다.',
+        '정책/지원금 주제는 대상, 신청 기간, 신청 경로, 지급/환급 방식, 제외 조건, 공식 공지 확인 순서를 핵심 섹션에 포함한다.',
+        '여행/행사 주제는 신청 기간, 여행 가능 기간, 비용/환급 기준, 공식 홈페이지, 증빙 자료, 마감 전 확인 사항을 핵심 섹션에 포함한다.',
+        '긴 메인키워드를 모든 문단에 그대로 반복하지 말고, 2~3단어 핵심어와 보조어로 분산한다.',
+      ],
+      requiredFactSlots: [
+        'who_is_target',
+        'where_to_apply_or_check',
+        'cost_or_fee',
+        'period_or_duration',
+        'completion_or_result_step',
+        'caution_or_exclusion',
+      ],
+      forbiddenPatterns: [
+        '기관별로 다릅니다만 반복',
+        '공식 공지를 확인하세요만 반복',
+        '요약 답변/세부 설명 라벨 반복',
+        '환급 절차를 근거 없이 추가',
+        '같은 문단 프레임 반복',
+      ],
+      obsidianLearningFields: [
+        '확인된 공식 사실',
+        '생성 후 사람이 고친 사실',
+        '상위노출 키워드',
+        '클릭을 만든 제목 조합',
+        '반복이 과했던 표현',
+        '다음 생성에서 금지할 문장',
+      ],
+    },
+  },
   adsense_traffic: {
     key: 'adsense_traffic',
     name: '애드센스 유입용',
@@ -1428,7 +1482,25 @@ const CONTENT_SKILLS = {
 };
 
 function contentSkillFor(key = '') {
-  return CONTENT_SKILLS[key] || CONTENT_SKILLS.adsense_traffic;
+  return CONTENT_SKILLS[key] || CONTENT_SKILLS.adsense_verified_info;
+}
+
+function promptSkillPayload(skill = CONTENT_SKILLS.adsense_verified_info) {
+  const rules = skill.writingRules || {};
+  return {
+    key: skill.key,
+    name: skill.name,
+    articleGoal: skill.articleGoal,
+    description: skill.description,
+    quotePerSection: Boolean(rules.quotePerSection),
+    keywordRepeatBias: rules.keywordRepeatBias || '',
+    similarityRiskTarget: rules.similarityRiskTarget || 'low',
+    ctaPlacement: rules.ctaPlacement || '',
+    promptRules: Array.isArray(rules.promptRules) ? rules.promptRules : [],
+    requiredFactSlots: Array.isArray(rules.requiredFactSlots) ? rules.requiredFactSlots : [],
+    forbiddenPatterns: Array.isArray(rules.forbiddenPatterns) ? rules.forbiddenPatterns : [],
+    obsidianLearningFields: Array.isArray(rules.obsidianLearningFields) ? rules.obsidianLearningFields : [],
+  };
 }
 
 function parseJsonObject(value, fallback = {}) {
@@ -3078,6 +3150,7 @@ function buildOpenAiRewritePrompt({ job, analyses = [], pattern = {}, settings =
       category: job.category || 'general',
       keyword,
       topic,
+      contentSkill: skillPayload,
       customTitle: job.custom_title || '',
       variantIndex,
       target: {
@@ -3111,6 +3184,7 @@ function buildOpenAiRewritePrompt({ job, analyses = [], pattern = {}, settings =
         '각 소제목 뒤에는 이미지 자리 표시자를 [이미지 n 500x500 중앙정렬: 소제목] 형식으로 넣는다.',
         '본문은 검색자가 바로 확인해야 할 기준, 대상, 방법, 주의사항, 요약 순서로 읽히게 한다.',
         '마무리에서는 핵심을 다시 정리하되 과장된 보장 표현은 피한다.',
+        ...skillPayload.promptRules,
       ],
       sourceBenchmarks: sourceSummaries,
       naturalDensityRules: {
@@ -3153,6 +3227,8 @@ function buildOpenAiRewritePrompt({ job, analyses = [], pattern = {}, settings =
 function buildOpenAiRewritePromptV2({ job, analyses = [], pattern = {}, settings = {}, variantIndex = 0 }) {
   const keyword = job.target_keyword;
   const topic = job.target_topic || keyword;
+  const skill = contentSkillFor(settings.contentSkillKey || settings.content_skill_key || DEFAULT_REWRITE_SETTINGS.contentSkillKey);
+  const skillPayload = promptSkillPayload(skill);
   const sectionCount = pattern.sectionCount || settings.sectionCount || DEFAULT_REWRITE_SETTINGS.sectionCount;
   const imageCount = plannedArticleImageCount({ ...settings, ...pattern }, sectionCount);
   const targetCharCount = pattern.targetCharCount || settings.targetCharCount || DEFAULT_REWRITE_SETTINGS.targetCharCount;
@@ -3184,6 +3260,7 @@ function buildOpenAiRewritePromptV2({ job, analyses = [], pattern = {}, settings
       category: job.category || 'general',
       keyword,
       topic,
+      contentSkill: skillPayload,
       customTitle: job.custom_title || '',
       variantIndex,
       target: {
@@ -3215,6 +3292,7 @@ function buildOpenAiRewritePromptV2({ job, analyses = [], pattern = {}, settings
         '같은 문장, 같은 첫 문장, 같은 결론 문장을 반복하지 않는다.',
         '벤치마킹 글의 문장 12어절 이상을 그대로 가져오지 않는다.',
         '말투는 광고 문구보다 정보형 블로그에 가깝게 쓴다. 너무 딱딱한 공문체나 과한 감탄문은 피한다.',
+        ...skillPayload.promptRules,
       ],
       sourceBenchmarks: sourceSummaries,
       naturalDensityRules: {
@@ -3242,6 +3320,9 @@ function buildOpenAiRewritePromptV2({ job, analyses = [], pattern = {}, settings
           'No SmartEditor placeholder text: AI 활용 설정, 사진 설명을 입력하세요, 내용을 입력하세요, 출처 입력.',
           'No empty quote markers and no duplicated heading text.',
           'No numbered section prefixes such as 1., 2., 3. in body paragraphs.',
+          'Do not repeat labels like "요약 답변:" and "세부 설명:" in every section.',
+          'Do not add refund, documents, allowance, or application steps that do not match the topic intent.',
+          ...skillPayload.forbiddenPatterns,
         ],
       },
       requiredJsonShape: {
@@ -4287,7 +4368,7 @@ function normalizeJobInput(body = {}) {
     keyword: body.keyword || body.targetKeyword,
     category: body.category || 'general',
     platform: body.platform || 'blog',
-    content_skill_key: body.content_skill_key || body.contentSkillKey || 'adsense_traffic',
+    content_skill_key: body.content_skill_key || body.contentSkillKey || DEFAULT_REWRITE_SETTINGS.contentSkillKey,
     source_url: body.source_url || body.sourceUrl || null,
     cta_url: body.cta_url || body.ctaUrl || null,
     qr_target_url: body.qr_target_url || body.qrTargetUrl || body.cta_url || body.ctaUrl || null,
@@ -4474,10 +4555,13 @@ async function saveGeneratedImagesForContentJob({ tenantId, contentJobId, rewrit
 
 function buildObsidianMarkdown(job = {}, images = []) {
   const generationModel = job.openai_model || DEFAULT_REWRITE_SETTINGS.openaiModel;
+  const skill = contentSkillFor(job.content_skill_key || DEFAULT_REWRITE_SETTINGS.contentSkillKey);
   const frontmatter = [
     '---',
     `tenant: ${job.tenant_id || 'owner'}`,
     `keyword: ${JSON.stringify(job.keyword || '')}`,
+    `content_skill: ${skill.key}`,
+    `content_skill_name: ${JSON.stringify(skill.name)}`,
     `generation_model: ${generationModel}`,
     'title_rule: "naver_search_compact"',
     `platform: ${job.platform || 'blog'}`,
@@ -4497,7 +4581,10 @@ function buildObsidianMarkdown(job = {}, images = []) {
   const imageList = images.length
     ? images.map((image) => `- ${image.image_type} #${image.section_no}: ${image.file_path || image.public_url || 'data-url'}`).join('\n')
     : '- 이미지 없음';
-  return `${frontmatter}# ${job.title || job.keyword}\n\n## 발행 정보\n\n- 계정: ${job.publish_account_label || '-'}\n- 모드: ${job.publish_mode || 'draft'}\n- 상태: ${job.publish_status || '-'}\n- URL: ${job.published_url || '-'}\n\n## 생성 규칙\n\n- 모델 기준: ${generationModel}\n- 제목 규칙: 메인키워드 전면, 자동완성/연관 키워드 조합, 조사/연결어 최소화, 랜딩 CTA 금지\n- 제목 예시형: 메인키워드 신청 방법 일정 안내 공식 홈페이지\n- 본문 기준: 공백 제외 ${DEFAULT_REWRITE_SETTINGS.targetCharCount}자 전후, 소제목 ${DEFAULT_REWRITE_SETTINGS.sectionCount}개, KW 반복 ${DEFAULT_REWRITE_SETTINGS.targetKwCount}회 기준\n- 이미지 기준: 썸네일 1장과 섹션 이미지, 500x500 중앙 정렬\n\n## 키워드/성과\n\n- 메인 키워드: ${job.keyword || '-'}\n- 글자수: ${job.char_count || 0}\n- KW 반복: ${job.kw_count || 0}\n- 이미지: ${job.image_count || 0}\n- SEO/GEO/AEO: ${Math.round(Number(job.seo_score || 0))}/${Math.round(Number(job.geo_score || 0))}/${Math.round(Number(job.aeo_score || 0))}\n\n## 이미지\n\n${imageList}\n\n## 본문\n\n${job.plain_text || job.body || ''}\n`;
+  const learningFields = (skill.writingRules?.obsidianLearningFields || [])
+    .map((field) => `- ${field}: `)
+    .join('\n');
+  return `${frontmatter}# ${job.title || job.keyword}\n\n## 발행 정보\n\n- 계정: ${job.publish_account_label || '-'}\n- 모드: ${job.publish_mode || 'draft'}\n- 상태: ${job.publish_status || '-'}\n- URL: ${job.published_url || '-'}\n\n## 생성 규칙\n\n- 스킬: ${skill.name} (${skill.key})\n- 모델 기준: ${generationModel}\n- 제목 규칙: 메인키워드 전면, 자동완성/연관 키워드 조합, 조사/연결어 최소화, 랜딩 CTA 금지\n- 제목 예시형: 메인키워드 신청 방법 일정 안내 공식 홈페이지\n- 본문 기준: 공백 제외 ${DEFAULT_REWRITE_SETTINGS.targetCharCount}자 전후, 소제목 ${DEFAULT_REWRITE_SETTINGS.sectionCount}개, KW 반복 ${DEFAULT_REWRITE_SETTINGS.targetKwCount}회 기준\n- 이미지 기준: 썸네일 1장과 섹션 이미지, 500x500 중앙 정렬\n\n## 키워드/성과\n\n- 메인 키워드: ${job.keyword || '-'}\n- 글자수: ${job.char_count || 0}\n- KW 반복: ${job.kw_count || 0}\n- 이미지: ${job.image_count || 0}\n- SEO/GEO/AEO: ${Math.round(Number(job.seo_score || 0))}/${Math.round(Number(job.geo_score || 0))}/${Math.round(Number(job.aeo_score || 0))}\n\n## 이미지\n\n${imageList}\n\n## 스킬 피드백\n\n${learningFields || '- 확인된 공식 사실: \\n- 생성 후 사람이 고친 사실: \\n- 다음 생성에서 금지할 문장: '}\n\n## 본문\n\n${job.plain_text || job.body || ''}\n`;
 }
 
 function isOwnerTenant(req) {
