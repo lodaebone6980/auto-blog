@@ -1854,23 +1854,38 @@ function isImagePlaceholder(line) {
 }
 
 function isImagePlaceholderV2(line = '') {
-  return /^\s*\[?\s*(?:\uC774\uBBF8\uC9C0|image|img)\s*\]?\s*(?:\uC774\uBBF8\uC9C0\s*)?\d*\s*[:：-]?\s*$/i.test(line)
-    || isImagePlaceholder(line);
+  const raw = String(line || '').trim();
+  const stripped = stripInlinePlaceholders(raw);
+  return !stripped
+    || /^\s*\[?\s*(?:\uC774\uBBF8\uC9C0|image|img)\s*\]?\s*(?:\uC774\uBBF8\uC9C0\s*)?\d*\s*[:：-]?\s*$/i.test(raw)
+    || isImagePlaceholder(raw);
 }
 
 function stripInlinePlaceholders(line = '') {
-  return String(line || '')
-    .replace(/\[\s*(?:대표\s*이미지|대표이미지|이미지|보조\s*이미지)[^\]]*\]/gi, '')
-    .replace(/\[\s*네이버\s*동영상[^\]]*\]/gi, '')
-    .replace(/\[\s*(?:\uC774\uBBF8\uC9C0|image|img)\s*\]\s*(?:\uC774\uBBF8\uC9C0\s*)?\d*/gi, '')
-    .replace(/(?:^|\s)\uC774\uBBF8\uC9C0\s*\d+(?=\s|$)/g, ' ')
-    .replace(/\[?대?吏\s*\d*/g, '')
-    .replace(/\s{2,}/g, ' ')
-    .trim();
+  let clean = String(line || '');
+  for (let index = 0; index < 3; index += 1) {
+    const before = clean;
+    clean = clean
+      .replace(/\[\s*(?:\uB300\uD45C\s*\uC774\uBBF8\uC9C0|\uB300\uD45C\uC774\uBBF8\uC9C0|\uBCF4\uC870\s*\uC774\uBBF8\uC9C0|\uC774\uBBF8\uC9C0|image|img)\s*\d*[^\]]*\]\s*(?:\uC774\uBBF8\uC9C0|image|img)?\s*\d*/gi, ' ')
+      .replace(/\[\s*(?:\uB124\uC774\uBC84\s*\uB3D9\uC601\uC0C1|\uB3D9\uC601\uC0C1|video|qr|cta)[^\]]*\]/gi, ' ')
+      .replace(/\[\s*(?:\uAE00\uBCC4\s*CTA\s*\uB9C1\uD06C\s*\uC785\uB825\s*\uD544\uC694|CTA\s*\uB9C1\uD06C)[^\]]*\]/gi, ' ')
+      .replace(/(^|[\s([{])(?:\uC774\uBBF8\uC9C0|image|img)\s*\d+(?=($|[\s.,;:)\]}]))/gi, '$1')
+      .replace(/(^|[\s([{])(?:\uB300\uD45C\s*\uC774\uBBF8\uC9C0|\uB300\uD45C\uC774\uBBF8\uC9C0|\uBCF4\uC870\s*\uC774\uBBF8\uC9C0)(?=($|[\s.,;:)\]}]))/g, '$1')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
+    if (clean === before) break;
+  }
+  return clean;
 }
 
 function stripLeadingSectionNumber(line = '') {
   return String(line || '').replace(/^\s*\d+[.)]\s+/, '').trim();
+}
+
+function sanitizeEditorLine(line = '') {
+  return stripLeadingSectionNumber(stripInlinePlaceholders(line))
+    .replace(/\s{2,}/g, ' ')
+    .trim();
 }
 
 function isQrPlaceholder(line) {
@@ -1884,7 +1899,11 @@ function isQuoteLine(line) {
 }
 
 function cleanQuoteLine(line) {
-  return line.replace(/^>\s*/, '').replace(/^인용구[:：]\s*/, '').trim();
+  return sanitizeEditorLine(
+    String(line || '')
+      .replace(/^>\s*/, '')
+      .replace(/^인용구[:：]\s*/, '')
+  );
 }
 
 const EMPTY_QUOTE_PLACEHOLDER_RE = /내용을?\s*입력(?:하세요)?\.?|출처\s*입력/gi;
@@ -1992,8 +2011,7 @@ function cleanBodyLines(job) {
   const title = String(job.title || job.keyword || '').trim();
   return plainBody(job)
     .split(/\n+/)
-    .map((line) => stripInlinePlaceholders(line.trim()))
-    .map((line) => stripLeadingSectionNumber(line))
+    .map((line) => sanitizeEditorLine(line.trim()))
     .filter(Boolean)
     .filter((line, index) => !(index === 0 && title && line === title))
     .filter((line) => !/(참고 글의 문장|검색 의도는|주제 범위는|새로 작성한 초안|글 구성과 분량)/.test(line))
@@ -2069,7 +2087,7 @@ function buildPublishingSegments(job, images = []) {
   };
 
   const pushParagraph = (text) => {
-    const clean = String(text || '').trim();
+    const clean = sanitizeEditorLine(text);
     if (!clean || isQrPlaceholder(clean) || isImagePlaceholderV2(clean)) return;
     segments.push({ type: 'paragraph', text: clean });
   };
@@ -2088,8 +2106,8 @@ function buildPublishingSegments(job, images = []) {
   };
 
   const pushSectionStart = (text) => {
-    const title = String(text || '').trim();
-    if (!title) return;
+    const title = sanitizeEditorLine(text);
+    if (!title || isQrPlaceholder(title) || isImagePlaceholderV2(title)) return;
     segments.push({ type: 'quote', text: title });
     pushNextImage('section');
   };
@@ -2119,7 +2137,8 @@ function buildPublishingSegments(job, images = []) {
 
   if (!hasSectionMarker && orderedImages.length > imageIndex) {
     const paragraphs = lines
-      .filter((line) => !isQrPlaceholder(line) && !isImagePlaceholderV2(line))
+      .map((line) => sanitizeEditorLine(line))
+      .filter((line) => line && !isQrPlaceholder(line) && !isImagePlaceholderV2(line))
       .map((line) => ({ type: 'paragraph', text: line }));
     segments = [];
     imageIndex = 0;
@@ -2159,8 +2178,12 @@ async function typeBodySegments(node, job, images = []) {
   let quoteCount = 0;
   let typedSegments = 0;
 
-  for (const segment of segments) {
+  for (const rawSegment of segments) {
     ensureTypingNotStopped();
+    const segment = rawSegment.type === 'image' || rawSegment.type === 'cta'
+      ? rawSegment
+      : { ...rawSegment, text: sanitizeEditorLine(rawSegment.text) };
+    if (segment.type !== 'image' && (!segment.text || isImagePlaceholderV2(segment.text))) continue;
     if (segment.type === 'image') {
       target = sequentialBodyTarget(target);
       const inserted = await insertImageAtCaret(target, segment.image, segment.index);
