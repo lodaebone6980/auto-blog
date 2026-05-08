@@ -1213,6 +1213,40 @@ function metricTargetRange(settingsInput = {}) {
   };
 }
 
+function rewriteCharBudgetPlan(settingsInput = {}) {
+  const settings = parseRewriteSettings(settingsInput);
+  const range = metricTargetRange(settings);
+  const sectionCount = clampNumber(Math.round(settings.sectionCount || DEFAULT_REWRITE_SETTINGS.sectionCount), 3, 10);
+  const introTarget = clampNumber(Math.round(settings.targetCharCount * 0.16), 260, 430);
+  const conclusionTarget = clampNumber(Math.round(settings.targetCharCount * 0.08), 140, 260);
+  const bodyBudget = Math.max(600, settings.targetCharCount - introTarget - conclusionTarget);
+  const sectionTarget = clampNumber(Math.round(bodyBudget / sectionCount), 220, 520);
+  return {
+    unit: 'Korean characters without spaces',
+    targetCharCount: settings.targetCharCount,
+    minCharCount: range.minCharCount,
+    maxCharCount: range.maxCharCount,
+    intro: { paragraphs: 3, target: introTarget, min: Math.round(introTarget * 0.85), max: Math.round(introTarget * 1.2) },
+    sections: Array.from({ length: sectionCount }, (_, index) => ({
+      index: index + 1,
+      target: sectionTarget,
+      min: Math.round(sectionTarget * 0.82),
+      max: Math.round(sectionTarget * 1.22),
+      paragraphs: 2,
+    })),
+    conclusion: { paragraphs: 2, target: conclusionTarget, min: Math.round(conclusionTarget * 0.75), max: Math.round(conclusionTarget * 1.3) },
+  };
+}
+
+function metricDistanceToRange(metrics = {}, range = {}) {
+  let distance = 0;
+  if (metrics.charCount < range.minCharCount) distance += range.minCharCount - metrics.charCount;
+  if (metrics.charCount > range.maxCharCount) distance += metrics.charCount - range.maxCharCount;
+  if (metrics.kwCount < range.minKwCount) distance += (range.minKwCount - metrics.kwCount) * 80;
+  if (metrics.kwCount > range.maxKwCount) distance += (metrics.kwCount - range.maxKwCount) * 80;
+  return distance;
+}
+
 function metricSupplementParagraph({ keyword = '', topic = '', category = '', index = 0, includeKeyword = true } = {}) {
   const keyPhrase = includeKeyword ? normalizeKeywordValue(keyword) : (isPolicySupportKeyword(`${keyword} ${topic} ${category}`) ? '해당 지원 정보' : '이 주제');
   const subject = normalizeKeywordValue(topic) || keyPhrase;
@@ -1403,6 +1437,11 @@ const CONTENT_SKILLS = {
       similarityRiskTarget: 'very_low',
       ctaPlacement: '도입 CTA 이후 또는 2번째 섹션 뒤',
       promptRules: [
+        'SEO/Naver: title and first intro must clearly identify the topic, target intent, and action keywords without clickbait. Avoid keyword stuffing and duplicate title-like sentences.',
+        'SEO/Google: write people-first original content that adds useful checking steps, not a rehash of search snippets. Put image placeholders next to the related section text with descriptive labels.',
+        'AEO: each quote heading must answer one likely question directly in the first sentence, then explain conditions, exceptions, and next action.',
+        'GEO: distinguish confirmed facts from verification steps. When dates, amounts, agencies, or URLs are in factPack, paraphrase them precisely; when missing, do not invent them.',
+        'Length control: distribute the target character count across intro, every section, and conclusion. Do not solve short output by repeating the same warning or adding generic ending notes.',
         '각 섹션은 먼저 구체 답을 한 문단으로 제시한 뒤 세부 설명을 이어 쓴다. 단, "요약 답변:"과 "세부 설명:" 라벨을 반복하지 않는다.',
         '공식 기준이 필요한 주제는 기관명, 과정명, 비용, 시간, 신청 경로, 등록/확인 절차를 먼저 확인한 것처럼 구조화한다.',
         '확인되지 않은 환급, 서류, 지원금, 일정, 금액을 만들지 않는다. 근거가 없으면 "공식 공지에서 최종 확인" 단계로 처리한다.',
@@ -3396,6 +3435,7 @@ function buildOpenAiRewritePrompt({ job, analyses = [], pattern = {}, settings =
   const targetCharCount = pattern.targetCharCount || settings.targetCharCount || DEFAULT_REWRITE_SETTINGS.targetCharCount;
   const targetKwCount = pattern.targetKwCount || settings.targetKwCount || DEFAULT_REWRITE_SETTINGS.targetKwCount;
   const range = metricTargetRange({ ...settings, targetCharCount, targetKwCount, sectionCount });
+  const charBudget = rewriteCharBudgetPlan({ ...settings, targetCharCount, targetKwCount, sectionCount });
   const cta = job.cta_url || '[글별 CTA 링크 입력 필요]';
   const qrInstruction = job.use_naver_qr
     ? '도입 CTA 직후 또는 두 번째 섹션 뒤에 [네이버 QR 삽입: CTA 링크] 표기를 넣어라.'
@@ -3449,6 +3489,7 @@ function buildOpenAiRewritePrompt({ job, analyses = [], pattern = {}, settings =
         keywordRepeatMin: range.minKwCount,
         keywordRepeatMax: range.maxKwCount,
         imageCount,
+        charBudget,
         quoteHeadingPerSection: true,
         imageSize: '500x500 center aligned',
         similarityRisk: 'very_low',
@@ -3460,6 +3501,7 @@ function buildOpenAiRewritePrompt({ job, analyses = [], pattern = {}, settings =
         '정책/여행/신청 글 제목은 명사형으로 쓴다. 예: 완도 반값여행 신청 방법 일정 안내 공식 홈페이지, 메인키워드 대상 기준 신청 기간.',
         '오타를 만들지 않는다. 특히 반값여행을 반갑여행으로 쓰지 않는다.',
         `본문 글자수는 공백 제외 ${range.minCharCount}~${range.maxCharCount}자 범위에 맞춘다. 목표는 ${targetCharCount}자다.`,
+        `분량 배분은 도입부 약 ${charBudget.intro.target}자, 각 섹션 약 ${charBudget.sections[0]?.target || settings.sectionCharCount}자, 마무리 약 ${charBudget.conclusion.target}자를 기준으로 한다. 한 섹션만 길게 쓰지 말고 모든 섹션에 분량을 나눠라.`,
         `메인키워드 '${keyword}'는 본문 전체에 ${range.minKwCount}~${range.maxKwCount}회만 자연스럽게 넣는다.`,
         `소제목은 ${sectionCount}개 기준으로 만들고 각 본문 섹션은 약 ${settings.sectionCharCount || DEFAULT_REWRITE_SETTINGS.sectionCharCount}자 분량으로 쓴다.`,
         'body 첫 줄에는 title을 한 번 넣고, 이후 도입부 3문단을 쓴다.',
@@ -3470,6 +3512,7 @@ function buildOpenAiRewritePrompt({ job, analyses = [], pattern = {}, settings =
         '본문은 검색자가 바로 확인해야 할 기준, 대상, 방법, 주의사항, 요약 순서로 읽히게 한다.',
         '마무리에서는 핵심을 다시 정리하되 과장된 보장 표현은 피한다.',
         `Hard metric gate: final body must be ${range.minCharCount}-${range.maxCharCount} Korean characters without spaces, exact keyword count ${range.minKwCount}-${range.maxKwCount}, image placeholders exactly ${imageCount}, and quote headings about ${sectionCount}. Revise before returning JSON if any metric is outside the range.`,
+        'Before returning JSON, mentally audit the body length. If it is short, expand each section with a distinct factual paragraph; do not append generic repeated notes at the end.',
         'Use webResearch.searchItems and autocompleteKeywords as factual reference material. Do not copy titles or snippets; extract only the checking order, current issue terms, and official-confirmation points.',
         'Use webResearch.factPack first when available: dates go into the period section, amounts into cost/benefit, eligibility into target, apply facts into application path, usage facts into usage/restriction, and cautions into documents or cautions.',
         'Do not write every section with the same generic frame. Each section must contain a different concrete fact type or a different user action.',
@@ -3526,6 +3569,7 @@ function buildOpenAiRewritePromptV2({ job, analyses = [], pattern = {}, settings
   const targetCharCount = pattern.targetCharCount || settings.targetCharCount || DEFAULT_REWRITE_SETTINGS.targetCharCount;
   const targetKwCount = pattern.targetKwCount || settings.targetKwCount || DEFAULT_REWRITE_SETTINGS.targetKwCount;
   const range = metricTargetRange({ ...settings, targetCharCount, targetKwCount, sectionCount });
+  const charBudget = rewriteCharBudgetPlan({ ...settings, targetCharCount, targetKwCount, sectionCount });
   const cta = job.cta_url || '';
   const sourceSummaries = analyses.slice(0, 4).map((row, index) => ({
     index: index + 1,
@@ -3587,6 +3631,7 @@ function buildOpenAiRewritePromptV2({ job, analyses = [], pattern = {}, settings
         keywordRepeatMin: range.minKwCount,
         keywordRepeatMax: range.maxKwCount,
         imageCount,
+        charBudget,
       },
       rules: [
         '제목은 메인키워드를 앞쪽에 두고, 검색자가 같이 찾는 보조어 2~3개를 자연스럽게 조합한다.',
@@ -3607,6 +3652,8 @@ function buildOpenAiRewritePromptV2({ job, analyses = [], pattern = {}, settings
         '벤치마킹 글의 문장 12어절 이상을 그대로 가져오지 않는다.',
         '말투는 광고 문구보다 정보형 블로그에 가깝게 쓴다. 너무 딱딱한 공문체나 과한 감탄문은 피한다.',
         `Hard metric gate: final body must be ${range.minCharCount}-${range.maxCharCount} Korean characters without spaces, exact keyword count ${range.minKwCount}-${range.maxKwCount}, image placeholders exactly ${imageCount}, and quote headings about ${sectionCount}. Revise before returning JSON if any metric is outside the range.`,
+        `Distribute length by budget: intro about ${charBudget.intro.target} chars, each section about ${charBudget.sections[0]?.target || settings.sectionCharCount} chars, conclusion about ${charBudget.conclusion.target} chars. Do not make one long block while other sections stay thin.`,
+        'Before returning JSON, mentally audit the body length. If it is short, expand each section with a distinct factual paragraph; do not append generic repeated notes at the end.',
         'Use webResearch.searchItems and autocompleteKeywords as factual reference material. Do not copy titles or snippets; extract only the checking order, current issue terms, and official-confirmation points.',
         'Use webResearch.factPack first when available: dates go into the period section, amounts into cost/benefit, eligibility into target, apply facts into application path, usage facts into usage/restriction, and cautions into documents or cautions.',
         'Do not write every section with the same generic frame. Each section must contain a different concrete fact type or a different user action.',
@@ -3656,6 +3703,94 @@ function buildOpenAiRewritePromptV2({ job, analyses = [], pattern = {}, settings
   };
 }
 
+async function repairOpenAiRewriteMetrics({ openAi, model, job, title, body, sectionTitles = [], settings = {}, requiredImageCount = 0, targetRange = {}, currentMetrics = {}, research = {}, initialPrompt = '' } = {}) {
+  if (!openAi?.apiKey || !body) return null;
+  const charBudget = rewriteCharBudgetPlan(settings);
+  const promptPayload = {
+    task: 'Repair NaviWrite draft metrics without changing the topic',
+    title,
+    keyword: job.target_keyword,
+    topic: job.target_topic || job.target_keyword,
+    currentMetrics,
+    target: {
+      charCountMin: targetRange.minCharCount,
+      charCountMax: targetRange.maxCharCount,
+      keywordRepeatMin: targetRange.minKwCount,
+      keywordRepeatMax: targetRange.maxKwCount,
+      imagePlaceholders: requiredImageCount,
+      quoteHeadingCount: settings.sectionCount || DEFAULT_REWRITE_SETTINGS.sectionCount,
+      charBudget,
+    },
+    sectionTitles,
+    factPack: research.factPack || null,
+    currentBody: body.slice(0, 12000),
+    repairRules: [
+      'Return JSON only: {"title": string, "body": string}.',
+      'Keep the same title unless it has obvious grammar errors.',
+      'Rewrite the whole body naturally to fit the metric range. Do not append repeated generic paragraphs at the end.',
+      'The body first line must be the title, followed by intro, CTA/QR if present, quote headings, image placeholders, section paragraphs, and conclusion.',
+      'Keep image placeholders exactly as placeholders, no extra placeholders beyond the requested count.',
+      'Use the exact main keyword only within the requested keyword range. Use natural variants after that.',
+      'Each section must have a different fact type or user action. Avoid repeating the same warning sentence.',
+      'Use factPack facts where available. Do not invent unverified dates, amounts, agencies, official URLs, or eligibility rules.',
+      'Do not include labels such as "도입부 첫 문단", "답변:", "요약 답변:", "세부 설명:", "체크리스트:".',
+      'Do not number body paragraphs with 1., 2., 3.',
+    ],
+  };
+  const messages = [
+    {
+      role: 'system',
+      content: 'You are a Korean Naver blog editor. Repair a draft so the measured length, keyword count, and image placeholder count fit the target. Return one JSON object only.',
+    },
+    { role: 'user', content: JSON.stringify(promptPayload, null, 2) },
+  ];
+  const requestBody = {
+    model,
+    response_format: { type: 'json_object' },
+    messages,
+  };
+  const maxCompletionTokens = clampNumber(Math.ceil((settings.targetCharCount || DEFAULT_REWRITE_SETTINGS.targetCharCount) * 2.1), 3000, 10000);
+  if (model.startsWith('gpt-5')) {
+    requestBody.max_completion_tokens = maxCompletionTokens;
+  } else {
+    requestBody.temperature = 0.5;
+    requestBody.max_tokens = maxCompletionTokens;
+  }
+  const response = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${openAi.apiKey}`,
+    },
+    body: JSON.stringify(requestBody),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(data.error?.message || `OpenAI metric repair error ${response.status}`);
+  }
+  const content = data.choices?.[0]?.message?.content || '';
+  const parsed = safeJsonFromModelText(content);
+  const repairedTitle = cleanGeneratedTitle(parsed.title || title, {
+    keyword: job.target_keyword,
+    fallback: title,
+  });
+  let repairedBody = String(parsed.body || '').trim();
+  repairedBody = replaceGeneratedTitleLine(repairedBody, parsed.title || repairedTitle, repairedTitle);
+  repairedBody = cleanGeneratedArticleBody(repairedBody);
+  repairedBody = limitImagePlaceholders(repairedBody, requiredImageCount);
+  repairedBody = limitExactKeywordRepetition(repairedBody, job.target_keyword, targetRange.maxKwCount, job.target_topic);
+  const repairedMetrics = articleMetrics(repairedBody, job.target_keyword);
+  return {
+    title: repairedTitle,
+    body: repairedBody,
+    metrics: repairedMetrics,
+    usage: data.usage || {
+      prompt_tokens: estimateTokensFromText(`${messages[0].content}\n${messages[1].content}\n${initialPrompt}`),
+      completion_tokens: estimateTokensFromText(content),
+    },
+  };
+}
+
 async function buildOpenAiRewriteDraft({ tenantId, job, analyses, pattern, settings, variantIndex, research = {} }) {
   const openAi = await getOpenAiSettings(tenantId);
   if (!openAi.hasApiKey) {
@@ -3697,7 +3832,7 @@ async function buildOpenAiRewriteDraft({ tenantId, job, analyses, pattern, setti
   const content = data.choices?.[0]?.message?.content || '';
   const parsed = safeJsonFromModelText(content);
   const fallbackTitle = normalizeTitleValue(job.custom_title) || makeRewriteTitle(job.target_keyword, job.target_topic, job.platform, pattern);
-  const title = cleanGeneratedTitle(parsed.title || fallbackTitle, {
+  let title = cleanGeneratedTitle(parsed.title || fallbackTitle, {
     keyword: job.target_keyword,
     fallback: fallbackTitle,
   });
@@ -3729,6 +3864,47 @@ async function buildOpenAiRewriteDraft({ tenantId, job, analyses, pattern, setti
   body = limitImagePlaceholders(body, requiredImageCount);
   body = limitExactKeywordRepetition(body, job.target_keyword, targetRange.maxKwCount, job.target_topic);
   let cleanedMetrics = articleMetrics(body, job.target_keyword);
+  let usage = data.usage || {
+    prompt_tokens: estimateTokensFromText(`${prompt.system}\n${prompt.user}`),
+    completion_tokens: estimateTokensFromText(content),
+  };
+  let metricRepairCount = 0;
+  let metricRepairError = '';
+  const currentMetricDistance = metricDistanceToRange(cleanedMetrics, targetRange);
+  if (currentMetricDistance > 0) {
+    try {
+      const repaired = await repairOpenAiRewriteMetrics({
+        openAi,
+        model,
+        job,
+        title,
+        body,
+        sectionTitles,
+        settings,
+        requiredImageCount,
+        targetRange,
+        currentMetrics: cleanedMetrics,
+        research,
+        initialPrompt: `${prompt.system}\n${prompt.user}`,
+      });
+      if (repaired?.usage) {
+        usage = {
+          prompt_tokens: (usage.prompt_tokens || 0) + (repaired.usage.prompt_tokens || 0),
+          completion_tokens: (usage.completion_tokens || 0) + (repaired.usage.completion_tokens || 0),
+          total_tokens: (usage.total_tokens || ((usage.prompt_tokens || 0) + (usage.completion_tokens || 0)))
+            + (repaired.usage.total_tokens || ((repaired.usage.prompt_tokens || 0) + (repaired.usage.completion_tokens || 0))),
+        };
+      }
+      if (repaired?.body && metricDistanceToRange(repaired.metrics, targetRange) <= currentMetricDistance) {
+        title = repaired.title || title;
+        body = repaired.body;
+        cleanedMetrics = repaired.metrics;
+        metricRepairCount = 1;
+      }
+    } catch (err) {
+      metricRepairError = err.message;
+    }
+  }
   const supplementNotes = [
     `${job.target_keyword}은 공고명과 접수처가 실제로 같은지 먼저 보는 것이 좋습니다.`,
     `${job.target_keyword} 관련 안내가 여러 곳에 올라와도 최종 판단은 공식 페이지의 최신 기준을 우선으로 두는 편이 안전합니다.`,
@@ -3749,8 +3925,10 @@ async function buildOpenAiRewriteDraft({ tenantId, job, analyses, pattern, setti
   }
   const enforced = {
     targetRange,
-    metricAdjusted: metricSupplementCount > 0,
+    metricAdjusted: metricSupplementCount > 0 || metricRepairCount > 0,
     metricSupplementCount,
+    metricRepairCount,
+    metricRepairError,
   };
   const plainText = cleanedMetrics.plainText;
   const charCount = cleanedMetrics.charCount;
@@ -3769,10 +3947,6 @@ async function buildOpenAiRewriteDraft({ tenantId, job, analyses, pattern, setti
         });
       })
     : [];
-  const usage = data.usage || {
-    prompt_tokens: estimateTokensFromText(`${prompt.system}\n${prompt.user}`),
-    completion_tokens: estimateTokensFromText(content),
-  };
   const costUsd = estimateOpenAiCostUsd({
     model,
     promptTokens: usage.prompt_tokens || 0,
@@ -3795,6 +3969,8 @@ async function buildOpenAiRewriteDraft({ tenantId, job, analyses, pattern, setti
       actualKwCount: kwCount,
       metricAdjusted: enforced.metricAdjusted,
       metricSupplementCount: enforced.metricSupplementCount,
+      metricRepairCount: enforced.metricRepairCount,
+      metricRepairError: enforced.metricRepairError,
       sourceAnalysisCount: analyses.length,
       researchProvider: research.provider || 'none',
       researchSourceCount: Array.isArray(research.items) ? research.items.length : 0,
@@ -3811,6 +3987,7 @@ async function buildOpenAiRewriteDraft({ tenantId, job, analyses, pattern, setti
     quoteCount: (body.match(/^>\s*/gm) || []).length || sectionTitles.length,
     images,
     publishSpec: buildPublishSpec(job.platform, settings, { hasCtaUrl: Boolean(job.cta_url), useNaverQr: job.use_naver_qr }),
+    metricEnforced: enforced,
     generatorMode: 'openai',
     openaiModel: model,
     openaiUsage: {
@@ -4053,6 +4230,7 @@ async function processRewriteJob(jobId, options = {}) {
       imageCount: output.imageCount,
       quoteCount: output.quoteCount,
     },
+    metricEnforced: output.metricEnforced || null,
     elapsedMs,
     generatorMode: output.generatorMode || 'server_template',
     openai: output.openaiUsage || null,
