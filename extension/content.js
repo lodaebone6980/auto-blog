@@ -1846,6 +1846,73 @@ function cleanQuoteLine(line) {
   return line.replace(/^>\s*/, '').replace(/^인용구[:：]\s*/, '').trim();
 }
 
+const EMPTY_QUOTE_PLACEHOLDER_RE = /내용을?\s*입력(?:하세요)?\.?|출처\s*입력/gi;
+const QUOTE_CONTAINER_SELECTOR = [
+  '.se-component.se-quotation',
+  '.se-component[class*="quotation"]',
+  '.se-quotation',
+  '.se-quote',
+  '[class*="se-quote"]',
+  '[class*="quotation"]',
+].join(',');
+
+function quoteEditableTarget(preferred) {
+  const selected = selectionEditable();
+  if (selected && selected.closest?.(QUOTE_CONTAINER_SELECTOR)) return selected;
+  const active = activeEditable();
+  if (active && active.closest?.(QUOTE_CONTAINER_SELECTOR)) return active;
+  const candidates = Array.from(document.querySelectorAll([
+    `${QUOTE_CONTAINER_SELECTOR} .__se-node`,
+    `${QUOTE_CONTAINER_SELECTOR} .se-text-paragraph`,
+    `${QUOTE_CONTAINER_SELECTOR} [contenteditable="true"]`,
+    `${QUOTE_CONTAINER_SELECTOR} textarea`,
+  ].join(',')))
+    .map(editableRoot)
+    .filter(Boolean)
+    .filter((node, index, list) => list.indexOf(node) === index)
+    .filter(visible)
+    .map((node) => ({ node, top: node.getBoundingClientRect().top }))
+    .sort((a, b) => b.top - a.top);
+  return candidates[0]?.node || (preferred?.closest?.(QUOTE_CONTAINER_SELECTOR) ? editableRoot(preferred) : null);
+}
+
+function isEmptyQuoteBlock(node) {
+  const text = String(node?.textContent || node?.value || '')
+    .replace(EMPTY_QUOTE_PLACEHOLDER_RE, '')
+    .replace(/[“”"'`‘’\s]/g, '')
+    .trim();
+  return text.length === 0;
+}
+
+async function cleanupEmptyQuoteBlocks() {
+  const blocks = Array.from(document.querySelectorAll(QUOTE_CONTAINER_SELECTOR))
+    .map((node) => node.closest?.('.se-component') || node)
+    .filter((node, index, list) => list.indexOf(node) === index)
+    .filter(visible)
+    .filter(isEmptyQuoteBlock);
+  if (!blocks.length) return 0;
+  blocks.forEach((block) => {
+    const parent = block.parentElement;
+    block.remove();
+    emitInput(parent || document.body);
+  });
+  await sleep(80);
+  return blocks.length;
+}
+
+async function exitQuoteBlock(node) {
+  await pressEnter(node, 2, { useCurrentCaret: true });
+  await sleep(100);
+  applyFormatBlock('p');
+  await cleanupEmptyQuoteBlocks();
+  const next = sequentialBodyTarget(node);
+  if (next) {
+    next.click?.();
+    placeCaretAtEnd(next);
+  }
+  return next || node;
+}
+
 function isHeadingLine(line, index) {
   if (index === 0) return false;
   if (line.length > 38) return false;
@@ -2040,12 +2107,13 @@ async function typeBodySegments(node, job, images = []) {
       const quote2Applied = await applyNaverQuote2();
       if (!quote2Applied) applyFormatBlock('blockquote');
       await sleep(120);
+      target = quoteEditableTarget(target) || sequentialBodyTarget(target);
+      if (target && isPlaceholderOnly(target)) clearEditable(target);
+      placeCaretAtEnd(target);
       const typed = await typeSegmentText(target, segment.text, { chunkSize: 1, minDelay: 9, maxDelay: 23, useCurrentCaret: true, scope: 'body' });
       if (!typed) throw new Error(`본문 인용구 입력 실패: ${segment.text.slice(0, 40)}`);
       quoteCount += 1;
-      await pressEnter(target, 1, { useCurrentCaret: true });
-      applyFormatBlock('p');
-      target = sequentialBodyTarget(target);
+      target = await exitQuoteBlock(target);
       typedSegments += 1;
       continue;
     }
@@ -2076,6 +2144,7 @@ async function typeBodySegments(node, job, images = []) {
     await pressEnter(target, 2, { useCurrentCaret: true });
     typedSegments += 1;
   }
+  await cleanupEmptyQuoteBlocks();
   return { typedSegments, imageCount, quoteCount };
 }
 

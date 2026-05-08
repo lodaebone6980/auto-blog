@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 
 const API = '/api';
-const EXTENSION_ZIP_PATH = '/downloads/naviwrite-extension.zip?v=1.4.21';
+const EXTENSION_ZIP_PATH = '/downloads/naviwrite-extension.zip?v=1.4.22';
 const RUNNER_ZIP_PATH = '/downloads/naviwrite-runner.zip';
 
 const COLORS = {
