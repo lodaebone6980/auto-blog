@@ -2341,6 +2341,8 @@ function RewritePanel() {
   const [ctaDrafts, setCtaDrafts] = useState({});
   const [savingCtaIds, setSavingCtaIds] = useState([]);
   const [keywordsText, setKeywordsText] = useState('');
+  const [benchmarkUrlsText, setBenchmarkUrlsText] = useState('');
+  const [collectingBenchmarkUrls, setCollectingBenchmarkUrls] = useState(false);
   const [targetTopic, setTargetTopic] = useState('');
   const [customTitle, setCustomTitle] = useState('');
   const [keywordRecommendations, setKeywordRecommendations] = useState(null);
@@ -2479,6 +2481,10 @@ function RewritePanel() {
     () => keywordsText.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean).length,
     [keywordsText]
   );
+  const benchmarkUrlCount = useMemo(
+    () => benchmarkUrlsText.split(/\r?\n/).map((item) => item.trim()).filter((item) => /^https?:\/\//i.test(item)).length,
+    [benchmarkUrlsText]
+  );
   const benchmarkSelectionCount = selectedSources.length + selectedRssItems.length;
   const rewriteJobCount = generationMode === 'direct' ? directKeywordCount : benchmarkSelectionCount;
   const canCreateGenerationJobs = generationMode === 'direct' ? directKeywordCount > 0 : benchmarkSelectionCount > 0;
@@ -2516,6 +2522,60 @@ function RewritePanel() {
     setSelectedRssItemIds((prev) => (
       prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
     ));
+  };
+
+  const collectBenchmarkUrls = async () => {
+    const submittedUrls = benchmarkUrlsText
+      .split(/\r?\n/)
+      .map((item) => item.trim())
+      .filter((item) => /^https?:\/\//i.test(item));
+    const uniqueUrls = [...new Set(submittedUrls)];
+    if (uniqueUrls.length === 0) {
+      setMessage('벤치마킹할 URL을 줄바꿈으로 입력해 주세요.');
+      return;
+    }
+
+    setCollectingBenchmarkUrls(true);
+    setMessage(`${uniqueUrls.length}개 URL을 수집해서 벤치마킹 목록에 연결하는 중입니다.`);
+    const batchRes = await safeFetch(`${API}/collections/batches`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: `벤치마킹 직접 등록 ${new Date().toLocaleString('ko-KR')}`,
+        urlsText: uniqueUrls.join('\n'),
+      }),
+    });
+
+    if (!batchRes?.batch) {
+      setCollectingBenchmarkUrls(false);
+      setMessage(batchRes?.error || 'URL 등록에 실패했습니다. URL 형식을 확인해 주세요.');
+      return;
+    }
+
+    const processRes = await safeFetch(`${API}/collections/process-pending`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ batchId: batchRes.batch.id, limit: Math.min(uniqueUrls.length, 30) }),
+    });
+    const latestLinks = await safeFetch(`${API}/collections/links?limit=300`);
+    if (Array.isArray(latestLinks)) {
+      setLinks(latestLinks);
+      const matchedIds = latestLinks
+        .filter((link) => uniqueUrls.includes(link.url))
+        .map((link) => link.id)
+        .filter(Boolean);
+      if (matchedIds.length > 0) {
+        setSelectedSourceLinkIds((prev) => [...new Set([...prev, ...matchedIds])]);
+      }
+    }
+
+    setCollectingBenchmarkUrls(false);
+    setBenchmarkUrlsText('');
+    if (processRes?.ok) {
+      setMessage(`벤치마킹 URL 등록 완료 · 수집 성공 ${processRes.collected || 0}개 · 실패 ${processRes.failed || 0}개`);
+    } else {
+      setMessage(processRes?.error || 'URL은 등록됐지만 본문 수집 중 오류가 있었습니다. 목록에서 상태를 확인해 주세요.');
+    }
   };
 
   const toggleAllRssItems = () => {
@@ -3467,6 +3527,55 @@ function RewritePanel() {
             style={{ height: 30, padding: '0 12px', borderRadius: 8, border: `1px solid ${COLORS.border}`, background: 'white', color: COLORS.accent, fontSize: 11, fontWeight: 850, cursor: selectedRewriteLinks.length === 0 || creating ? 'not-allowed' : 'pointer' }}
           >
             전체 다시생성
+          </button>
+        </div>
+        <div style={{
+          margin: '14px 18px 0',
+          padding: 14,
+          borderRadius: 12,
+          border: `1px solid ${COLORS.border}`,
+          background: '#f8fafc',
+          display: 'grid',
+          gridTemplateColumns: 'minmax(280px, 1fr) 180px',
+          gap: 12,
+          alignItems: 'stretch',
+        }}>
+          <label style={{ display: 'grid', gap: 6 }}>
+            <span style={{ fontSize: 12, fontWeight: 900, color: COLORS.primary }}>벤치마킹 URL 바로 등록</span>
+            <textarea
+              value={benchmarkUrlsText}
+              onChange={(e) => setBenchmarkUrlsText(e.target.value)}
+              placeholder={`네이버 블로그/카페/네프콘/브런치 URL을 줄바꿈으로 넣으면 바로 수집하고 아래 표에서 선택합니다.\n예: https://blog.naver.com/openmind200/224260206008`}
+              rows={3}
+              style={{
+                width: '100%',
+                border: `1px solid ${COLORS.border}`,
+                borderRadius: 10,
+                padding: 11,
+                fontSize: 12,
+                lineHeight: 1.5,
+                resize: 'vertical',
+                outline: 'none',
+                background: 'white',
+              }}
+            />
+          </label>
+          <button
+            type="button"
+            onClick={collectBenchmarkUrls}
+            disabled={collectingBenchmarkUrls || benchmarkUrlCount === 0}
+            style={{
+              minHeight: 72,
+              borderRadius: 10,
+              border: 'none',
+              background: collectingBenchmarkUrls || benchmarkUrlCount === 0 ? COLORS.textMuted : COLORS.primary,
+              color: 'white',
+              fontSize: 12,
+              fontWeight: 900,
+              cursor: collectingBenchmarkUrls || benchmarkUrlCount === 0 ? 'not-allowed' : 'pointer',
+            }}
+          >
+            {collectingBenchmarkUrls ? '수집 중...' : `URL 수집 후 선택 (${benchmarkUrlCount})`}
           </button>
         </div>
         <div style={{ overflowX: 'auto', maxHeight: 430 }}>

@@ -3261,22 +3261,32 @@ async function buildOpenAiRewriteDraft({ tenantId, job, analyses, pattern, setti
   }
   const model = normalizeOpenAiModel(settings.openaiModel || openAi.model);
   const prompt = buildOpenAiRewritePromptV2({ job, analyses, pattern, settings, variantIndex });
+  const maxCompletionTokens = clampNumber(
+    Math.ceil((settings.targetCharCount || DEFAULT_REWRITE_SETTINGS.targetCharCount) * 1.8),
+    2500,
+    9000
+  );
+  const requestBody = {
+    model,
+    response_format: { type: 'json_object' },
+    messages: [
+      { role: 'system', content: prompt.system },
+      { role: 'user', content: prompt.user },
+    ],
+  };
+  if (model.startsWith('gpt-5')) {
+    requestBody.max_completion_tokens = maxCompletionTokens;
+  } else {
+    requestBody.temperature = 0.72;
+    requestBody.max_tokens = maxCompletionTokens;
+  }
   const response = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${openAi.apiKey}`,
     },
-    body: JSON.stringify({
-      model,
-      temperature: 0.72,
-      max_tokens: clampNumber(Math.ceil((settings.targetCharCount || DEFAULT_REWRITE_SETTINGS.targetCharCount) * 1.8), 2500, 9000),
-      response_format: { type: 'json_object' },
-      messages: [
-        { role: 'system', content: prompt.system },
-        { role: 'user', content: prompt.user },
-      ],
-    }),
+    body: JSON.stringify(requestBody),
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
