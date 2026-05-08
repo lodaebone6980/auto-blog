@@ -1305,10 +1305,10 @@ function clampNumber(value, min, max) {
 function plannedArticleImageCount(input = {}, sectionCountInput) {
   const rawSectionCount = Number(sectionCountInput ?? input.sectionCount ?? input.section_count ?? DEFAULT_REWRITE_SETTINGS.sectionCount);
   const sectionCount = clampNumber(Number.isFinite(rawSectionCount) && rawSectionCount > 0 ? Math.round(rawSectionCount) : DEFAULT_REWRITE_SETTINGS.sectionCount, 1, 10);
-  const naturalTotal = 1 + Math.min(5, Math.max(2, sectionCount - 1));
+  const naturalTotal = 1 + sectionCount;
   const rawImageCount = Number(input.imageCount ?? input.image_count ?? naturalTotal);
   const requested = Number.isFinite(rawImageCount) && rawImageCount > 0 ? Math.round(rawImageCount) : naturalTotal;
-  return clampNumber(Math.min(requested, naturalTotal), 1, 1 + sectionCount);
+  return clampNumber(Math.min(requested, naturalTotal), 1, naturalTotal);
 }
 
 function keywordVariantPool(keyword = '', topic = '') {
@@ -1366,6 +1366,7 @@ const DEFAULT_REWRITE_SETTINGS = {
   contentSkillKey: 'adsense_verified_info',
   generatorMode: 'openai',
   openaiModel: 'gpt-5-mini',
+  useWebResearch: true,
   targetCharCount: 2500,
   sectionCharCount: 350,
   sectionCount: 7,
@@ -1522,6 +1523,7 @@ function parseRewriteSettings(input = {}) {
     contentSkillKey: raw.contentSkillKey || raw.content_skill_key || DEFAULT_REWRITE_SETTINGS.contentSkillKey,
     generatorMode: raw.generatorMode || raw.generator_mode || DEFAULT_REWRITE_SETTINGS.generatorMode,
     openaiModel: raw.openaiModel || raw.openai_model || DEFAULT_REWRITE_SETTINGS.openaiModel,
+    useWebResearch: !['false', '0', 'off', 'no'].includes(String(raw.useWebResearch ?? raw.use_web_research ?? DEFAULT_REWRITE_SETTINGS.useWebResearch).toLowerCase()),
     targetCharCount: clampNumber(parseInt(raw.targetCharCount ?? raw.target_char_count ?? DEFAULT_REWRITE_SETTINGS.targetCharCount, 10) || DEFAULT_REWRITE_SETTINGS.targetCharCount, 1200, 5000),
     sectionCharCount: clampNumber(parseInt(raw.sectionCharCount ?? raw.section_char_count ?? DEFAULT_REWRITE_SETTINGS.sectionCharCount, 10) || DEFAULT_REWRITE_SETTINGS.sectionCharCount, 150, 700),
     sectionCount: clampNumber(parseInt(raw.sectionCount ?? raw.section_count ?? DEFAULT_REWRITE_SETTINGS.sectionCount, 10) || DEFAULT_REWRITE_SETTINGS.sectionCount, 3, 10),
@@ -1977,6 +1979,90 @@ async function fetchNaverAutocompleteKeywords(query = '') {
       return item.length >= 2 && compact.includes(seedCompact.slice(0, Math.min(seedCompact.length, 3)));
     }))]
     .slice(0, 20);
+}
+
+function researchQuerySet(keyword = '', topic = '') {
+  const seed = normalizeKeywordValue(keyword || topic);
+  const subject = normalizeKeywordValue(topic || keyword);
+  const queries = [
+    seed,
+    subject && subject !== seed ? subject : '',
+    `${seed} 신청 방법`,
+    `${seed} 기간`,
+    `${seed} 공식`,
+  ];
+  return [...new Set(queries.map((query) => query.replace(/\s+/g, ' ').trim()).filter(Boolean))].slice(0, 4);
+}
+
+function compactResearchItem(item = {}, query = '', rank = 0) {
+  return {
+    query,
+    rank,
+    title: stripHtml(item.title || '').replace(/\s+/g, ' ').trim().slice(0, 120),
+    description: stripHtml(item.description || '').replace(/\s+/g, ' ').trim().slice(0, 240),
+    link: String(item.link || '').trim().slice(0, 300),
+  };
+}
+
+function dedupeResearchItems(items = []) {
+  const seen = new Set();
+  return items.filter((item) => {
+    const key = (item.link || item.title || item.description || '').replace(/\s+/g, '').toLowerCase();
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+async function buildRewriteResearchContext({ keyword = '', topic = '', platform = 'blog', settings = {} } = {}) {
+  const enabled = settings.useWebResearch !== false;
+  const seed = normalizeKeywordValue(keyword || topic);
+  if (!enabled || !seed) {
+    return { enabled: false, provider: enabled ? 'empty_keyword' : 'disabled', queries: [], items: [], autocompleteKeywords: [], errors: [] };
+  }
+
+  const queries = researchQuerySet(keyword, topic);
+  const credentials = naverSearchCredentials({});
+  const normalizedPlatform = normalizePlatform(platform);
+  const searchPlatform = normalizedPlatform === 'cafe' ? 'cafe' : normalizedPlatform === 'blog' ? 'blog' : 'web';
+  const items = [];
+  const totals = [];
+  const errors = [];
+
+  if (credentials) {
+    for (const query of queries) {
+      try {
+        const result = await fetchNaverSearchResults({
+          query,
+          platform: searchPlatform,
+          credentials,
+          display: 5,
+        });
+        totals.push({ query, total: result.total ?? null });
+        result.items.forEach((item, index) => items.push(compactResearchItem(item, query, index + 1)));
+      } catch (err) {
+        errors.push({ query, message: err.message });
+      }
+    }
+  }
+
+  let autocompleteKeywords = [];
+  try {
+    autocompleteKeywords = await fetchNaverAutocompleteKeywords(seed);
+  } catch (err) {
+    errors.push({ query: seed, message: `autocomplete: ${err.message}` });
+  }
+
+  return {
+    enabled: true,
+    provider: credentials ? 'naver_search_api' : 'naver_autocomplete_only',
+    queries,
+    searchPlatform,
+    totals,
+    autocompleteKeywords: autocompleteKeywords.slice(0, 12),
+    items: dedupeResearchItems(items).slice(0, 12),
+    errors: errors.slice(0, 6),
+  };
 }
 
 async function enrichKeywordCandidates(candidates = [], { body = {}, seedQuery = '', limit = 20 } = {}) {
@@ -2584,7 +2670,7 @@ function buildRewriteDraft({ keyword, topic, platform, ctaUrl, useNaverQr, useAi
   const targetSectionChars = pattern.sectionCharCount || DEFAULT_REWRITE_SETTINGS.sectionCharCount;
   const desiredKwCount = pattern.targetKwCount || DEFAULT_REWRITE_SETTINGS.targetKwCount;
   const publishSpec = buildPublishSpec(platform, pattern.settings || pattern, { hasCtaUrl: Boolean(ctaUrl), useNaverQr });
-  const requiredImageCount = plannedArticleImageCount(pattern.settings || pattern, sectionTitles.length);
+  const requiredImageCount = plannedArticleImageCount(pattern.settings || pattern, pattern.sectionCount || sectionTitles.length);
   const sectionImageLimit = Math.max(0, requiredImageCount - 1);
   const intro = rewriteIntroParagraphs({
     keyword,
@@ -3026,7 +3112,7 @@ function buildRewriteDraftV2({ keyword, topic, platform, ctaUrl, useNaverQr, use
   const sectionTitles = naturalSectionTitles(keyword, topic, sectionCount, variantIndex);
   const isPolicy = naturalPolicyIntent(keyword, topic);
   const publishSpec = buildPublishSpec(platform, pattern.settings || pattern, { hasCtaUrl: Boolean(ctaUrl), useNaverQr });
-  const requiredImageCount = plannedArticleImageCount(pattern.settings || pattern, sectionTitles.length);
+  const requiredImageCount = plannedArticleImageCount(pattern.settings || pattern, pattern.sectionCount || sectionTitles.length);
   const sectionImageLimit = Math.max(0, requiredImageCount - 1);
   const bodyParts = [title, ''];
   if (useAiImages) {
@@ -3112,8 +3198,8 @@ function buildRewriteDraftV2({ keyword, topic, platform, ctaUrl, useNaverQr, use
   };
 }
 
-function buildOpenAiRewritePrompt({ job, analyses = [], pattern = {}, settings = {}, variantIndex = 0 }) {
-  return buildOpenAiRewritePromptV2({ job, analyses, pattern, settings, variantIndex });
+function buildOpenAiRewritePrompt({ job, analyses = [], pattern = {}, settings = {}, variantIndex = 0, research = {} }) {
+  return buildOpenAiRewritePromptV2({ job, analyses, pattern, settings, variantIndex, research });
   const keyword = job.target_keyword;
   const topic = job.target_topic || keyword;
   const sourceSummaries = analyses.slice(0, 4).map((row, index) => ({
@@ -3151,6 +3237,15 @@ function buildOpenAiRewritePrompt({ job, analyses = [], pattern = {}, settings =
       keyword,
       topic,
       contentSkill: skillPayload,
+      webResearch: {
+        enabled: Boolean(research.enabled),
+        provider: research.provider || 'none',
+        queries: research.queries || [],
+        autocompleteKeywords: research.autocompleteKeywords || [],
+        searchTotals: research.totals || [],
+        searchItems: (research.items || []).slice(0, 10),
+        errors: research.errors || [],
+      },
       customTitle: job.custom_title || '',
       variantIndex,
       target: {
@@ -3184,6 +3279,9 @@ function buildOpenAiRewritePrompt({ job, analyses = [], pattern = {}, settings =
         '각 소제목 뒤에는 이미지 자리 표시자를 [이미지 n 500x500 중앙정렬: 소제목] 형식으로 넣는다.',
         '본문은 검색자가 바로 확인해야 할 기준, 대상, 방법, 주의사항, 요약 순서로 읽히게 한다.',
         '마무리에서는 핵심을 다시 정리하되 과장된 보장 표현은 피한다.',
+        `Hard metric gate: final body must be ${range.minCharCount}-${range.maxCharCount} Korean characters without spaces, exact keyword count ${range.minKwCount}-${range.maxKwCount}, image placeholders exactly ${imageCount}, and quote headings about ${sectionCount}. Revise before returning JSON if any metric is outside the range.`,
+        'Use webResearch.searchItems and autocompleteKeywords as factual reference material. Do not copy titles or snippets; extract only the checking order, current issue terms, and official-confirmation points.',
+        'If the web research has no exact confirmed fact, write a verification-oriented sentence instead of inventing dates, prices, agencies, or URLs.',
         ...skillPayload.promptRules,
       ],
       sourceBenchmarks: sourceSummaries,
@@ -3224,7 +3322,7 @@ function buildOpenAiRewritePrompt({ job, analyses = [], pattern = {}, settings =
   };
 }
 
-function buildOpenAiRewritePromptV2({ job, analyses = [], pattern = {}, settings = {}, variantIndex = 0 }) {
+function buildOpenAiRewritePromptV2({ job, analyses = [], pattern = {}, settings = {}, variantIndex = 0, research = {} }) {
   const keyword = job.target_keyword;
   const topic = job.target_topic || keyword;
   const skill = contentSkillFor(settings.contentSkillKey || settings.content_skill_key || DEFAULT_REWRITE_SETTINGS.contentSkillKey);
@@ -3261,6 +3359,15 @@ function buildOpenAiRewritePromptV2({ job, analyses = [], pattern = {}, settings
       keyword,
       topic,
       contentSkill: skillPayload,
+      webResearch: {
+        enabled: Boolean(research.enabled),
+        provider: research.provider || 'none',
+        queries: research.queries || [],
+        autocompleteKeywords: research.autocompleteKeywords || [],
+        searchTotals: research.totals || [],
+        searchItems: (research.items || []).slice(0, 10),
+        errors: research.errors || [],
+      },
       customTitle: job.custom_title || '',
       variantIndex,
       target: {
@@ -3292,6 +3399,9 @@ function buildOpenAiRewritePromptV2({ job, analyses = [], pattern = {}, settings
         '같은 문장, 같은 첫 문장, 같은 결론 문장을 반복하지 않는다.',
         '벤치마킹 글의 문장 12어절 이상을 그대로 가져오지 않는다.',
         '말투는 광고 문구보다 정보형 블로그에 가깝게 쓴다. 너무 딱딱한 공문체나 과한 감탄문은 피한다.',
+        `Hard metric gate: final body must be ${range.minCharCount}-${range.maxCharCount} Korean characters without spaces, exact keyword count ${range.minKwCount}-${range.maxKwCount}, image placeholders exactly ${imageCount}, and quote headings about ${sectionCount}. Revise before returning JSON if any metric is outside the range.`,
+        'Use webResearch.searchItems and autocompleteKeywords as factual reference material. Do not copy titles or snippets; extract only the checking order, current issue terms, and official-confirmation points.',
+        'If the web research has no exact confirmed fact, write a verification-oriented sentence instead of inventing dates, prices, agencies, or URLs.',
         ...skillPayload.promptRules,
       ],
       sourceBenchmarks: sourceSummaries,
@@ -3335,13 +3445,13 @@ function buildOpenAiRewritePromptV2({ job, analyses = [], pattern = {}, settings
   };
 }
 
-async function buildOpenAiRewriteDraft({ tenantId, job, analyses, pattern, settings, variantIndex }) {
+async function buildOpenAiRewriteDraft({ tenantId, job, analyses, pattern, settings, variantIndex, research = {} }) {
   const openAi = await getOpenAiSettings(tenantId);
   if (!openAi.hasApiKey) {
     throw new Error('OPENAI_API_KEY가 설정되어 있지 않습니다. 운영 설정에서 OpenAI API 키를 저장하거나 Railway 환경변수에 추가해 주세요.');
   }
   const model = normalizeOpenAiModel(settings.openaiModel || openAi.model);
-  const prompt = buildOpenAiRewritePromptV2({ job, analyses, pattern, settings, variantIndex });
+  const prompt = buildOpenAiRewritePromptV2({ job, analyses, pattern, settings, variantIndex, research });
   const maxCompletionTokens = clampNumber(
     Math.ceil((settings.targetCharCount || DEFAULT_REWRITE_SETTINGS.targetCharCount) * 1.8),
     2500,
@@ -3388,7 +3498,10 @@ async function buildOpenAiRewriteDraft({ tenantId, job, analyses, pattern, setti
   const sectionTitles = Array.isArray(parsed.sectionTitles) && parsed.sectionTitles.length
     ? parsed.sectionTitles.map((item) => String(item || '').replace(/^>\s*/, '').trim()).filter(Boolean)
     : makeSectionTitles(job.target_keyword, job.target_topic, Math.max(1, (pattern.sectionCount || settings.sectionCount || 7) - 1), variantIndex);
-  const requiredImageCount = plannedArticleImageCount({ ...settings, ...pattern }, sectionTitles.length);
+  const requiredImageCount = plannedArticleImageCount(
+    { ...settings, ...pattern },
+    pattern.sectionCount || settings.sectionCount || sectionTitles.length
+  );
   const sectionImageLimit = Math.max(0, requiredImageCount - 1);
   sectionTitles.forEach((section, index) => {
     const markerPattern = new RegExp(`\\[(?:이미지|image|img)\\s*${index + 1}\\b`, 'i');
@@ -3415,7 +3528,8 @@ async function buildOpenAiRewriteDraft({ tenantId, job, analyses, pattern, setti
     `문의처나 담당 부서가 따로 안내되어 있다면 접수 전 한 번 확인해 두는 것이 좋습니다. 작은 기준 차이도 실제 처리 결과에는 영향을 줄 수 있습니다.`,
   ];
   let metricSupplementCount = 0;
-  while (cleanedMetrics.charCount < targetRange.minCharCount && metricSupplementCount < Math.min(2, supplementNotes.length)) {
+  const allowMetricSupplement = settings.autoMetricSupplement === true;
+  while (allowMetricSupplement && cleanedMetrics.charCount < targetRange.minCharCount && metricSupplementCount < Math.min(2, supplementNotes.length)) {
     body = cleanGeneratedArticleBody(`${body}\n\n${supplementNotes[metricSupplementCount]}`);
     body = limitImagePlaceholders(body, requiredImageCount);
     body = limitExactKeywordRepetition(body, job.target_keyword, targetRange.maxKwCount, job.target_topic);
@@ -3471,6 +3585,9 @@ async function buildOpenAiRewriteDraft({ tenantId, job, analyses, pattern, setti
       metricAdjusted: enforced.metricAdjusted,
       metricSupplementCount: enforced.metricSupplementCount,
       sourceAnalysisCount: analyses.length,
+      researchProvider: research.provider || 'none',
+      researchSourceCount: Array.isArray(research.items) ? research.items.length : 0,
+      researchAutocompleteCount: Array.isArray(research.autocompleteKeywords) ? research.autocompleteKeywords.length : 0,
     },
   });
   return {
@@ -3568,6 +3685,26 @@ async function processRewriteJob(jobId, options = {}) {
   const settings = parseRewriteSettings(job.settings_json);
   const pattern = buildRewritePattern(analyses, settings);
   const tenantId = options.tenantId || 'owner';
+  let research = { enabled: false, provider: 'skipped', items: [], autocompleteKeywords: [], errors: [] };
+  try {
+    research = await buildRewriteResearchContext({
+      keyword: job.target_keyword,
+      topic: job.target_topic,
+      platform: job.platform,
+      settings,
+    });
+    await addRewriteEvent(jobId, 'research_completed', '자료 검색 컨텍스트를 원고 생성에 연결했습니다.', {
+      enabled: research.enabled,
+      provider: research.provider,
+      queries: research.queries,
+      searchItemCount: Array.isArray(research.items) ? research.items.length : 0,
+      autocompleteCount: Array.isArray(research.autocompleteKeywords) ? research.autocompleteKeywords.length : 0,
+      errors: research.errors,
+    });
+  } catch (err) {
+    research = { enabled: true, provider: 'error', items: [], autocompleteKeywords: [], errors: [{ message: err.message }] };
+    await addRewriteEvent(jobId, 'research_error', '자료 검색 컨텍스트 연결에 실패해 벤치마킹/키워드 기준으로 생성합니다.', { error: err.message });
+  }
 
   await pool.query(
     "UPDATE rewrite_jobs SET status = '초안 생성중', pattern_json = $2, updated_at = NOW() WHERE id = $1",
@@ -3589,6 +3726,7 @@ async function processRewriteJob(jobId, options = {}) {
       pattern,
       settings,
       variantIndex,
+      research,
     });
   } else {
     output = buildRewriteDraftV2({
@@ -3617,7 +3755,13 @@ async function processRewriteJob(jobId, options = {}) {
 
   const scores = scoreRewriteOutput(output, pattern);
   const similarityRisk = estimateRewriteSimilarityRisk(output, pattern);
-  const finalStatus = similarityRisk >= 45 ? '검수 필요' : '글생성 완료';
+  const targetRange = metricTargetRange(settings);
+  const metricFailed = output.charCount < targetRange.minCharCount
+    || output.charCount > targetRange.maxCharCount
+    || output.kwCount < targetRange.minKwCount
+    || output.kwCount > targetRange.maxKwCount
+    || output.imageCount !== pattern.imageCount;
+  const finalStatus = metricFailed || similarityRisk >= 45 ? '검수 필요' : '글생성 완료';
   const { rows } = await pool.query(
     `UPDATE rewrite_jobs
      SET status = $2,
@@ -3686,6 +3830,14 @@ async function processRewriteJob(jobId, options = {}) {
     finalStatus,
     scores,
     similarityRisk,
+    metricFailed,
+    targetRange,
+    actualMetrics: {
+      charCount: output.charCount,
+      kwCount: output.kwCount,
+      imageCount: output.imageCount,
+      quoteCount: output.quoteCount,
+    },
     elapsedMs,
     generatorMode: output.generatorMode || 'server_template',
     openai: output.openaiUsage || null,

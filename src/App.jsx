@@ -36,6 +36,7 @@ const DEFAULT_REWRITE_SETTINGS = {
   contentSkillKey: 'adsense_verified_info',
   generatorMode: 'openai',
   openaiModel: 'gpt-5-mini',
+  useWebResearch: true,
   targetCharCount: 2500,
   sectionCharCount: 350,
   sectionCount: 7,
@@ -2361,10 +2362,11 @@ function RewritePanel() {
       if (!saved.settingsVersion || saved.targetKwCount === 15) merged.targetKwCount = DEFAULT_REWRITE_SETTINGS.targetKwCount;
       if (!saved.settingsVersion || saved.targetCharCount === 2200) merged.targetCharCount = DEFAULT_REWRITE_SETTINGS.targetCharCount;
       if (!saved.settingsVersion || saved.sectionCharCount === 300) merged.sectionCharCount = DEFAULT_REWRITE_SETTINGS.sectionCharCount;
-      if (!saved.settingsVersion || Number(saved.settingsVersion) < 4 || saved.contentSkillKey === 'adsense_traffic') {
+      if (!saved.settingsVersion || Number(saved.settingsVersion) < 5 || saved.contentSkillKey === 'adsense_traffic') {
         merged.contentSkillKey = DEFAULT_REWRITE_SETTINGS.contentSkillKey;
       }
-      merged.settingsVersion = 4;
+      if (!saved.settingsVersion || Number(saved.settingsVersion) < 5) merged.useWebResearch = DEFAULT_REWRITE_SETTINGS.useWebResearch;
+      merged.settingsVersion = 5;
       return merged;
     } catch {
       return DEFAULT_REWRITE_SETTINGS;
@@ -2665,7 +2667,9 @@ function RewritePanel() {
   const updateRewriteSetting = (key, value) => {
     setRewriteSettings((prev) => ({
       ...prev,
-      [key]: ['benchmarkUrl', 'generatorMode', 'openaiModel', 'contentSkillKey'].includes(key) ? value : Number(value) || 0,
+      [key]: key === 'useWebResearch'
+        ? Boolean(value)
+        : ['benchmarkUrl', 'generatorMode', 'openaiModel', 'contentSkillKey'].includes(key) ? value : Number(value) || 0,
     }));
   };
 
@@ -3461,6 +3465,26 @@ function RewritePanel() {
                 <option value="gpt-4.1-mini">gpt-4.1-mini · 예전 저비용</option>
                 <option value="gpt-4.1">gpt-4.1 · 고품질</option>
               </select>
+            </label>
+            <label style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              minHeight: 36,
+              padding: '8px 10px',
+              border: `1px solid ${COLORS.border}`,
+              borderRadius: 8,
+              background: rewriteSettings.useWebResearch ? '#eff6ff' : 'white',
+              color: COLORS.textSecondary,
+              fontSize: 11,
+              fontWeight: 850,
+            }}>
+              <input
+                type="checkbox"
+                checked={rewriteSettings.useWebResearch !== false}
+                onChange={(e) => updateRewriteSetting('useWebResearch', e.target.checked)}
+              />
+              웹서칭 자료 참고
             </label>
           </div>
           <div style={{
