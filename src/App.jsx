@@ -3491,7 +3491,7 @@ function RewritePanel() {
                 checked={rewriteSettings.useWebResearch !== false}
                 onChange={(e) => updateRewriteSetting('useWebResearch', e.target.checked)}
               />
-              웹서칭 자료 참고
+              웹서칭+팩트팩 참고
             </label>
           </div>
           <div style={{

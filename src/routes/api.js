@@ -2014,11 +2014,180 @@ function dedupeResearchItems(items = []) {
   });
 }
 
+function researchUrlHost(link = '') {
+  try {
+    return new URL(link).hostname.toLowerCase().replace(/^www\./, '');
+  } catch {
+    return '';
+  }
+}
+
+function researchSourceType(link = '') {
+  const host = researchUrlHost(link);
+  if (!host) return 'unknown';
+  if (/(^|\.)go\.kr$/.test(host) || host.endsWith('.gov.kr') || host === 'korea.kr') return 'official';
+  if (host.includes('bokjiro.go.kr') || host.includes('easylaw.go.kr')) return 'official';
+  if (host.endsWith('.or.kr') || host.endsWith('.re.kr')) return 'institution';
+  if (host.includes('naver.com')) return 'naver';
+  return 'web';
+}
+
+function researchSourcePriority(item = {}) {
+  const host = researchUrlHost(item.link || '');
+  const text = `${item.title || ''} ${item.description || ''}`.toLowerCase();
+  let score = 0;
+  if (/(^|\.)go\.kr$/.test(host) || host.endsWith('.gov.kr')) score += 90;
+  if (host === 'korea.kr') score += 85;
+  if (host.includes('bokjiro.go.kr') || host.includes('easylaw.go.kr')) score += 80;
+  if (host.endsWith('.or.kr') || host.endsWith('.re.kr')) score += 35;
+  if (/(official|notice|policy|faq)/i.test(`${host} ${text}`)) score += 18;
+  if (/(공식|공지|보도자료|정책|정부|지자체|신청|대상|기간|금액|사용처)/.test(text)) score += 14;
+  if (host.includes('blog.naver.com') || host.includes('cafe.naver.com')) score -= 8;
+  if (host.includes('m.site.naver.com') || host.includes('qr.naver.com')) score -= 30;
+  score -= Math.max(0, Number(item.rank || 0) - 1) * 2;
+  return score;
+}
+
+function compactFactText(text = '', max = 180) {
+  return String(text || '')
+    .replace(/\s+/g, ' ')
+    .replace(/\[[^\]]{1,40}\]/g, '')
+    .trim()
+    .slice(0, max);
+}
+
+function researchFactKinds(sentence = '') {
+  const text = String(sentence || '');
+  const checks = [
+    ['dates', /(\d{4}\s*년|\d{1,2}\s*월\s*\d{1,2}\s*일|\d{1,2}\s*월|신청\s*기간|접수\s*기간|지급\s*일|사용\s*기한|마감|부터|까지|예정|일정)/],
+    ['amounts', /([0-9,]+\s*(?:만\s*)?원|최대|최소|금액|지원금|지급액|환급|수강료|참가비|비용|만원|%)/],
+    ['eligibility', /(대상|자격|소득|하위|기초생활수급자|차상위|한부모|건강보험료|가구|취약계층|제외|연령|거주|주민등록)/],
+    ['apply', /(신청|접수|온라인|오프라인|본인\s*인증|주민센터|행정복지센터|카드사|앱|홈페이지|은행|예약|예매|티켓팅)/],
+    ['usage', /(사용처|사용\s*기한|지역화폐|선불카드|신용카드|체크카드|소상공인|매장|업종|제한|환수|포인트)/],
+    ['cautions', /(주의|유의|중복|허위|서류|증빙|보완|문의|공식|공지|변경|취소|환불|약관|확인)/],
+  ];
+  return checks.filter(([, regex]) => regex.test(text)).map(([kind]) => kind);
+}
+
+function extractResearchFactsFromText(text = '', source = {}, keyword = '') {
+  const normalized = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!normalized) return [];
+  const pieces = normalized
+    .replace(/([.!?。]|다)\s+/g, '$1\n')
+    .split(/\n+/)
+    .map((piece) => compactFactText(piece, 220))
+    .filter((piece) => piece.length >= 24 && piece.length <= 220);
+  const facts = [];
+  const seen = new Set();
+  for (const piece of pieces) {
+    const kinds = researchFactKinds(piece);
+    if (!kinds.length) continue;
+    const hasKeywordSignal = !keyword || piece.includes(keyword.split(/\s+/)[0]) || /(신청|대상|기간|금액|방법|사용처|공식|공지)/.test(piece);
+    if (!hasKeywordSignal) continue;
+    for (const kind of kinds) {
+      const key = `${kind}:${piece.replace(/\s/g, '').slice(0, 120)}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      facts.push({
+        kind,
+        text: piece,
+        sourceTitle: source.title || '',
+        sourceLink: source.link || '',
+      });
+    }
+    if (facts.length >= 18) break;
+  }
+  return facts;
+}
+
+function bucketResearchFacts(facts = []) {
+  const buckets = {
+    dates: [],
+    amounts: [],
+    eligibility: [],
+    apply: [],
+    usage: [],
+    cautions: [],
+  };
+  const seen = new Set();
+  for (const fact of facts) {
+    if (!buckets[fact.kind]) continue;
+    const key = `${fact.kind}:${fact.text.replace(/\s/g, '').slice(0, 140)}`;
+    if (seen.has(key) || buckets[fact.kind].length >= 5) continue;
+    seen.add(key);
+    buckets[fact.kind].push({
+      text: compactFactText(fact.text, 170),
+      sourceTitle: compactFactText(fact.sourceTitle, 80),
+      sourceLink: fact.sourceLink,
+    });
+  }
+  return buckets;
+}
+
+async function buildResearchFactPack({ items = [], keyword = '', topic = '' } = {}) {
+  const rankedSources = dedupeResearchItems(items)
+    .filter((item) => /^https?:\/\//i.test(item.link || ''))
+    .filter((item) => !/(\.(png|jpe?g|gif|webp|pdf)$|m\.site\.naver\.com|qr\.naver\.com)/i.test(item.link || ''))
+    .sort((a, b) => researchSourcePriority(b) - researchSourcePriority(a))
+    .slice(0, 4);
+  const sources = [];
+  const facts = [];
+  const errors = [];
+  const subject = normalizeKeywordValue(keyword || topic);
+
+  for (const item of rankedSources) {
+    const host = researchUrlHost(item.link);
+    const source = {
+      title: item.title || host,
+      link: item.link,
+      host,
+      sourceType: researchSourceType(item.link),
+      priority: researchSourcePriority(item),
+      fetched: false,
+      factCount: 0,
+    };
+    try {
+      const html = await fetchSourceHtml(item.link);
+      const pageTitle = extractTitle(html, item.title || host);
+      const text = stripHtml(extractNaverBodyHtml(html) || html).replace(/\s+/g, ' ').trim().slice(0, 9000);
+      const pageFacts = extractResearchFactsFromText(text, { ...source, title: pageTitle }, subject);
+      source.title = pageTitle || source.title;
+      source.fetched = text.length > 80;
+      source.factCount = pageFacts.length;
+      facts.push(...pageFacts);
+    } catch (err) {
+      errors.push({ link: item.link, message: err.message });
+    }
+    sources.push(source);
+  }
+
+  const buckets = bucketResearchFacts(facts);
+  const factTotal = Object.values(buckets).reduce((sum, list) => sum + list.length, 0);
+  return {
+    enabled: rankedSources.length > 0,
+    available: factTotal > 0,
+    sourceCount: sources.length,
+    factCount: factTotal,
+    generatedAt: new Date().toISOString(),
+    sources: sources.slice(0, 4),
+    facts: buckets,
+    flowSlots: [
+      { section: '대상/자격', factKinds: ['eligibility'] },
+      { section: '금액/비용', factKinds: ['amounts'] },
+      { section: '기간/일정', factKinds: ['dates'] },
+      { section: '신청/접수 방법', factKinds: ['apply'] },
+      { section: '사용처/환급/제한', factKinds: ['usage'] },
+      { section: '주의사항/서류', factKinds: ['cautions'] },
+    ],
+    errors: errors.slice(0, 5),
+  };
+}
+
 async function buildRewriteResearchContext({ keyword = '', topic = '', platform = 'blog', settings = {}, credentials: credentialOverride = null } = {}) {
   const enabled = settings.useWebResearch !== false;
   const seed = normalizeKeywordValue(keyword || topic);
   if (!enabled || !seed) {
-    return { enabled: false, provider: enabled ? 'empty_keyword' : 'disabled', queries: [], items: [], autocompleteKeywords: [], errors: [] };
+    return { enabled: false, provider: enabled ? 'empty_keyword' : 'disabled', queries: [], items: [], factPack: null, autocompleteKeywords: [], errors: [] };
   }
 
   const queries = researchQuerySet(keyword, topic);
@@ -2052,6 +2221,12 @@ async function buildRewriteResearchContext({ keyword = '', topic = '', platform 
   } catch (err) {
     errors.push({ query: seed, message: `autocomplete: ${err.message}` });
   }
+  const researchItems = dedupeResearchItems(items).slice(0, 12);
+  const factPack = await buildResearchFactPack({
+    items: researchItems,
+    keyword: seed,
+    topic,
+  });
 
   return {
     enabled: true,
@@ -2060,7 +2235,8 @@ async function buildRewriteResearchContext({ keyword = '', topic = '', platform 
     searchPlatform,
     totals,
     autocompleteKeywords: autocompleteKeywords.slice(0, 12),
-    items: dedupeResearchItems(items).slice(0, 12),
+    items: researchItems,
+    factPack,
     errors: errors.slice(0, 6),
   };
 }
@@ -3245,7 +3421,20 @@ function buildOpenAiRewritePrompt({ job, analyses = [], pattern = {}, settings =
         autocompleteKeywords: research.autocompleteKeywords || [],
         searchTotals: research.totals || [],
         searchItems: (research.items || []).slice(0, 10),
+        factPack: research.factPack || null,
         errors: research.errors || [],
+      },
+      verifiedArticleFlow: {
+        purpose: 'Use factPack first. Search snippets are supporting context only.',
+        preferredSections: [
+          '대상 및 자격',
+          '금액 또는 비용 기준',
+          '신청 기간과 일정',
+          '신청 방법과 접수 경로',
+          '사용처 또는 환급/제한 조건',
+          '준비 서류와 주의사항',
+          '핵심 요약',
+        ],
       },
       customTitle: job.custom_title || '',
       variantIndex,
@@ -3282,6 +3471,9 @@ function buildOpenAiRewritePrompt({ job, analyses = [], pattern = {}, settings =
         '마무리에서는 핵심을 다시 정리하되 과장된 보장 표현은 피한다.',
         `Hard metric gate: final body must be ${range.minCharCount}-${range.maxCharCount} Korean characters without spaces, exact keyword count ${range.minKwCount}-${range.maxKwCount}, image placeholders exactly ${imageCount}, and quote headings about ${sectionCount}. Revise before returning JSON if any metric is outside the range.`,
         'Use webResearch.searchItems and autocompleteKeywords as factual reference material. Do not copy titles or snippets; extract only the checking order, current issue terms, and official-confirmation points.',
+        'Use webResearch.factPack first when available: dates go into the period section, amounts into cost/benefit, eligibility into target, apply facts into application path, usage facts into usage/restriction, and cautions into documents or cautions.',
+        'Do not write every section with the same generic frame. Each section must contain a different concrete fact type or a different user action.',
+        'The phrase "official notice/page must be checked" may appear at most twice. Replace repeated warnings with concrete checking steps.',
         'If the web research has no exact confirmed fact, write a verification-oriented sentence instead of inventing dates, prices, agencies, or URLs.',
         ...skillPayload.promptRules,
       ],
@@ -3368,7 +3560,20 @@ function buildOpenAiRewritePromptV2({ job, analyses = [], pattern = {}, settings
         autocompleteKeywords: research.autocompleteKeywords || [],
         searchTotals: research.totals || [],
         searchItems: (research.items || []).slice(0, 10),
+        factPack: research.factPack || null,
         errors: research.errors || [],
+      },
+      verifiedArticleFlow: {
+        purpose: 'Use factPack first. Search snippets are supporting context only.',
+        preferredSections: [
+          '대상 및 자격',
+          '금액 또는 비용 기준',
+          '신청 기간과 일정',
+          '신청 방법과 접수 경로',
+          '사용처 또는 환급/제한 조건',
+          '준비 서류와 주의사항',
+          '핵심 요약',
+        ],
       },
       customTitle: job.custom_title || '',
       variantIndex,
@@ -3403,6 +3608,9 @@ function buildOpenAiRewritePromptV2({ job, analyses = [], pattern = {}, settings
         '말투는 광고 문구보다 정보형 블로그에 가깝게 쓴다. 너무 딱딱한 공문체나 과한 감탄문은 피한다.',
         `Hard metric gate: final body must be ${range.minCharCount}-${range.maxCharCount} Korean characters without spaces, exact keyword count ${range.minKwCount}-${range.maxKwCount}, image placeholders exactly ${imageCount}, and quote headings about ${sectionCount}. Revise before returning JSON if any metric is outside the range.`,
         'Use webResearch.searchItems and autocompleteKeywords as factual reference material. Do not copy titles or snippets; extract only the checking order, current issue terms, and official-confirmation points.',
+        'Use webResearch.factPack first when available: dates go into the period section, amounts into cost/benefit, eligibility into target, apply facts into application path, usage facts into usage/restriction, and cautions into documents or cautions.',
+        'Do not write every section with the same generic frame. Each section must contain a different concrete fact type or a different user action.',
+        'The phrase "official notice/page must be checked" may appear at most twice. Replace repeated warnings with concrete checking steps.',
         'If the web research has no exact confirmed fact, write a verification-oriented sentence instead of inventing dates, prices, agencies, or URLs.',
         ...skillPayload.promptRules,
       ],
@@ -3702,6 +3910,9 @@ async function processRewriteJob(jobId, options = {}) {
       provider: research.provider,
       queries: research.queries,
       searchItemCount: Array.isArray(research.items) ? research.items.length : 0,
+      factPackAvailable: Boolean(research.factPack?.available),
+      factCount: research.factPack?.factCount || 0,
+      factSourceCount: research.factPack?.sourceCount || 0,
       autocompleteCount: Array.isArray(research.autocompleteKeywords) ? research.autocompleteKeywords.length : 0,
       errors: research.errors,
     });
