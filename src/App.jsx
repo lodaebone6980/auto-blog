@@ -2821,6 +2821,11 @@ function RewritePanel() {
     setMessage(`발행 생성 작업 ${rewriteJobCount}개를 생성 중입니다.`);
     const createdCounts = [];
     const errors = [];
+    const opsSettings = loadOpsSettings();
+    const naverSearchPayload = {
+      naverClientId: opsSettings.naverClientId || '',
+      naverClientSecret: opsSettings.naverClientSecret || '',
+    };
 
     if (isDirectMode || selectedSourceLinkIds.length > 0) {
       const res = await safeFetch(`${API}/rewrite-jobs`, {
@@ -2837,6 +2842,7 @@ function RewritePanel() {
           useAiImages: true,
           customTitle,
           rewriteSettings,
+          ...naverSearchPayload,
           concurrency: 3,
         }),
       });
@@ -2857,6 +2863,7 @@ function RewritePanel() {
           useAiImages: true,
           customTitle,
           rewriteSettings,
+          ...naverSearchPayload,
         }),
       });
       if (res?.ok) {

@@ -2014,7 +2014,7 @@ function dedupeResearchItems(items = []) {
   });
 }
 
-async function buildRewriteResearchContext({ keyword = '', topic = '', platform = 'blog', settings = {} } = {}) {
+async function buildRewriteResearchContext({ keyword = '', topic = '', platform = 'blog', settings = {}, credentials: credentialOverride = null } = {}) {
   const enabled = settings.useWebResearch !== false;
   const seed = normalizeKeywordValue(keyword || topic);
   if (!enabled || !seed) {
@@ -2022,7 +2022,7 @@ async function buildRewriteResearchContext({ keyword = '', topic = '', platform 
   }
 
   const queries = researchQuerySet(keyword, topic);
-  const credentials = naverSearchCredentials({});
+  const credentials = credentialOverride || naverSearchCredentials({});
   const normalizedPlatform = normalizePlatform(platform);
   const searchPlatform = normalizedPlatform === 'cafe' ? 'cafe' : normalizedPlatform === 'blog' ? 'blog' : 'web';
   const items = [];
@@ -2853,6 +2853,7 @@ function cleanGeneratedArticleBody(text = '') {
     .replace(/\[글별 CTA 링크 입력 필요\]/g, '')
     .replace(/\[네이버 QR 삽입(?: 위치)?:\s*\[글별 CTA 링크 입력 필요\]\]/g, '')
     .replace(GENERATED_EDITOR_PLACEHOLDER_RE, '')
+    .replace(/^\s*(?:도입부\s*(?:첫|두\s*번째|세\s*번째)?\s*문단|대답|답변|요약\s*답변|세부\s*설명|설명|마무리\s*요약|행동\s*권장|체크리스트)\s*[:：]\s*/gmi, '')
     .replace(/^\s*\d+[.)]\s+/gm, '')
     .replace(/([가-힣A-Za-z0-9][^\n]{7,80})\1+/g, '$1')
     .split(/\n+/)
@@ -3308,6 +3309,7 @@ function buildOpenAiRewritePrompt({ job, analyses = [], pattern = {}, settings =
         ],
         hardBans: [
           'No SmartEditor placeholder text: AI 활용 설정, 사진 설명을 입력하세요, 내용을 입력하세요, 출처 입력.',
+          'No authoring labels in the visible article: 도입부 첫 문단, 도입부 두 번째 문단, 대답:, 답변:, 요약 답변:, 세부 설명:, 행동 권장:, 마무리 요약:, 체크리스트:.',
           'No empty quote markers and no duplicated heading text.',
           'No numbered section prefixes such as 1., 2., 3. in body paragraphs.',
         ],
@@ -3428,6 +3430,7 @@ function buildOpenAiRewritePromptV2({ job, analyses = [], pattern = {}, settings
         ],
         hardBans: [
           'No SmartEditor placeholder text: AI 활용 설정, 사진 설명을 입력하세요, 내용을 입력하세요, 출처 입력.',
+          'No authoring labels in the visible article: 도입부 첫 문단, 도입부 두 번째 문단, 대답:, 답변:, 요약 답변:, 세부 설명:, 행동 권장:, 마무리 요약:, 체크리스트:.',
           'No empty quote markers and no duplicated heading text.',
           'No numbered section prefixes such as 1., 2., 3. in body paragraphs.',
           'Do not repeat labels like "요약 답변:" and "세부 설명:" in every section.',
@@ -3692,6 +3695,7 @@ async function processRewriteJob(jobId, options = {}) {
       topic: job.target_topic,
       platform: job.platform,
       settings,
+      credentials: options.researchCredentials || null,
     });
     await addRewriteEvent(jobId, 'research_completed', '자료 검색 컨텍스트를 원고 생성에 연결했습니다.', {
       enabled: research.enabled,
@@ -6716,6 +6720,7 @@ router.post('/rss-items/to-rewrite-jobs', async (req, res) => {
     const tenantId = tenantIdFromReq(req);
     const ids = normalizeIdList(req.body?.itemIds || req.body?.rssItemIds);
     if (ids.length === 0) return res.status(400).json({ error: 'itemIds is required' });
+    const researchCredentials = naverSearchCredentials(req.body);
     const { rows: items } = await pool.query(
       `SELECT *
        FROM rss_source_items
@@ -6752,7 +6757,7 @@ router.post('/rss-items/to-rewrite-jobs', async (req, res) => {
           JSON.stringify(buildPublishSpec(normalizePlatform(req.body?.platform || item.platform || 'blog', item.link), settings)),
         ]
       );
-      const processed = await processRewriteJob(rows[0].id, { tenantId });
+      const processed = await processRewriteJob(rows[0].id, { tenantId, researchCredentials });
       await pool.query(
         `UPDATE rss_source_items
          SET rewrite_job_id = $2,
@@ -7445,6 +7450,7 @@ router.patch('/rewrite-jobs/:id', async (req, res) => {
 router.post('/rewrite-jobs', async (req, res) => {
   try {
     const tenantId = tenantIdFromReq(req);
+    const researchCredentials = naverSearchCredentials(req.body);
     const rawKeywordInput = req.body?.targetKeywords || req.body?.keywordsText || req.body?.keyword || '';
     let keywords = parseTargetKeywords(rawKeywordInput);
     const hasExplicitKeywords = keywords.length > 0;
@@ -7554,7 +7560,7 @@ router.post('/rewrite-jobs', async (req, res) => {
     const concurrency = clampNumber(parseInt(req.body?.concurrency || '3', 10) || 3, 1, 5);
     const processed = await mapLimit(insertedJobs, concurrency, async (job) => {
       try {
-        return await processRewriteJob(job.id, { tenantId });
+        return await processRewriteJob(job.id, { tenantId, researchCredentials });
       } catch (err) {
         const failed = await pool.query(
           `UPDATE rewrite_jobs
