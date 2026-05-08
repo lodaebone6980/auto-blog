@@ -103,6 +103,29 @@ async function nativePressKey(tabId, key = 'Enter', options = {}) {
   }
 }
 
+async function nativePaste(tabId) {
+  if (!tabId) throw new Error('붙여넣기할 탭을 찾지 못했습니다.');
+  const target = { tabId };
+  let attached = false;
+  try {
+    await debuggerAttach(target);
+    attached = true;
+    const params = {
+      key: 'v',
+      code: 'KeyV',
+      windowsVirtualKeyCode: 86,
+      nativeVirtualKeyCode: 86,
+      modifiers: 2,
+    };
+    await debuggerCommand(target, 'Input.dispatchKeyEvent', { type: 'keyDown', ...params });
+    await sleep(40);
+    await debuggerCommand(target, 'Input.dispatchKeyEvent', { type: 'keyUp', ...params });
+    return { ok: true, method: 'chrome-debugger-paste' };
+  } finally {
+    if (attached) await debuggerDetach(target);
+  }
+}
+
 async function nativeClick(tabId, point = {}, options = {}) {
   if (!tabId) throw new Error('클릭할 탭을 찾지 못했습니다.');
   const target = { tabId };
@@ -134,6 +157,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message?.type === 'NAVIWRITE_NATIVE_PRESS_KEY') {
     nativePressKey(sender.tab?.id, message.key || 'Enter', message.options || {})
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
+    return true;
+  }
+
+  if (message?.type === 'NAVIWRITE_NATIVE_PASTE') {
+    nativePaste(sender.tab?.id)
       .then((result) => sendResponse(result))
       .catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
     return true;

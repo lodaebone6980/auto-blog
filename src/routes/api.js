@@ -2559,9 +2559,31 @@ function buildRewriteDraft({ keyword, topic, platform, ctaUrl, useNaverQr, useAi
   }
   const images = useAiImages
     ? Array.from({ length: Math.max(0, requiredImageCount) }, (_, index) => {
-        if (index === 0) return makeTemplateImage({ keyword, section: title, subtitle: '새 글 초안', index, platform });
+        if (index === 0) {
+          return {
+            index,
+            role: 'cover',
+            label: '대표 이미지',
+            title,
+            section: title,
+            prompt: `${keyword} 대표 이미지`,
+            url: makeTemplateImage({ keyword, section: title, subtitle: '새 글 초안', index, platform }),
+            width: 500,
+            height: 500,
+          };
+        }
         const section = sectionTitles[(index - 1) % Math.max(sectionTitles.length, 1)] || title;
-        return makeTemplateImage({ keyword, section, subtitle: `${index}번째 핵심`, index, platform });
+        return {
+          index,
+          role: 'section',
+          label: `이미지 ${index}`,
+          title: section,
+          section,
+          prompt: `${keyword} ${section} 섹션 이미지`,
+          url: makeTemplateImage({ keyword, section, subtitle: `${index}번째 핵심`, index, platform }),
+          width: 500,
+          height: 500,
+        };
       })
     : [];
 
@@ -3827,8 +3849,11 @@ async function saveGeneratedImagesForContentJob({ tenantId, contentJobId, rewrit
 
   await pool.query('DELETE FROM generated_images WHERE content_job_id = $1', [contentJobId]);
   const saved = [];
-  for (const image of images) {
-    const index = Number(image.index || 0);
+  for (const [arrayIndex, rawImage] of images.entries()) {
+    const image = typeof rawImage === 'string' ? { url: rawImage, index: arrayIndex } : (rawImage || {});
+    const parsedIndex = Number(image.index ?? image.section_no ?? image.sectionNo ?? arrayIndex);
+    const index = Number.isFinite(parsedIndex) ? parsedIndex : arrayIndex;
+    const imageUrl = image.url || image.dataUrl || image.data_url || image.publicUrl || image.public_url || '';
     const { rows } = await pool.query(
       `INSERT INTO generated_images (
          tenant_id, content_job_id, rewrite_job_id, image_type, section_no,
@@ -3843,10 +3868,10 @@ async function saveGeneratedImagesForContentJob({ tenantId, contentJobId, rewrit
         index === 0 ? 'cover' : 'section',
         index,
         image.prompt || image.title || `${rewriteJob.target_keyword} image ${index}`,
-        String(image.url || '').startsWith('data:') ? 'data-url' : 'external-url',
+        String(imageUrl || '').startsWith('data:') ? 'data-url' : 'external-url',
         `generated/${tenantId}/job-${contentJobId}/image-${String(index).padStart(2, '0')}.svg`,
-        String(image.url || '').startsWith('data:') ? null : image.url,
-        String(image.url || '').startsWith('data:') ? image.url : null,
+        String(imageUrl || '').startsWith('data:') ? null : imageUrl,
+        String(imageUrl || '').startsWith('data:') ? imageUrl : null,
         500,
         500,
       ]
@@ -3917,9 +3942,18 @@ function generatedImageDownloadUrl(req, image) {
   return `/api/generated-images/${image.id}/file?tenantId=${tenantId}`;
 }
 
-function generatedImageClientPayload(req, image) {
+function generatedImageClientPayload(req, image, arrayIndex = 0) {
+  const persistedSectionNo = Number(image.section_no ?? arrayIndex);
+  const sectionNo = persistedSectionNo === 0 && arrayIndex > 0 ? arrayIndex : persistedSectionNo;
+  const isCover = arrayIndex === 0 && (image.image_type === 'cover' || sectionNo === 0);
   return {
     ...image,
+    index: sectionNo,
+    role: isCover ? 'cover' : 'section',
+    label: isCover
+      ? '대표 이미지'
+      : `이미지 ${sectionNo || arrayIndex}`,
+    section: image.prompt || '',
     download_url: generatedImageDownloadUrl(req, image),
     downloadUrl: generatedImageDownloadUrl(req, image),
     editor_upload_mode: 'extension_download_blob_then_upload',
@@ -7114,7 +7148,7 @@ router.get('/publish-queue/:id/images', async (req, res) => {
       jobId: job.id,
       imageSourceMode: 'server_blob',
       editorUploadMode: 'extension_download_blob_then_upload',
-      images: images.map((image) => generatedImageClientPayload(req, image)),
+      images: images.map((image, index) => generatedImageClientPayload(req, image, index)),
     });
   } catch (err) {
     res.status(500).json({ error: err.message });

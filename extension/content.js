@@ -758,6 +758,22 @@ function requestNativeKey(key = 'Enter', options = {}) {
   });
 }
 
+function requestNativePaste() {
+  return new Promise((resolve) => {
+    if (!chrome.runtime?.sendMessage) {
+      resolve(false);
+      return;
+    }
+    chrome.runtime.sendMessage({ type: 'NAVIWRITE_NATIVE_PASTE' }, (response) => {
+      if (chrome.runtime.lastError) {
+        resolve(false);
+        return;
+      }
+      resolve(Boolean(response?.ok));
+    });
+  });
+}
+
 function viewportPointForNode(node) {
   const rect = node?.getBoundingClientRect?.();
   if (!rect) return null;
@@ -1454,6 +1470,19 @@ async function pasteImageFileAtCaret(node, blob, label) {
     await centerEditorImages(beforeCount);
     return true;
   }
+  if (navigator.clipboard?.write && window.ClipboardItem) {
+    try {
+      await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+      await requestNativePaste();
+      await sleep(1400);
+      if (editorImageCount() > beforeCount) {
+        await centerEditorImages(beforeCount);
+        return true;
+      }
+    } catch (err) {
+      console.warn('NaviWrite clipboard image paste failed', err);
+    }
+  }
 
   const rect = target.getBoundingClientRect();
   const dropData = new DataTransfer();
@@ -1575,8 +1604,7 @@ async function insertImageAtCaret(node, image, index) {
   try {
     const pngBlob = await imageUrlToPngBlob(url);
     if (pngBlob) {
-      let insertedAsFile = await uploadImageViaNaverPhoto(target, pngBlob, label);
-      if (!insertedAsFile) insertedAsFile = await pasteImageFileAtCaret(target, pngBlob, label);
+      const insertedAsFile = await pasteImageFileAtCaret(target, pngBlob, label);
       if (insertedAsFile) {
         await centerEditorImages();
         await pressEnter(target, 1, { useCurrentCaret: true });
@@ -1630,6 +1658,51 @@ function imageUrl(image) {
 
 function imageLabel(image, index) {
   return image.label || image.image_role || image.imageRole || `이미지 ${index + 1}`;
+}
+
+function imageOrderValue(image, fallbackIndex = 0) {
+  const explicit = Number(image.index ?? image.section_no ?? image.sectionNo ?? image.order ?? image.sort_order);
+  if (Number.isFinite(explicit)) return explicit;
+  const label = [image.label, image.title, image.section, image.role, image.image_role, image.imageRole].join(' ');
+  if (/cover|thumbnail|대표|썸네일/i.test(label)) return 0;
+  const navi = /NAVI\s*(\d+)/i.exec(label);
+  if (navi) return Number(navi[1]);
+  const number = /(?:이미지|image|img)\s*(\d+)/i.exec(label);
+  if (number) return Number(number[1]);
+  return fallbackIndex;
+}
+
+function sortedPublishingImages(images = []) {
+  const mapped = [...images]
+    .map((image, index) => ({ image, index, order: imageOrderValue(image, index) }))
+    .map((item, _index, all) => {
+      const everyImageHasZeroOrder = all.length > 1 && all.every((candidate) => Number(candidate.order) === 0);
+      return everyImageHasZeroOrder ? { ...item, order: item.index } : item;
+    });
+
+  return mapped
+    .sort((a, b) => {
+      const aMeta = [a.image.label, a.image.role, a.image.image_type, a.image.imageType, a.image.image_role, a.image.imageRole].join(' ');
+      const bMeta = [b.image.label, b.image.role, b.image.image_type, b.image.imageType, b.image.image_role, b.image.imageRole].join(' ');
+      const aCover = a.index === 0 || (a.order === 0 && /cover|thumbnail|대표|썸네일/i.test(aMeta));
+      const bCover = b.index === 0 || (b.order === 0 && /cover|thumbnail|대표|썸네일/i.test(bMeta));
+      if (aCover !== bCover) return aCover ? -1 : 1;
+      if (a.order !== b.order) return a.order - b.order;
+      return a.index - b.index;
+    })
+    .map((item) => item.image);
+}
+
+function sectionTitleFromImage(image, fallback = '') {
+  const value = image?.section || image?.title || image?.label || image?.image_role || image?.imageRole || '';
+  const cleaned = String(value || '')
+    .replace(/^cover$/i, '')
+    .replace(/^thumbnail$/i, '')
+    .replace(/^대표\s*이미지$/i, '')
+    .replace(/^이미지\s*\d+\s*[:：-]?\s*/i, '')
+    .replace(/^NAVI\s*\d+\s*[:：-]?\s*/i, '')
+    .trim();
+  return cleaned || fallback;
 }
 
 function firstContentLine(lines) {
@@ -1723,7 +1796,9 @@ function stripInlinePlaceholders(line = '') {
 }
 
 function isQrPlaceholder(line) {
-  return /^\[네이버\s*QR\s*삽입/.test(line);
+  return /^\[네이버\s*QR\s*삽입/.test(line)
+    || /\[?\s*글별\s*CTA\s*링크\s*입력\s*필요\s*\]?/i.test(line)
+    || /\[?\s*CTA\s*링크\s*입력\s*필요\s*\]?/i.test(line);
 }
 
 function isQuoteLine(line) {
@@ -1805,37 +1880,98 @@ function buildTypingSegments(job, images = []) {
 
 function buildPublishingSegments(job, images = []) {
   const lines = cleanBodyLines(job);
-  const segments = [];
+  const orderedImages = sortedPublishingImages(images);
+  let segments = [];
   let imageIndex = 0;
   const link = validHyperlink(ctaUrl(job));
+  let ctaInserted = false;
+  let hasSectionMarker = false;
+  let introParagraphs = 0;
+  const fallbackSectionTitle = `${job.keyword || job.title || '핵심 내용'} 정리`;
 
-  if (images[imageIndex]) {
-    segments.push({ type: 'image', role: 'thumbnail', image: { ...images[imageIndex], ctaLink: link }, index: imageIndex });
+  const pushCta = () => {
+    if (!link || ctaInserted) return;
+    segments.push({ type: 'cta', text: `바로 확인하기\n${link}` });
+    ctaInserted = true;
+  };
+
+  const pushParagraph = (text) => {
+    const clean = String(text || '').trim();
+    if (!clean || isQrPlaceholder(clean) || isImagePlaceholderV2(clean)) return;
+    segments.push({ type: 'paragraph', text: clean });
+  };
+
+  const pushNextImage = (role = 'section') => {
+    if (!orderedImages[imageIndex]) return false;
+    const isThumbnail = role === 'thumbnail';
+    segments.push({
+      type: 'image',
+      role,
+      image: { ...orderedImages[imageIndex], ctaLink: isThumbnail ? link : '' },
+      index: imageIndex,
+    });
     imageIndex += 1;
-  }
+    return true;
+  };
+
+  const pushSectionStart = (text) => {
+    const title = String(text || '').trim();
+    if (!title) return;
+    segments.push({ type: 'quote', text: title });
+    pushNextImage('section');
+  };
+
+  pushNextImage('thumbnail');
 
   lines.forEach((line, index) => {
     if (isQrPlaceholder(line)) {
-      if (link) segments.push({ type: 'cta', text: `바로 확인하기\n${link}` });
+      pushCta();
       return;
     }
     if (isQuoteLine(line)) {
-      segments.push({ type: 'heading', text: cleanQuoteLine(line) });
-      if (images[imageIndex]) {
-        segments.push({ type: 'image', image: { ...images[imageIndex], ctaLink: '' }, index: imageIndex });
-        imageIndex += 1;
-      }
+      if (!hasSectionMarker && introParagraphs > 0) pushCta();
+      hasSectionMarker = true;
+      pushSectionStart(cleanQuoteLine(line));
       return;
     }
     if (isHeadingLine(line, index)) {
-      segments.push({ type: 'heading', text: line });
+      if (!hasSectionMarker && introParagraphs > 0) pushCta();
+      hasSectionMarker = true;
+      pushSectionStart(line);
       return;
     }
-    segments.push({ type: 'paragraph', text: line });
+    pushParagraph(line);
+    if (!hasSectionMarker) introParagraphs += 1;
   });
 
-  if (link && !segments.some((segment) => segment.type === 'cta')) {
-    segments.push({ type: 'cta', text: `바로 확인하기\n${link}` });
+  if (!hasSectionMarker && orderedImages.length > imageIndex) {
+    const paragraphs = lines
+      .filter((line) => !isQrPlaceholder(line) && !isImagePlaceholderV2(line))
+      .map((line) => ({ type: 'paragraph', text: line }));
+    segments = [];
+    imageIndex = 0;
+    ctaInserted = false;
+    pushNextImage('thumbnail');
+    const introLimit = Math.min(2, Math.max(1, Math.ceil(paragraphs.length / Math.max(2, orderedImages.length || 2))));
+    paragraphs.slice(0, introLimit).forEach((segment) => segments.push(segment));
+    pushCta();
+    const remaining = paragraphs.slice(introLimit);
+    let cursor = 0;
+    while (cursor < remaining.length || imageIndex < orderedImages.length) {
+      const image = orderedImages[imageIndex];
+      if (image) {
+        pushSectionStart(sectionTitleFromImage(image, fallbackSectionTitle));
+      }
+      const leftImages = Math.max(1, orderedImages.length - imageIndex + 1);
+      const chunkSize = Math.max(1, Math.ceil((remaining.length - cursor) / leftImages));
+      remaining.slice(cursor, cursor + chunkSize).forEach((segment) => segments.push(segment));
+      cursor += chunkSize;
+      if (!image && cursor >= remaining.length) break;
+    }
+  }
+
+  if (link && !ctaInserted) {
+    pushCta();
   }
   return segments;
 }
@@ -1866,7 +2002,7 @@ async function typeBodySegments(node, job, images = []) {
       const typed = await typeSegmentText(target, segment.text, { chunkSize: 1, minDelay: 9, maxDelay: 23, useCurrentCaret: true, scope: 'body' });
       if (!typed) throw new Error(`본문 인용구 입력 실패: ${segment.text.slice(0, 40)}`);
       quoteCount += 1;
-      await pressEnter(target, 1, { useCurrentCaret: true });
+      await pressEnter(target, 2, { useCurrentCaret: true });
       applyFormatBlock('p');
       typedSegments += 1;
       continue;
