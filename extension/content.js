@@ -23,6 +23,10 @@ function visible(node) {
 
 function findTitleTarget() {
   const selectors = [
+    '[data-a11y-title*="\uBCF8\uBB38"] .__se-node',
+    '[data-a11y-title*="\uBCF8\uBB38"] .se-text-paragraph',
+    '[data-a11y-title*="\uBCF8\uBB38"] .se-module-text',
+    '[data-a11y-title*="\uBCF8\uBB38"]',
     'textarea[placeholder*="제목"]',
     'input[placeholder*="제목"]',
     '[contenteditable="true"][aria-label*="제목"]',
@@ -109,10 +113,20 @@ const TITLE_CONTAINER_SELECTOR = [
   '.se-title',
   '.se-title-text',
   '.se-documentTitle',
+  '[data-a11y-title="\uC81C\uBAA9"]',
+  '[data-a11y-title*="\uC81C\uBAA9"]',
+  '.se-component-documentTitle',
   '[class*="se-title"]',
   '[class*="se_title"]',
   '[class*="documentTitle"]',
   '[class*="DocumentTitle"]',
+].join(',');
+
+const BODY_CONTAINER_SELECTOR = [
+  '[data-a11y-title="\uBCF8\uBB38"]',
+  '[data-a11y-title*="\uBCF8\uBB38"]',
+  '.se-component.se-text',
+  '.se-section-text',
 ].join(',');
 
 function nodeMeta(node) {
@@ -138,10 +152,32 @@ function hasBodyHint(node) {
   return /\uBCF8\uBB38|\uB0B4\uC6A9|content|paragraph|se-section-text|se-main-container/i.test(nodeMeta(node));
 }
 
+function naverEditorTextRoot(node) {
+  if (!node) return null;
+  if (node.matches?.('.__se-node')) return node;
+  if (node.matches?.('.se-text-paragraph')) return node.querySelector?.('.__se-node') || node;
+  const paragraph = node.closest?.('.se-text-paragraph');
+  if (paragraph) return paragraph.querySelector?.('.__se-node') || paragraph;
+  const component = node.matches?.(`${TITLE_CONTAINER_SELECTOR}, ${BODY_CONTAINER_SELECTOR}`)
+    ? node
+    : node.closest?.(`${TITLE_CONTAINER_SELECTOR}, ${BODY_CONTAINER_SELECTOR}`);
+  if (!component) return null;
+  return component.querySelector?.('.__se-node')
+    || component.querySelector?.('.se-text-paragraph')
+    || component.querySelector?.('.se-module-text')
+    || component;
+}
+
 function closestTitleContainer(node) {
   if (!node) return null;
   if (node.matches?.(TITLE_CONTAINER_SELECTOR)) return node;
   return node.closest?.(TITLE_CONTAINER_SELECTOR) || null;
+}
+
+function closestBodyContainer(node) {
+  if (!node) return null;
+  if (node.matches?.(BODY_CONTAINER_SELECTOR)) return node;
+  return node.closest?.(BODY_CONTAINER_SELECTOR) || null;
 }
 
 function uniqueNodes(nodes) {
@@ -168,7 +204,7 @@ function titleCandidateScore(node) {
 function findStrictTitleContainer() {
   const containers = uniqueNodes([
     ...Array.from(document.querySelectorAll(TITLE_CONTAINER_SELECTOR)),
-    ...Array.from(document.querySelectorAll('[data-placeholder*="\uC81C\uBAA9"], [aria-label*="\uC81C\uBAA9"], [placeholder*="\uC81C\uBAA9"]'))
+    ...Array.from(document.querySelectorAll('[data-a11y-title*="\uC81C\uBAA9"], [data-placeholder*="\uC81C\uBAA9"], [aria-label*="\uC81C\uBAA9"], [placeholder*="\uC81C\uBAA9"]'))
       .map((node) => closestTitleContainer(node) || node),
   ])
     .filter(visible)
@@ -185,7 +221,10 @@ function editableInsideTitleContainer(container) {
       'textarea',
       'input',
       '[contenteditable="true"]',
+      '.__se-node',
       '.se-text-paragraph',
+      '.se-module-text',
+      '[data-a11y-title*="\uC81C\uBAA9"]',
       '[data-placeholder*="\uC81C\uBAA9"]',
       '[aria-label*="\uC81C\uBAA9"]',
       '[placeholder*="\uC81C\uBAA9"]',
@@ -212,6 +251,9 @@ function findStrictTitleEditable() {
     return inside;
   }
   const direct = uniqueNodes(Array.from(document.querySelectorAll([
+    '[data-a11y-title*="\uC81C\uBAA9"] .__se-node',
+    '[data-a11y-title*="\uC81C\uBAA9"] .se-text-paragraph',
+    '[data-a11y-title*="\uC81C\uBAA9"] .se-module-text',
     'textarea[placeholder*="\uC81C\uBAA9"]',
     'input[placeholder*="\uC81C\uBAA9"]',
     '[contenteditable="true"][aria-label*="\uC81C\uBAA9"]',
@@ -231,6 +273,8 @@ function findTitlePlaceholder() {
     '.se-title',
     '.se-title-text',
     '.se-documentTitle',
+    '.se-component-documentTitle',
+    '[data-a11y-title*="\uC81C\uBAA9"]',
     '[data-placeholder*="\uC81C\uBAA9"]',
     '[aria-label*="\uC81C\uBAA9"]',
     '[placeholder*="\uC81C\uBAA9"]',
@@ -347,15 +391,17 @@ function findBodyTarget() {
         node.getAttribute?.('data-a11y-title'),
         node.className,
       ].join(' ')) ? 1500 : 0;
+      const exactBodyBonus = closestBodyContainer(node) ? 4500 : 0;
       const belowTitleBonus = !titleBottom || rect.top >= titleBottom + 8 ? 1200 : -5000;
       const area = Math.min(rect.width * rect.height, 4000);
-      return { node, score: editableBonus + bodyHintBonus + belowTitleBonus + area };
+      return { node, score: exactBodyBonus + editableBonus + bodyHintBonus + belowTitleBonus + area };
     })
     .sort((a, b) => b.score - a.score)[0]?.node || null;
 }
 
 function activateBodyArea() {
   const selectors = [
+    '[data-a11y-title*="\uBCF8\uBB38"]',
     '.se-main-container',
     '.se-content',
     '.se-section-text',
@@ -569,6 +615,8 @@ function ensureTypingNotStopped() {
 function editableRoot(node) {
   if (!node) return null;
   if ('value' in node || node.isContentEditable) return node;
+  const naverTextNode = naverEditorTextRoot(node);
+  if (naverTextNode) return naverTextNode;
   return node.closest?.('[contenteditable="true"]')
     || node.querySelector?.('[contenteditable="true"], textarea, input')
     || null;
@@ -608,7 +656,13 @@ function activeEditable() {
 }
 
 function lastEmptyBodyEditable() {
-  return Array.from(document.querySelectorAll('[contenteditable="true"], textarea'))
+  return Array.from(document.querySelectorAll([
+    '[data-a11y-title*="\uBCF8\uBB38"] .__se-node',
+    '[data-a11y-title*="\uBCF8\uBB38"] .se-text-paragraph',
+    '[data-a11y-title*="\uBCF8\uBB38"]',
+    '[contenteditable="true"]',
+    'textarea',
+  ].join(',')))
     .map(editableRoot)
     .filter(Boolean)
     .filter((node, index, list) => list.indexOf(node) === index)
