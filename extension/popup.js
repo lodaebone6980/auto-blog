@@ -1060,8 +1060,8 @@ async function insertIntoTab(tabId, { retryMs = 12000, stage = 'full' } = {}) {
   if (!state.activeJob) throw new Error('삽입할 작업이 없습니다.');
   if (!tabId) throw new Error('작성 탭을 찾을 수 없습니다.');
   setStep('insert', 'active', '작성창의 제목/본문 영역을 찾는 중입니다.');
-  await sendMessageToAllFrames(tabId, { type: 'NAVIWRITE_DISMISS_DRAFT' });
-  await delay(stage === 'title' ? 50 : 160);
+  await sendMessageToAllFrames(tabId, { type: 'NAVIWRITE_DISMISS_DRAFT', waitMs: stage === 'title' ? 3600 : 1800 });
+  await delay(stage === 'title' ? 220 : 160);
   const messageType = stage === 'title'
     ? 'NAVIWRITE_WRITE_TITLE_ONLY'
     : stage === 'body'

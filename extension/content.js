@@ -687,7 +687,7 @@ async function setTitleText(node, text) {
 }
 
 async function typeTitleText(title) {
-  await dismissResumeDraftDialog();
+  await dismissResumeDraftDialog({ waitMs: 3200 });
   let target = await focusTitleTarget();
   if (!target) return false;
   target = activeTitleEditable() || editableRoot(target);
@@ -1204,7 +1204,9 @@ async function clickNode(node, waitMs = 160) {
   return true;
 }
 
-async function dismissResumeDraftDialog() {
+async function dismissResumeDraftDialog(options = {}) {
+  const waitMs = Math.max(0, Number(options.waitMs ?? 2200));
+  const started = Date.now();
   const draftPattern = /(?:\uC791\uC131\s*\uC911\uC778\s*\uAE00|\uC774\uC5B4\uC11C\s*\uC791\uC131|\uC791\uC131\uD558\uC2DC\uACA0\uC2B5\uB2C8\uAE4C)/;
   const cancelPattern = /(?:\uCDE8\uC18C|\uC0C8\uB85C|\uC544\uB2C8\uC624|cancel|no)/i;
   const popupRootSelector = '.se-popup, .se-popup-alert-confirm, .se-popup-container, .se-pop-layer, .se-layer, [role="dialog"]';
@@ -1219,9 +1221,21 @@ async function dismissResumeDraftDialog() {
     '.se-popup-container',
     '.se-dialog-container',
   ];
-  const bodyText = document.body?.textContent || '';
-  const hasPopupShell = document.querySelector(`${popupRootSelector}, ${dialogSelectors.join(',')}`);
-  if (!draftPattern.test(bodyText) && !hasPopupShell) return false;
+
+  const draftPopupVisible = () => {
+    const bodyText = document.body?.textContent || '';
+    if (draftPattern.test(bodyText)) return true;
+    return Array.from(document.querySelectorAll(`${popupRootSelector}, ${dialogSelectors.join(',')}`))
+      .filter(visible)
+      .some((node) => draftPattern.test(node.textContent || ''));
+  };
+
+  while (!draftPopupVisible()) {
+    if (Date.now() - started >= waitMs) return false;
+    await sleep(100);
+  }
+
+  let bodyText = document.body?.textContent || '';
 
   const fastCancel = Array.from(document.querySelectorAll('button.se-popup-button-cancel, .se-popup-button-cancel'))
     .filter(visible)
@@ -2205,7 +2219,7 @@ async function typeBodySegments(node, job, images = []) {
 async function fillJobLikeTyping(job, images = []) {
   typingStopRequested = false;
   typingSessionStartedAt = Date.now();
-  await dismissResumeDraftDialog();
+  await dismissResumeDraftDialog({ waitMs: 3200 });
   await sleep(220);
   const title = job.title || job.keyword || '';
   const body = plainBody(job);
@@ -2245,7 +2259,7 @@ async function fillJobLikeTyping(job, images = []) {
 async function writeJobTitleOnly(job) {
   typingStopRequested = false;
   typingSessionStartedAt = Date.now();
-  await dismissResumeDraftDialog();
+  await dismissResumeDraftDialog({ waitMs: 3200 });
   const title = job.title || job.keyword || '';
   if (!title) throw new Error('제목으로 사용할 작업 제목/키워드가 없습니다.');
   const titleWritten = await typeTitleText(title);
@@ -2535,7 +2549,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message?.type === 'NAVIWRITE_DISMISS_DRAFT') {
-    dismissResumeDraftDialog()
+    dismissResumeDraftDialog({ waitMs: Number(message.waitMs ?? 2600) })
       .then((dismissed) => sendResponse({ ok: true, dismissed }))
       .catch((err) => sendResponse({ ok: false, error: err.message }));
     return true;
