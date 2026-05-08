@@ -1918,9 +1918,9 @@ const QUOTE_CONTAINER_SELECTOR = [
 
 function quoteEditableTarget(preferred) {
   const selected = selectionEditable();
-  if (selected && selected.closest?.(QUOTE_CONTAINER_SELECTOR)) return selected;
+  if (selected && selected.closest?.(QUOTE_CONTAINER_SELECTOR) && !isQuoteSourceEditable(selected)) return selected;
   const active = activeEditable();
-  if (active && active.closest?.(QUOTE_CONTAINER_SELECTOR)) return active;
+  if (active && active.closest?.(QUOTE_CONTAINER_SELECTOR) && !isQuoteSourceEditable(active)) return active;
   const candidates = Array.from(document.querySelectorAll([
     `${QUOTE_CONTAINER_SELECTOR} .__se-node`,
     `${QUOTE_CONTAINER_SELECTOR} .se-text-paragraph`,
@@ -1931,9 +1931,30 @@ function quoteEditableTarget(preferred) {
     .filter(Boolean)
     .filter((node, index, list) => list.indexOf(node) === index)
     .filter(visible)
-    .map((node) => ({ node, top: node.getBoundingClientRect().top }))
-    .sort((a, b) => b.top - a.top);
-  return candidates[0]?.node || (preferred?.closest?.(QUOTE_CONTAINER_SELECTOR) ? editableRoot(preferred) : null);
+    .filter((node) => !isQuoteSourceEditable(node))
+    .map((node) => ({
+      node,
+      top: node.getBoundingClientRect().top,
+      componentTop: (node.closest?.('.se-component') || node.closest?.(QUOTE_CONTAINER_SELECTOR) || node).getBoundingClientRect?.().top || 0,
+    }))
+    .sort((a, b) => (b.componentTop - a.componentTop) || (a.top - b.top));
+  const preferredEditable = editableRoot(preferred);
+  return candidates[0]?.node
+    || (preferredEditable?.closest?.(QUOTE_CONTAINER_SELECTOR) && !isQuoteSourceEditable(preferredEditable) ? preferredEditable : null);
+}
+
+function isQuoteSourceEditable(node) {
+  const editable = editableRoot(node) || node;
+  const meta = [
+    editable?.textContent,
+    editable?.value,
+    editable?.getAttribute?.('placeholder'),
+    editable?.getAttribute?.('data-placeholder'),
+    editable?.getAttribute?.('aria-label'),
+    editable?.getAttribute?.('data-a11y-title'),
+    editable?.className,
+  ].join(' ');
+  return /출처\s*입력|source|citation/i.test(meta);
 }
 
 function isEmptyQuoteBlock(node) {
@@ -1998,21 +2019,12 @@ async function pressArrowDownFromQuote(node, count = 1) {
 }
 
 async function exitQuoteBlock(node) {
-  await pressArrowDownFromQuote(node, 1);
-  await sleep(140);
-  const current = selectionEditable();
-  if (current && isQuoteEditable(current)) {
-    await pressArrowDownFromQuote(current, 1);
-    await sleep(120);
-  }
-  applyFormatBlock('p');
-  await cleanupEmptyQuoteBlocks();
-  const next = sequentialBodyTarget(null) || sequentialBodyTarget(node);
-  if (next) {
-    next.click?.();
-    placeCaretAtEnd(next);
-  }
-  return next || node;
+  // Keep the caret in the quote until the next body/image segment begins.
+  // That next segment calls ensureBodyTargetOutsideQuote(), which moves down
+  // exactly once. Moving here as well made the editor look like it pressed
+  // Enter/Down twice after every quote.
+  await sleep(80);
+  return quoteEditableTarget(node) || node;
 }
 
 async function ensureBodyTargetOutsideQuote(preferred) {
@@ -2020,14 +2032,20 @@ async function ensureBodyTargetOutsideQuote(preferred) {
   if (current && isQuoteEditable(current)) {
     await pressArrowDownFromQuote(current, 1);
     await sleep(120);
+    applyFormatBlock('p');
+    const afterArrow = selectionEditable();
+    if (afterArrow && !isQuoteEditable(afterArrow)) return afterArrow;
   }
   const target = sequentialBodyTarget(preferred);
-  if (target) {
+  const selected = selectionEditable();
+  if (selected && !isQuoteEditable(selected) && isBodyEditable(selected)) return selected;
+  if (target && !isQuoteEditable(target)) {
     target.click?.();
     placeCaretAtEnd(target);
+    return target;
   }
   const preferredEditable = editableRoot(preferred);
-  return target || (preferredEditable && !isQuoteEditable(preferredEditable) ? preferredEditable : null);
+  return preferredEditable && !isQuoteEditable(preferredEditable) ? preferredEditable : null;
 }
 
 function isHeadingLine(line, index) {
