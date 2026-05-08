@@ -9,7 +9,98 @@ chrome.runtime.onStartup?.addListener(() => {
   chrome.sidePanel?.setPanelBehavior?.({ openPanelOnActionClick: true }).catch(() => {});
 });
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function randomDelay(min = 8, max = 24) {
+  return Math.floor(min + Math.random() * Math.max(1, max - min));
+}
+
+function debuggerAttach(target, version = '1.3') {
+  return new Promise((resolve, reject) => {
+    chrome.debugger.attach(target, version, () => {
+      const error = chrome.runtime.lastError;
+      if (error) reject(new Error(error.message));
+      else resolve();
+    });
+  });
+}
+
+function debuggerDetach(target) {
+  return new Promise((resolve) => {
+    chrome.debugger.detach(target, () => resolve());
+  });
+}
+
+function debuggerCommand(target, method, params = {}) {
+  return new Promise((resolve, reject) => {
+    chrome.debugger.sendCommand(target, method, params, (result) => {
+      const error = chrome.runtime.lastError;
+      if (error) reject(new Error(error.message));
+      else resolve(result);
+    });
+  });
+}
+
+async function nativeTypeIntoFocusedTarget(tabId, text, options = {}) {
+  if (!tabId) throw new Error('타이핑할 탭을 찾지 못했습니다.');
+  const target = { tabId };
+  const chunkSize = Math.max(1, Number(options.chunkSize || 1));
+  const minDelay = Math.max(0, Number(options.minDelay ?? 8));
+  const maxDelay = Math.max(minDelay + 1, Number(options.maxDelay ?? 24));
+  let attached = false;
+  try {
+    await debuggerAttach(target);
+    attached = true;
+    const value = String(text || '');
+    for (let index = 0; index < value.length; index += chunkSize) {
+      const chunk = value.slice(index, index + chunkSize);
+      await debuggerCommand(target, 'Input.insertText', { text: chunk });
+      if (index + chunkSize < value.length) await sleep(randomDelay(minDelay, maxDelay));
+    }
+    return { ok: true, method: 'chrome-debugger' };
+  } finally {
+    if (attached) await debuggerDetach(target);
+  }
+}
+
+async function nativePressKey(tabId, key = 'Enter', options = {}) {
+  if (!tabId) throw new Error('키 입력할 탭을 찾지 못했습니다.');
+  const target = { tabId };
+  let attached = false;
+  try {
+    await debuggerAttach(target);
+    attached = true;
+    const params = key === 'Enter'
+      ? { key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 }
+      : { key, code: key };
+    for (let index = 0; index < Math.max(1, Number(options.count || 1)); index += 1) {
+      await debuggerCommand(target, 'Input.dispatchKeyEvent', { type: 'rawKeyDown', ...params });
+      await debuggerCommand(target, 'Input.dispatchKeyEvent', { type: 'keyUp', ...params });
+      if (index + 1 < Number(options.count || 1)) await sleep(randomDelay(35, 80));
+    }
+    return { ok: true, method: 'chrome-debugger' };
+  } finally {
+    if (attached) await debuggerDetach(target);
+  }
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type === 'NAVIWRITE_NATIVE_TYPE_TEXT') {
+    nativeTypeIntoFocusedTarget(sender.tab?.id, message.text || '', message.options || {})
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
+    return true;
+  }
+
+  if (message?.type === 'NAVIWRITE_NATIVE_PRESS_KEY') {
+    nativePressKey(sender.tab?.id, message.key || 'Enter', message.options || {})
+      .then((result) => sendResponse(result))
+      .catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
+    return true;
+  }
+
   if (message?.type !== 'NAVIWRITE_WRITE_TITLE_MAIN_WORLD') return false;
   const tabId = sender.tab?.id;
   const frameId = sender.frameId;

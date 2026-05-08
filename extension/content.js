@@ -671,6 +671,50 @@ function randomDelay(min = 8, max = 24) {
   return Math.floor(min + Math.random() * (max - min));
 }
 
+function requestNativeTextInput(text, options = {}) {
+  return new Promise((resolve) => {
+    if (options.native === false || !chrome.runtime?.sendMessage) {
+      resolve(false);
+      return;
+    }
+    chrome.runtime.sendMessage({
+      type: 'NAVIWRITE_NATIVE_TYPE_TEXT',
+      text,
+      options: {
+        chunkSize: options.chunkSize || 1,
+        minDelay: options.minDelay ?? 8,
+        maxDelay: options.maxDelay ?? 24,
+      },
+    }, (response) => {
+      if (chrome.runtime.lastError) {
+        resolve(false);
+        return;
+      }
+      resolve(Boolean(response?.ok));
+    });
+  });
+}
+
+function requestNativeKey(key = 'Enter', options = {}) {
+  return new Promise((resolve) => {
+    if (options.native === false || !chrome.runtime?.sendMessage) {
+      resolve(false);
+      return;
+    }
+    chrome.runtime.sendMessage({
+      type: 'NAVIWRITE_NATIVE_PRESS_KEY',
+      key,
+      options,
+    }, (response) => {
+      if (chrome.runtime.lastError) {
+        resolve(false);
+        return;
+      }
+      resolve(Boolean(response?.ok));
+    });
+  });
+}
+
 function ensureTypingNotStopped() {
   if (typingStopRequested) throw new Error('사용자가 타이핑을 중지했습니다.');
 }
@@ -833,6 +877,20 @@ async function typeTextLikeHuman(node, text, options = {}) {
     if (isPlaceholderOnly(target)) clearEditable(target);
     if (!selectionEditable()) placeCaretAtEnd(target);
   }
+
+  const beforeNative = currentTextValue(target);
+  const beforeNativeDoc = document.body?.textContent || '';
+  const nativeTyped = await requestNativeTextInput(text, { ...options, chunkSize, minDelay, maxDelay });
+  await sleep(nativeTyped ? 80 : 0);
+  target = resolveTypingTarget(target, options);
+  if (nativeTyped && (
+    currentTextValue(target) !== beforeNative
+    || (document.body?.textContent || '') !== beforeNativeDoc
+  )) {
+    emitInput(target);
+    return;
+  }
+
   for (let index = 0; index < text.length; index += chunkSize) {
     ensureTypingNotStopped();
     const chunk = text.slice(index, index + chunkSize);
@@ -889,6 +947,11 @@ async function pressEnter(node, count = 1, options = {}) {
     if ('value' in target) {
       await typeTextLikeHuman(target, '\n', { chunkSize: 1, minDelay: 5, maxDelay: 10 });
     } else {
+      const nativePressed = await requestNativeKey('Enter', { count: 1 });
+      if (nativePressed) {
+        await sleep(randomDelay(40, 90));
+        continue;
+      }
       target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true }));
       document.execCommand?.('insertParagraph', false);
       emitInput(target);
