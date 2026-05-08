@@ -2439,6 +2439,7 @@ function makeTemplateImage({ keyword, section, subtitle, index, platform }) {
 }
 
 function buildRewriteDraft({ keyword, topic, platform, ctaUrl, useNaverQr, useAiImages = true, pattern, customTitle = '', variantIndex = 0 }) {
+  return buildRewriteDraftV2({ keyword, topic, platform, ctaUrl, useNaverQr, useAiImages, pattern, customTitle, variantIndex });
   const title = normalizeTitleValue(customTitle) || makeRewriteTitle(keyword, topic, platform, pattern);
   const bodySectionCount = Math.max(1, (pattern.sectionCount || DEFAULT_REWRITE_SETTINGS.sectionCount) - 1);
   const sectionTitles = makeSectionTitles(keyword, topic, bodySectionCount, variantIndex);
@@ -2619,11 +2620,14 @@ function cleanGeneratedArticleBody(text = '') {
   const seenParagraphs = new Set();
   return String(text || '')
     .replace(/\[글별 CTA 링크 입력 필요\]/g, '')
+    .replace(/\[네이버 QR 삽입(?: 위치)?:\s*\[글별 CTA 링크 입력 필요\]\]/g, '')
+    .replace(/^\s*\d+[.)]\s+/gm, '')
     .replace(/([가-힣A-Za-z0-9][^\n]{7,80})\1+/g, '$1')
     .split(/\n+/)
     .map((line) => line.replace(/\s+/g, ' ').trim())
     .filter(Boolean)
     .filter((line) => !/^>\s*$/.test(line))
+    .filter((line) => !/(참고 글의 문장|검색 의도는|주제 범위는|새로 작성한 초안|글 구성과 분량)/.test(line))
     .filter((line) => {
       const key = line.replace(/\s+/g, '');
       if (key.length < 18) return true;
@@ -2639,14 +2643,29 @@ function naturalDraftSubject(keyword = '', topic = '') {
   return normalizeKeywordValue(topic) || normalizeKeywordValue(keyword) || '해당 주제';
 }
 
+function naturalTitleSubject(keyword = '', topic = '') {
+  return naturalDraftSubject(keyword, topic).replace(/\s*신청$/g, '').trim() || naturalDraftSubject(keyword, topic);
+}
+
 function naturalPolicyIntent(keyword = '', topic = '') {
   return /(민생|지원금|쿠폰|환급|신청|반값|여행|대상|지급|정책|바우처|고유가|보조금|급여|수당|홈페이지|기간|일정)/.test(`${keyword} ${topic}`);
+}
+
+function naturalPolicyKind(keyword = '', topic = '') {
+  const source = `${keyword} ${topic}`;
+  if (/여행|반값|숙박|관광|체험/.test(source)) return 'travel';
+  if (/민생|지원금|쿠폰|바우처|보조금|급여|수당|지급|소비/.test(source)) return 'support';
+  return 'policy';
 }
 
 function koreanParticle(value = '', consonantParticle = '은', vowelParticle = '는') {
   const last = String(value || '').trim().match(/[가-힣]$/)?.[0];
   if (!last) return vowelParticle;
   return ((last.charCodeAt(0) - 0xac00) % 28) > 0 ? consonantParticle : vowelParticle;
+}
+
+function objectParticle(value = '') {
+  return koreanParticle(value, '을', '를');
 }
 
 function naturalDraftTitle(keyword = '', topic = '', platform = 'blog') {
@@ -2662,7 +2681,7 @@ function naturalDraftTitle(keyword = '', topic = '', platform = 'blog') {
 }
 
 function naturalSectionTitles(keyword = '', topic = '', count = 6, variantIndex = 0) {
-  const subject = naturalDraftSubject(keyword, topic);
+  const subject = naturalTitleSubject(keyword, topic);
   const policy = naturalPolicyIntent(keyword, topic);
   const policySets = [
     [
@@ -2718,13 +2737,14 @@ function naturalIntroParagraphsV2({ keyword = '', topic = '', subject = '', isPo
     ];
   }
   return [
-    `${subject}를 검색하면 설명은 많지만 처음 보는 사람 입장에서는 어떤 정보가 핵심인지 바로 구분하기 어렵습니다.`,
+    `${subject}${objectParticle(subject)} 검색하면 설명은 많지만 처음 보는 사람 입장에서는 어떤 정보가 핵심인지 바로 구분하기 어렵습니다.`,
     `그래서 이번 글은 단순 소개보다 실제로 확인해야 할 기준과 진행 순서를 앞쪽에 두고, 뒤로 갈수록 주의할 부분을 정리하는 방식으로 구성했습니다.`,
-    `${keyword}를 빠르게 이해하고 싶은 분이라면 아래 흐름대로 읽어보시면 필요한 부분만 골라 확인하기가 훨씬 수월합니다.`,
+    `${keyword}${objectParticle(keyword)} 빠르게 이해하고 싶은 분이라면 아래 흐름대로 읽어보시면 필요한 부분만 골라 확인하기가 훨씬 수월합니다.`,
   ];
 }
 
 function sectionIntent(section = '') {
+  if (/먼저|전체 흐름|기본 개념/.test(section)) return 'overview';
   if (/대상|조건|기준/.test(section)) return 'eligibility';
   if (/주의|놓치기|체크/.test(section)) return 'caution';
   if (/홈페이지|신청|온라인|방법|순서/.test(section)) return 'apply';
@@ -2759,7 +2779,7 @@ function naturalSectionExtraParagraphV2({ keyword = '', section = '', intent = '
 function naturalSectionFollowupParagraphV2({ keyword = '', intent = 'overview', isPolicy = false } = {}) {
   if (isPolicy) {
     const followup = {
-      overview: `그래서 ${keyword}를 볼 때는 혜택 설명보다 먼저 공고의 적용 범위와 신청 가능 시점을 확인하는 편이 좋습니다. 이 순서만 잡아도 불필요한 검색을 꽤 줄일 수 있습니다.`,
+      overview: `그래서 ${keyword}${objectParticle(keyword)} 볼 때는 혜택 설명보다 먼저 공고의 적용 범위와 신청 가능 시점을 확인하는 편이 좋습니다. 이 순서만 잡아도 불필요한 검색을 꽤 줄일 수 있습니다.`,
       eligibility: `가족 단위나 동행 신청처럼 함께 움직이는 경우에는 대표 신청자 기준만 보는 것으로 부족할 수 있습니다. 각 참여자의 조건이 어떻게 적용되는지도 같이 확인해야 합니다.`,
       apply: `접수 완료 후에는 접수번호나 신청 내역 화면을 캡처해 두는 것도 도움이 됩니다. 나중에 결과를 조회하거나 서류를 보완할 때 기준 자료로 쓰기 쉽습니다.`,
       schedule: `여행이나 사용 기간이 정해진 사업이라면 실제 이용일과 신청 가능 기간이 서로 맞는지도 따로 봐야 합니다. 날짜가 어긋나면 혜택 대상에서 벗어날 수 있습니다.`,
@@ -2770,7 +2790,7 @@ function naturalSectionFollowupParagraphV2({ keyword = '', intent = 'overview', 
     return followup[intent] || followup.overview;
   }
   const followup = {
-    overview: `${keyword}를 처음 보는 독자는 용어보다 실제로 무엇을 해야 하는지에 더 관심이 많습니다. 그래서 설명은 짧게, 확인 순서는 분명하게 잡는 편이 좋습니다.`,
+    overview: `${keyword}${objectParticle(keyword)} 처음 보는 독자는 용어보다 실제로 무엇을 해야 하는지에 더 관심이 많습니다. 그래서 설명은 짧게, 확인 순서는 분명하게 잡는 편이 좋습니다.`,
     apply: `중간 단계에서 막힌다면 처음부터 다시 시작하기보다 현재 화면에서 어떤 값이 비어 있는지 확인하는 것이 먼저입니다. 작은 입력 누락이 원인인 경우가 많습니다.`,
     caution: `검색 결과가 비슷해 보여도 작성일과 기준일이 다르면 내용이 달라질 수 있습니다. 최신 기준을 확인하는 습관이 가장 확실한 안전장치입니다.`,
     summary: `${keyword} 관련 글은 마지막에 핵심만 다시 묶어주면 독자가 저장하거나 공유하기 좋습니다. 이 부분이 AEO형 답변에도 잘 맞습니다.`,
@@ -2781,14 +2801,21 @@ function naturalSectionFollowupParagraphV2({ keyword = '', intent = 'overview', 
 function naturalSectionParagraphsV2({ keyword = '', subject = '', section = '', index = 0, isPolicy = false } = {}) {
   const intent = sectionIntent(section);
   if (isPolicy) {
+    const policyKind = naturalPolicyKind(keyword, subject);
+    const eligibilitySecond = policyKind === 'travel'
+      ? `대상 기준은 공고문에서 가장 자주 바뀌는 부분이기 때문에, 블로그 글만 보고 판단하기보다 주소지와 여행 가능 기간 같은 세부 조건까지 한 번 더 대조해 보는 과정이 필요합니다.`
+      : `대상 기준은 공고문에서 가장 자주 바뀌는 부분이기 때문에, 블로그 글만 보고 판단하기보다 소득 구간, 거주 지역, 연령, 기존 수급 여부를 한 번 더 대조해 보는 과정이 필요합니다.`;
+    const documentSecond = policyKind === 'travel'
+      ? `특히 환급형 사업은 사용처와 결제 내역이 기준에 맞아야 합니다. 숙박, 식사, 체험 비용이 모두 인정되는지 또는 일부 항목만 가능한지 공고문 기준으로 나눠 보는 것이 좋습니다.`
+      : `특히 지원금성 사업은 본인 확인, 세대 기준, 카드나 지역화폐 수령 방식처럼 지급 방식과 연결된 자료가 중요합니다. 신청 전 어떤 증빙이 필요한지 먼저 확인하는 편이 좋습니다.`;
     const policyMap = {
       overview: [
         `${section}에서는 먼저 이 제도가 어떤 목적의 안내인지부터 보는 것이 좋습니다. ${keyword}처럼 지원 성격이 있는 정보는 이름은 비슷해도 운영 주체가 다르면 접수처와 기준이 달라질 수 있습니다.`,
         `따라서 글을 읽을 때는 금액이나 혜택만 보지 말고, 신청 가능한 지역인지, 대상 조건이 맞는지, 실제 접수 페이지가 열려 있는지를 함께 확인해야 합니다.`,
       ],
       eligibility: [
-        `${section}을 볼 때는 거주지, 연령, 기존 지원 여부처럼 기본 조건부터 확인하는 편이 안전합니다. 같은 ${keyword} 안내라도 주민등록 주소지나 여행 가능 기간에 따라 대상에서 제외될 수 있습니다.`,
-        `대상 기준은 공고문에서 가장 자주 바뀌는 부분이기 때문에, 블로그 글만 보고 판단하기보다 공식 안내의 세부 조건까지 한 번 더 대조해 보는 과정이 필요합니다.`,
+        `${section}을 볼 때는 거주지, 연령, 기존 지원 여부처럼 기본 조건부터 확인하는 편이 안전합니다. 같은 ${keyword} 안내라도 지역과 세대 기준에 따라 대상에서 제외될 수 있습니다.`,
+        eligibilitySecond,
       ],
       apply: [
         `${section}은 실제 행동으로 이어지는 부분이라 접속 경로를 정확히 잡는 것이 중요합니다. 검색 결과에 비슷한 안내 페이지가 많다면 공식 홈페이지 안의 신청 메뉴인지 먼저 확인해야 합니다.`,
@@ -2800,7 +2827,7 @@ function naturalSectionParagraphsV2({ keyword = '', subject = '', section = '', 
       ],
       documents: [
         `${section}에서는 제출 가능한 자료의 형식을 확인해야 합니다. 영수증, 예약 내역, 본인 확인 자료처럼 필요한 항목이 빠지면 심사가 늦어질 수 있습니다.`,
-        `특히 환급형 사업은 사용처와 결제 내역이 기준에 맞아야 합니다. 숙박, 식사, 체험 비용이 모두 인정되는지 또는 일부 항목만 가능한지 공고문 기준으로 나눠 보는 것이 좋습니다.`,
+        documentSecond,
       ],
       caution: [
         `${section}에서 가장 중요한 것은 중복 신청과 허위 자료 제출을 피하는 것입니다. 혜택을 빨리 받으려다 잘못된 자료를 넣으면 지급이 지연되거나 제외될 수 있습니다.`,
@@ -2814,12 +2841,12 @@ function naturalSectionParagraphsV2({ keyword = '', subject = '', section = '', 
     return [
       ...(policyMap[intent] || policyMap.overview),
       naturalSectionExtraParagraphV2({ keyword, section, intent, isPolicy }),
-      naturalSectionFollowupParagraphV2({ keyword, intent, isPolicy }),
+      ...(index < 3 ? [naturalSectionFollowupParagraphV2({ keyword, intent, isPolicy })] : []),
     ];
   }
   const generalMap = {
     overview: [
-      `${section}에서는 ${keyword}를 처음 접하는 분들이 가장 먼저 확인해야 할 배경을 정리했습니다. 용어만 보면 어렵게 느껴질 수 있지만 핵심은 기준과 순서를 나눠 보는 것입니다.`,
+      `${section}에서는 ${keyword}${objectParticle(keyword)} 처음 접하는 분들이 가장 먼저 확인해야 할 배경을 정리했습니다. 용어만 보면 어렵게 느껴질 수 있지만 핵심은 기준과 순서를 나눠 보는 것입니다.`,
       `${subject} 관련 정보는 한 번에 결론을 내리기보다 필요한 항목을 차례대로 확인할 때 훨씬 이해가 쉽습니다.`,
     ],
     apply: [
@@ -2838,7 +2865,7 @@ function naturalSectionParagraphsV2({ keyword = '', subject = '', section = '', 
   return [
     ...(generalMap[intent] || generalMap.overview),
     naturalSectionExtraParagraphV2({ keyword, section, intent, isPolicy }),
-    naturalSectionFollowupParagraphV2({ keyword, intent, isPolicy }),
+    ...(index < 3 ? [naturalSectionFollowupParagraphV2({ keyword, intent, isPolicy })] : []),
   ];
 }
 
@@ -2884,9 +2911,9 @@ function buildRewriteDraftV2({ keyword, topic, platform, ctaUrl, useNaverQr, use
   let metrics = articleMetrics(body, keyword);
   const range = metricTargetRange(pattern);
   const extraNotes = [
-    `공고명, 기준일, 접수처가 서로 맞는지 함께 보는 것이 좋습니다.`,
-    `관련 안내가 여러 곳에 올라와도 최종 기준은 공식 페이지의 최신 공지에 두는 편이 안전합니다.`,
-    `신청이나 확인을 진행하기 전에는 필요한 자료를 미리 챙겨두면 중간에 다시 돌아가는 일을 줄일 수 있습니다.`,
+    `${keyword}은 공고명, 기준일, 접수처가 서로 맞는지 함께 보는 것이 좋습니다.`,
+    `${keyword} 관련 안내가 여러 곳에 올라와도 최종 기준은 공식 페이지의 최신 공지에 두는 편이 안전합니다.`,
+    `${keyword} 진행 전에는 필요한 자료를 미리 챙겨두면 중간에 다시 돌아가는 일을 줄일 수 있습니다.`,
     `특히 접수 화면에서 요구하는 항목이 글마다 다르게 보인다면 최신 공고문 기준으로 다시 정리하는 것이 좋습니다.`,
     `신청 후에는 완료 화면이나 접수 번호를 따로 저장해 두면 결과 조회나 문의가 필요할 때 훨씬 수월합니다.`,
     `마지막으로 일정이 변경될 수 있는 주제는 글을 읽은 날짜와 실제 공고 기준일을 함께 보는 습관이 필요합니다.`,
@@ -2934,6 +2961,7 @@ function buildRewriteDraftV2({ keyword, topic, platform, ctaUrl, useNaverQr, use
 }
 
 function buildOpenAiRewritePrompt({ job, analyses = [], pattern = {}, settings = {}, variantIndex = 0 }) {
+  return buildOpenAiRewritePromptV2({ job, analyses, pattern, settings, variantIndex });
   const keyword = job.target_keyword;
   const topic = job.target_topic || keyword;
   const sourceSummaries = analyses.slice(0, 4).map((row, index) => ({
@@ -3067,7 +3095,9 @@ function buildOpenAiRewritePromptV2({ job, analyses = [], pattern = {}, settings
         '제목에 "홈페이지에서 쉽게 시작하세요", "클릭하세요", "지금 바로" 같은 과한 CTA 문구를 넣지 않는다.',
         '본문 첫 줄에는 제목을 한 번만 넣는다.',
         '도입부는 3문단으로 작성하고 독자가 왜 이 정보를 확인해야 하는지 자연스럽게 설명한다.',
+        '도입부에 "참고 글의 문장을 가져온 것이 아니라", "검색 의도는", "주제 범위는" 같은 제작 설명 문장을 쓰지 않는다.',
         '네이버 블로그는 각 섹션 제목을 반드시 "> 소제목" 형태로 작성한다.',
+        '본문 문단 앞에 "1.", "2.", "3." 같은 순번을 붙이지 않는다.',
         '빈 인용구를 만들지 않는다. ">" 뒤에는 반드시 실제 소제목 문장이 있어야 한다.',
         '각 소제목 바로 다음 줄에 "[이미지 n 500x500 중앙정렬: 소제목]" 형식의 이미지 자리 표시자를 넣는다.',
         '대표 이미지는 본문 초반에 "[대표이미지 500x500 중앙정렬: 제목]" 형식으로 넣는다.',
@@ -3147,9 +3177,9 @@ async function buildOpenAiRewriteDraft({ tenantId, job, analyses, pattern, setti
   body = cleanGeneratedArticleBody(body);
   let cleanedMetrics = articleMetrics(body, job.target_keyword);
   const supplementNotes = [
-    `공고명과 접수처가 실제로 같은지 먼저 보는 것이 좋습니다.`,
-    `관련 안내가 여러 곳에 올라와도 최종 판단은 공식 페이지의 최신 기준을 우선으로 두는 편이 안전합니다.`,
-    `신청이나 확인을 진행하기 전에는 필요한 자료와 일정 기준을 미리 적어두면 중간에 놓치는 부분을 줄일 수 있습니다.`,
+    `${job.target_keyword}은 공고명과 접수처가 실제로 같은지 먼저 보는 것이 좋습니다.`,
+    `${job.target_keyword} 관련 안내가 여러 곳에 올라와도 최종 판단은 공식 페이지의 최신 기준을 우선으로 두는 편이 안전합니다.`,
+    `${job.target_keyword} 진행 전에는 필요한 자료와 일정 기준을 미리 적어두면 중간에 놓치는 부분을 줄일 수 있습니다.`,
     `접수 화면에서 요구하는 항목이 글마다 다르게 보이면 최신 공고문 기준으로 다시 확인해야 합니다.`,
     `신청 후에는 완료 화면이나 접수 번호를 따로 저장해 두면 결과 조회나 문의가 필요할 때 더 수월합니다.`,
     `일정이 변경될 수 있는 주제는 글을 읽은 날짜와 실제 공고 기준일을 함께 보는 습관이 필요합니다.`,

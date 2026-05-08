@@ -1828,6 +1828,10 @@ function stripInlinePlaceholders(line = '') {
     .trim();
 }
 
+function stripLeadingSectionNumber(line = '') {
+  return String(line || '').replace(/^\s*\d+[.)]\s+/, '').trim();
+}
+
 function isQrPlaceholder(line) {
   return /^\[네이버\s*QR\s*삽입/.test(line)
     || /\[?\s*글별\s*CTA\s*링크\s*입력\s*필요\s*\]?/i.test(line)
@@ -1855,8 +1859,10 @@ function cleanBodyLines(job) {
   return plainBody(job)
     .split(/\n+/)
     .map((line) => stripInlinePlaceholders(line.trim()))
+    .map((line) => stripLeadingSectionNumber(line))
     .filter(Boolean)
     .filter((line, index) => !(index === 0 && title && line === title))
+    .filter((line) => !/(참고 글의 문장|검색 의도는|주제 범위는|새로 작성한 초안|글 구성과 분량)/.test(line))
     .filter((line) => !isImagePlaceholderV2(line));
 }
 
