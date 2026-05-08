@@ -1809,7 +1809,7 @@ function buildRichBody(job, images = []) {
 }
 
 function isImagePlaceholder(line) {
-  return /^\[이미지\s*\d*/.test(line) || /^\[이미지\]/.test(line);
+  return /^\[(?:대표\s*이미지|대표이미지|이미지|보조\s*이미지)[^\]]*\]/.test(String(line || '').trim());
 }
 
 function isImagePlaceholderV2(line = '') {
@@ -1819,6 +1819,8 @@ function isImagePlaceholderV2(line = '') {
 
 function stripInlinePlaceholders(line = '') {
   return String(line || '')
+    .replace(/\[\s*(?:대표\s*이미지|대표이미지|이미지|보조\s*이미지)[^\]]*\]/gi, '')
+    .replace(/\[\s*네이버\s*동영상[^\]]*\]/gi, '')
     .replace(/\[\s*(?:\uC774\uBBF8\uC9C0|image|img)\s*\]\s*(?:\uC774\uBBF8\uC9C0\s*)?\d*/gi, '')
     .replace(/(?:^|\s)\uC774\uBBF8\uC9C0\s*\d+(?=\s|$)/g, ' ')
     .replace(/\[?대?吏\s*\d*/g, '')
@@ -2035,8 +2037,9 @@ async function typeBodySegments(node, job, images = []) {
       const typed = await typeSegmentText(target, segment.text, { chunkSize: 1, minDelay: 9, maxDelay: 23, useCurrentCaret: true, scope: 'body' });
       if (!typed) throw new Error(`본문 인용구 입력 실패: ${segment.text.slice(0, 40)}`);
       quoteCount += 1;
-      await pressEnter(target, 2, { useCurrentCaret: true });
+      await pressEnter(target, 1, { useCurrentCaret: true });
       applyFormatBlock('p');
+      target = sequentialBodyTarget(target);
       typedSegments += 1;
       continue;
     }

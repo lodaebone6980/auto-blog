@@ -1185,7 +1185,7 @@ function countKeywordInText(text = '', keyword = '') {
 
 function articlePlainText(body = '') {
   return String(body || '')
-    .replace(/\[(?:대표이미지|이미지|보조 이미지|네이버 QR|링크 삽입 위치)[^\]]+\]/g, '')
+    .replace(/\[(?:대표이미지|대표 이미지|이미지|보조 이미지|네이버 QR|네이버 동영상|링크 삽입|링크 삽입 위치)[^\]]+\]/g, '')
     .replace(/^>\s*/gm, '')
     .trim();
 }
@@ -2615,6 +2615,324 @@ function safeJsonFromModelText(text = '') {
   }
 }
 
+function cleanGeneratedArticleBody(text = '') {
+  const seenParagraphs = new Set();
+  return String(text || '')
+    .replace(/\[글별 CTA 링크 입력 필요\]/g, '')
+    .replace(/([가-힣A-Za-z0-9][^\n]{7,80})\1+/g, '$1')
+    .split(/\n+/)
+    .map((line) => line.replace(/\s+/g, ' ').trim())
+    .filter(Boolean)
+    .filter((line) => !/^>\s*$/.test(line))
+    .filter((line) => {
+      const key = line.replace(/\s+/g, '');
+      if (key.length < 18) return true;
+      if (seenParagraphs.has(key)) return false;
+      seenParagraphs.add(key);
+      return true;
+    })
+    .join('\n\n')
+    .trim();
+}
+
+function naturalDraftSubject(keyword = '', topic = '') {
+  return normalizeKeywordValue(topic) || normalizeKeywordValue(keyword) || '해당 주제';
+}
+
+function naturalPolicyIntent(keyword = '', topic = '') {
+  return /(민생|지원금|쿠폰|환급|신청|반값|여행|대상|지급|정책|바우처|고유가|보조금|급여|수당|홈페이지|기간|일정)/.test(`${keyword} ${topic}`);
+}
+
+function koreanParticle(value = '', consonantParticle = '은', vowelParticle = '는') {
+  const last = String(value || '').trim().match(/[가-힣]$/)?.[0];
+  if (!last) return vowelParticle;
+  return ((last.charCodeAt(0) - 0xac00) % 28) > 0 ? consonantParticle : vowelParticle;
+}
+
+function naturalDraftTitle(keyword = '', topic = '', platform = 'blog') {
+  const subject = naturalDraftSubject(keyword, topic);
+  if (naturalPolicyIntent(keyword, topic)) {
+    if (/여행|반값/.test(subject)) return `${subject} 신청 방법 및 일정 안내와 공식 홈페이지 정보`;
+    if (/지원금|쿠폰|바우처|급여|수당|보조금/.test(subject)) return `${subject} 신청 방법 대상 기준 지급일 정리`;
+    return `${subject} 신청 방법과 기준 일정 확인`;
+  }
+  if (/테스트|검사|유형|결과|링크/.test(subject)) return `${subject} 링크 결과 유형 확인 방법 정리`;
+  if (platform === 'cafe') return `${subject} 방법 기준 확인 정리`;
+  return `${subject} 핵심 정보와 확인 방법 정리`;
+}
+
+function naturalSectionTitles(keyword = '', topic = '', count = 6, variantIndex = 0) {
+  const subject = naturalDraftSubject(keyword, topic);
+  const policy = naturalPolicyIntent(keyword, topic);
+  const policySets = [
+    [
+      `${subject} 먼저 확인할 기준`,
+      `${subject} 신청 대상과 조건`,
+      `${subject} 공식 홈페이지 신청 방법`,
+      `${subject} 일정과 기간 확인`,
+      `${subject} 환급 방식과 서류 준비`,
+      `${subject} 신청 전 주의사항`,
+      `${subject} 핵심 요약`,
+      `${subject} 자주 묻는 질문`,
+    ],
+    [
+      `${subject} 전체 흐름 정리`,
+      `${subject} 대상자 확인 방법`,
+      `${subject} 온라인 신청 순서`,
+      `${subject} 결과 확인과 지급 절차`,
+      `${subject} 준비 서류 체크`,
+      `${subject} 놓치기 쉬운 부분`,
+      `${subject} 마무리 정리`,
+      `${subject} 확인 포인트`,
+    ],
+  ];
+  const generalSets = [
+    [
+      `${subject} 먼저 알아둘 점`,
+      `${subject} 핵심 기준`,
+      `${subject} 확인 방법`,
+      `${subject} 주의사항`,
+      `${subject} 활용 팁`,
+      `${subject} 자주 묻는 질문`,
+      `${subject} 최종 정리`,
+    ],
+    [
+      `${subject} 기본 개념`,
+      `${subject} 진행 순서`,
+      `${subject} 결과 확인`,
+      `${subject} 비교 포인트`,
+      `${subject} 체크리스트`,
+      `${subject} 마무리`,
+    ],
+  ];
+  const sets = policy ? policySets : generalSets;
+  return sets[Math.abs(variantIndex) % sets.length].slice(0, Math.max(1, count));
+}
+
+function naturalIntroParagraphsV2({ keyword = '', topic = '', subject = '', isPolicy = false } = {}) {
+  if (isPolicy) {
+    return [
+      `${subject} 정보를 찾다 보면 신청 기간, 대상 기준, 공식 홈페이지 안내가 서로 섞여 있어 정작 내가 무엇부터 확인해야 하는지 헷갈릴 때가 많습니다.`,
+      `특히 지원이나 환급이 걸린 내용은 지역 공고와 접수처 안내가 조금만 달라도 실제 신청 가능 여부가 달라질 수 있어 처음부터 기준을 나눠 보는 편이 안전합니다.`,
+      `이번 글에서는 ${keyword} 관련해서 먼저 봐야 할 조건, 신청 순서, 일정 확인 방법, 준비 서류와 주의사항을 실제로 확인하기 쉬운 흐름으로 정리해 보겠습니다.`,
+    ];
+  }
+  return [
+    `${subject}를 검색하면 설명은 많지만 처음 보는 사람 입장에서는 어떤 정보가 핵심인지 바로 구분하기 어렵습니다.`,
+    `그래서 이번 글은 단순 소개보다 실제로 확인해야 할 기준과 진행 순서를 앞쪽에 두고, 뒤로 갈수록 주의할 부분을 정리하는 방식으로 구성했습니다.`,
+    `${keyword}를 빠르게 이해하고 싶은 분이라면 아래 흐름대로 읽어보시면 필요한 부분만 골라 확인하기가 훨씬 수월합니다.`,
+  ];
+}
+
+function sectionIntent(section = '') {
+  if (/대상|조건|기준/.test(section)) return 'eligibility';
+  if (/주의|놓치기|체크/.test(section)) return 'caution';
+  if (/홈페이지|신청|온라인|방법|순서/.test(section)) return 'apply';
+  if (/일정|기간|지급|결과/.test(section)) return 'schedule';
+  if (/환급|서류|준비|영수증/.test(section)) return 'documents';
+  if (/요약|정리|마무리|질문/.test(section)) return 'summary';
+  return 'overview';
+}
+
+function naturalSectionExtraParagraphV2({ keyword = '', section = '', intent = 'overview', isPolicy = false } = {}) {
+  if (isPolicy) {
+    const policyExtra = {
+      overview: `이 단계에서 ${keyword}의 운영 주체와 공고 기준일을 잡아두면 뒤에서 대상이나 일정이 달라 보일 때도 어느 안내를 우선으로 봐야 하는지 판단하기 쉽습니다.`,
+      eligibility: `대상 여부가 애매하다면 단순히 키워드만 검색하기보다 공고문 안의 제외 조건까지 같이 보는 것이 좋습니다. 작은 조건 하나 때문에 신청 후 반려되는 경우도 있기 때문입니다.`,
+      apply: `모바일과 PC 화면의 메뉴명이 다를 수 있으니 신청 전에는 접수 화면에서 저장이나 제출 버튼이 어디에 있는지도 확인해 두면 진행 중 실수를 줄일 수 있습니다.`,
+      schedule: `달력에 신청 마감일과 결과 확인일을 따로 표시해 두면 좋습니다. 접수 기간 안에는 여유가 있어 보여도 서류 보완 요청이 들어오면 시간이 빠르게 지나갈 수 있습니다.`,
+      documents: `증빙 자료는 사진으로 남겨두더라도 글자가 흐리면 다시 제출해야 할 수 있습니다. 파일명도 날짜와 사용처가 보이게 정리해 두면 나중에 확인하기 편합니다.`,
+      caution: `마지막으로 안내 문구가 조금이라도 달라 보이면 이전 캡처가 아니라 현재 열려 있는 공식 페이지 기준으로 다시 확인해야 합니다. 정책성 글은 최신성이 특히 중요합니다.`,
+      summary: `결국 ${keyword}는 혜택 자체보다 내 조건이 맞는지, 기간 안에 신청할 수 있는지, 제출 자료가 인정되는지를 차례대로 확인하는 것이 핵심입니다.`,
+    };
+    return policyExtra[intent] || policyExtra.overview;
+  }
+  const generalExtra = {
+    overview: `${keyword}처럼 검색량이 몰리는 주제는 비슷한 설명이 반복되기 쉬워서, 처음부터 기준과 확인 순서를 분리해 두는 편이 읽는 사람에게 더 도움이 됩니다.`,
+    apply: `진행 과정에서는 화면 안내를 그대로 따라가되, 중간에 저장이 되는지와 결과 확인이 가능한지를 함께 봐야 나중에 다시 찾을 때 불편함이 줄어듭니다.`,
+    caution: `특히 오래된 글과 최신 글이 함께 노출되는 주제라면 날짜와 기준이 맞는지를 확인하는 것만으로도 잘못된 정보를 피할 수 있습니다.`,
+    summary: `마무리에서는 처음 봤던 핵심 기준을 다시 떠올리며 내가 바로 확인해야 할 항목만 남기는 방식이 가장 깔끔합니다.`,
+  };
+  return generalExtra[intent] || generalExtra.overview;
+}
+
+function naturalSectionFollowupParagraphV2({ keyword = '', intent = 'overview', isPolicy = false } = {}) {
+  if (isPolicy) {
+    const followup = {
+      overview: `그래서 ${keyword}를 볼 때는 혜택 설명보다 먼저 공고의 적용 범위와 신청 가능 시점을 확인하는 편이 좋습니다. 이 순서만 잡아도 불필요한 검색을 꽤 줄일 수 있습니다.`,
+      eligibility: `가족 단위나 동행 신청처럼 함께 움직이는 경우에는 대표 신청자 기준만 보는 것으로 부족할 수 있습니다. 각 참여자의 조건이 어떻게 적용되는지도 같이 확인해야 합니다.`,
+      apply: `접수 완료 후에는 접수번호나 신청 내역 화면을 캡처해 두는 것도 도움이 됩니다. 나중에 결과를 조회하거나 서류를 보완할 때 기준 자료로 쓰기 쉽습니다.`,
+      schedule: `여행이나 사용 기간이 정해진 사업이라면 실제 이용일과 신청 가능 기간이 서로 맞는지도 따로 봐야 합니다. 날짜가 어긋나면 혜택 대상에서 벗어날 수 있습니다.`,
+      documents: `가능하다면 영수증은 원본과 사진 파일을 함께 보관해 두는 편이 안전합니다. 제출 방식이 바뀌거나 보완 요청이 생겨도 바로 대응할 수 있기 때문입니다.`,
+      caution: `또한 누군가 정리해 둔 글이 편하더라도 마지막 클릭은 공식 페이지에서 하는 것이 좋습니다. 링크가 바뀌거나 접수 메뉴가 이동하는 경우가 있기 때문입니다.`,
+      summary: `마지막으로 ${keyword}는 한 번 확인하고 끝내기보다 신청 전, 접수 후, 결과 확인 전으로 나눠 다시 보는 흐름이 가장 안정적입니다.`,
+    };
+    return followup[intent] || followup.overview;
+  }
+  const followup = {
+    overview: `${keyword}를 처음 보는 독자는 용어보다 실제로 무엇을 해야 하는지에 더 관심이 많습니다. 그래서 설명은 짧게, 확인 순서는 분명하게 잡는 편이 좋습니다.`,
+    apply: `중간 단계에서 막힌다면 처음부터 다시 시작하기보다 현재 화면에서 어떤 값이 비어 있는지 확인하는 것이 먼저입니다. 작은 입력 누락이 원인인 경우가 많습니다.`,
+    caution: `검색 결과가 비슷해 보여도 작성일과 기준일이 다르면 내용이 달라질 수 있습니다. 최신 기준을 확인하는 습관이 가장 확실한 안전장치입니다.`,
+    summary: `${keyword} 관련 글은 마지막에 핵심만 다시 묶어주면 독자가 저장하거나 공유하기 좋습니다. 이 부분이 AEO형 답변에도 잘 맞습니다.`,
+  };
+  return followup[intent] || followup.overview;
+}
+
+function naturalSectionParagraphsV2({ keyword = '', subject = '', section = '', index = 0, isPolicy = false } = {}) {
+  const intent = sectionIntent(section);
+  if (isPolicy) {
+    const policyMap = {
+      overview: [
+        `${section}에서는 먼저 이 제도가 어떤 목적의 안내인지부터 보는 것이 좋습니다. ${keyword}처럼 지원 성격이 있는 정보는 이름은 비슷해도 운영 주체가 다르면 접수처와 기준이 달라질 수 있습니다.`,
+        `따라서 글을 읽을 때는 금액이나 혜택만 보지 말고, 신청 가능한 지역인지, 대상 조건이 맞는지, 실제 접수 페이지가 열려 있는지를 함께 확인해야 합니다.`,
+      ],
+      eligibility: [
+        `${section}을 볼 때는 거주지, 연령, 기존 지원 여부처럼 기본 조건부터 확인하는 편이 안전합니다. 같은 ${keyword} 안내라도 주민등록 주소지나 여행 가능 기간에 따라 대상에서 제외될 수 있습니다.`,
+        `대상 기준은 공고문에서 가장 자주 바뀌는 부분이기 때문에, 블로그 글만 보고 판단하기보다 공식 안내의 세부 조건까지 한 번 더 대조해 보는 과정이 필요합니다.`,
+      ],
+      apply: [
+        `${section}은 실제 행동으로 이어지는 부분이라 접속 경로를 정확히 잡는 것이 중요합니다. 검색 결과에 비슷한 안내 페이지가 많다면 공식 홈페이지 안의 신청 메뉴인지 먼저 확인해야 합니다.`,
+        `신청 화면에서는 기본 정보 입력, 일정 선택, 증빙 자료 제출처럼 단계가 나뉘는 경우가 많습니다. 중간에 창을 닫으면 다시 입력해야 할 수 있으니 필요한 정보는 미리 준비해 두는 편이 좋습니다.`,
+      ],
+      schedule: [
+        `${section}은 시작일보다 마감일을 더 신경 써야 합니다. 예산이 정해진 사업은 접수 상황에 따라 조기 종료되거나 회차별로 일정이 나뉘는 경우가 있습니다.`,
+        `결과 확인일이나 지급 예정일도 한 번에 고정되지 않을 수 있습니다. 접수 후 안내 문자가 오는지, 홈페이지에서 상태 조회가 가능한지까지 확인해 두면 불필요한 재문의가 줄어듭니다.`,
+      ],
+      documents: [
+        `${section}에서는 제출 가능한 자료의 형식을 확인해야 합니다. 영수증, 예약 내역, 본인 확인 자료처럼 필요한 항목이 빠지면 심사가 늦어질 수 있습니다.`,
+        `특히 환급형 사업은 사용처와 결제 내역이 기준에 맞아야 합니다. 숙박, 식사, 체험 비용이 모두 인정되는지 또는 일부 항목만 가능한지 공고문 기준으로 나눠 보는 것이 좋습니다.`,
+      ],
+      caution: [
+        `${section}에서 가장 중요한 것은 중복 신청과 허위 자료 제출을 피하는 것입니다. 혜택을 빨리 받으려다 잘못된 자료를 넣으면 지급이 지연되거나 제외될 수 있습니다.`,
+        `또한 비공식 링크나 캡처된 안내만 믿고 들어가는 것도 조심해야 합니다. 최종 접수는 반드시 공식 페이지에서 진행하고, 변경 공지가 있는지 마지막에 다시 확인하는 흐름이 안전합니다.`,
+      ],
+      summary: [
+        `${section}만 다시 보면 ${keyword}는 대상 확인, 신청 기간 확인, 공식 홈페이지 접수, 증빙 제출 순서로 정리할 수 있습니다.`,
+        `처음에는 복잡해 보여도 필요한 자료를 미리 챙기고 일정만 놓치지 않으면 확인 과정은 크게 어렵지 않습니다. 다만 지역별 세부 기준은 다를 수 있으니 최종 기준은 공식 공고를 우선으로 두는 것이 좋습니다.`,
+      ],
+    };
+    return [
+      ...(policyMap[intent] || policyMap.overview),
+      naturalSectionExtraParagraphV2({ keyword, section, intent, isPolicy }),
+      naturalSectionFollowupParagraphV2({ keyword, intent, isPolicy }),
+    ];
+  }
+  const generalMap = {
+    overview: [
+      `${section}에서는 ${keyword}를 처음 접하는 분들이 가장 먼저 확인해야 할 배경을 정리했습니다. 용어만 보면 어렵게 느껴질 수 있지만 핵심은 기준과 순서를 나눠 보는 것입니다.`,
+      `${subject} 관련 정보는 한 번에 결론을 내리기보다 필요한 항목을 차례대로 확인할 때 훨씬 이해가 쉽습니다.`,
+    ],
+    apply: [
+      `${section}은 실제로 따라 하는 과정에 가깝습니다. 링크나 메뉴 이름만 보고 넘어가기보다 접속 경로와 화면에서 확인해야 할 항목을 같이 봐야 합니다.`,
+      `처음 진행한다면 한 번에 끝내려고 하기보다 필요한 정보가 무엇인지 먼저 체크하고 시작하는 편이 오류를 줄이는 데 도움이 됩니다.`,
+    ],
+    caution: [
+      `${section}에서는 흔히 헷갈리는 부분을 따로 짚어보겠습니다. 비슷한 이름의 페이지나 안내가 있을 때는 주소와 기준일을 반드시 확인해야 합니다.`,
+      `또한 캡처 화면만 보고 판단하면 최신 기준을 놓칠 수 있으니, 마지막 단계에서는 공식 안내나 원문 기준을 함께 보는 것이 좋습니다.`,
+    ],
+    summary: [
+      `${section}에서는 앞에서 본 내용을 간단히 다시 묶었습니다. ${keyword}는 핵심 기준, 진행 순서, 주의사항만 분리해도 훨씬 읽기 쉬워집니다.`,
+      `필요한 부분만 빠르게 확인하고 싶다면 대상이나 조건을 먼저 보고, 그다음 방법과 주의사항으로 넘어가는 순서를 추천합니다.`,
+    ],
+  };
+  return [
+    ...(generalMap[intent] || generalMap.overview),
+    naturalSectionExtraParagraphV2({ keyword, section, intent, isPolicy }),
+    naturalSectionFollowupParagraphV2({ keyword, intent, isPolicy }),
+  ];
+}
+
+function buildRewriteDraftV2({ keyword, topic, platform, ctaUrl, useNaverQr, useAiImages = true, pattern, customTitle = '', variantIndex = 0 }) {
+  const subject = naturalDraftSubject(keyword, topic);
+  const title = normalizeTitleValue(customTitle) || naturalDraftTitle(keyword, topic, platform);
+  const sectionCount = Math.max(1, (pattern.sectionCount || DEFAULT_REWRITE_SETTINGS.sectionCount) - 1);
+  const sectionTitles = naturalSectionTitles(keyword, topic, sectionCount, variantIndex);
+  const isPolicy = naturalPolicyIntent(keyword, topic);
+  const publishSpec = buildPublishSpec(platform, pattern.settings || pattern, { hasCtaUrl: Boolean(ctaUrl), useNaverQr });
+  const requiredImageCount = Math.max(
+    pattern.imageCount || 0,
+    (publishSpec.thumbnailCount || 1) + Math.max(sectionTitles.length, publishSpec.sectionImageCount || 0)
+  );
+  const bodyParts = [title, ''];
+  if (useAiImages) {
+    bodyParts.push(`[대표이미지 500x500 중앙정렬: ${title}]`, '');
+  }
+  bodyParts.push(...naturalIntroParagraphsV2({ keyword, topic, subject, isPolicy }), '');
+  if (ctaUrl) {
+    bodyParts.push(`지금 바로 아래에서 ${keyword} 관련 정보를 확인하세요.`, ctaUrl);
+    bodyParts.push(useNaverQr ? `[네이버 QR 삽입: ${ctaUrl}]` : `[링크 삽입: ${ctaUrl}]`, '');
+  }
+  if (platform === 'blog') {
+    bodyParts.push(`[네이버 동영상 업로드 위치: ${keyword} 핵심 요약 15초 영상]`, '');
+  }
+  sectionTitles.forEach((section, index) => {
+    bodyParts.push(`> ${section}`, '');
+    if (useAiImages) bodyParts.push(`[이미지 ${index + 1} 500x500 중앙정렬: ${section}]`, '');
+    bodyParts.push(...naturalSectionParagraphsV2({ keyword, subject, section, index, isPolicy }), '');
+  });
+  bodyParts.push('> 마무리', '');
+  bodyParts.push(
+    isPolicy
+      ? `${keyword}${koreanParticle(keyword, '은', '는')} 대상 기준과 신청 기간을 함께 봐야 정확하게 판단할 수 있습니다. 특히 공식 홈페이지의 접수 상태와 변경 공지를 마지막에 확인하는 과정이 가장 중요합니다.`
+      : `${keyword}${koreanParticle(keyword, '은', '는')} 핵심 기준과 확인 순서를 분리해 읽으면 훨씬 이해하기 쉽습니다. 필요한 부분만 빠르게 보고 싶다면 방법, 주의사항, 최종 정리 순서로 확인해 보시면 됩니다.`,
+    isPolicy
+      ? `신청 전에 대상 여부를 먼저 확인하고, 접수 후에는 결과 확인이나 환급 절차까지 이어서 챙겨두면 놓치는 부분을 줄일 수 있습니다.`
+      : `비슷한 정보가 많을수록 제목이나 첫 문단만 보고 판단하기보다 실제 기준과 확인 경로를 같이 보는 습관이 도움이 됩니다.`
+  );
+
+  let body = cleanGeneratedArticleBody(bodyParts.join('\n'));
+  let metrics = articleMetrics(body, keyword);
+  const range = metricTargetRange(pattern);
+  const extraNotes = [
+    `공고명, 기준일, 접수처가 서로 맞는지 함께 보는 것이 좋습니다.`,
+    `관련 안내가 여러 곳에 올라와도 최종 기준은 공식 페이지의 최신 공지에 두는 편이 안전합니다.`,
+    `신청이나 확인을 진행하기 전에는 필요한 자료를 미리 챙겨두면 중간에 다시 돌아가는 일을 줄일 수 있습니다.`,
+    `특히 접수 화면에서 요구하는 항목이 글마다 다르게 보인다면 최신 공고문 기준으로 다시 정리하는 것이 좋습니다.`,
+    `신청 후에는 완료 화면이나 접수 번호를 따로 저장해 두면 결과 조회나 문의가 필요할 때 훨씬 수월합니다.`,
+    `마지막으로 일정이 변경될 수 있는 주제는 글을 읽은 날짜와 실제 공고 기준일을 함께 보는 습관이 필요합니다.`,
+    `여기에 문의처나 담당 부서가 따로 안내되어 있다면 접수 전 한 번 확인해 두는 것이 좋습니다. 작은 기준 차이도 실제 처리 결과에는 영향을 줄 수 있습니다.`,
+  ];
+  let noteIndex = 0;
+  while ((metrics.charCount < range.minCharCount || metrics.kwCount < range.minKwCount) && noteIndex < extraNotes.length) {
+    body = cleanGeneratedArticleBody(`${body}\n\n${extraNotes[noteIndex]}`);
+    metrics = articleMetrics(body, keyword);
+    noteIndex += 1;
+  }
+  const images = useAiImages
+    ? Array.from({ length: Math.max(0, requiredImageCount) }, (_, index) => {
+        const section = index === 0 ? title : sectionTitles[(index - 1) % Math.max(sectionTitles.length, 1)] || title;
+        return {
+          index,
+          role: index === 0 ? 'cover' : 'section',
+          label: index === 0 ? '대표 이미지' : `이미지 ${index}`,
+          title: section,
+          section,
+          prompt: `${keyword} ${section} 정보형 카드 이미지`,
+          url: makeTemplateImage({
+            keyword,
+            section,
+            subtitle: index === 0 ? '핵심 정보 정리' : '확인 포인트',
+            index,
+            platform,
+          }),
+          width: 500,
+          height: 500,
+        };
+      })
+    : [];
+  return {
+    title,
+    body,
+    plainText: metrics.plainText,
+    charCount: metrics.charCount,
+    kwCount: metrics.kwCount,
+    imageCount: images.length,
+    quoteCount: (body.match(/^>\s*/gm) || []).length,
+    images,
+    publishSpec,
+  };
+}
+
 function buildOpenAiRewritePrompt({ job, analyses = [], pattern = {}, settings = {}, variantIndex = 0 }) {
   const keyword = job.target_keyword;
   const topic = job.target_topic || keyword;
@@ -2697,13 +3015,88 @@ function buildOpenAiRewritePrompt({ job, analyses = [], pattern = {}, settings =
   };
 }
 
+function buildOpenAiRewritePromptV2({ job, analyses = [], pattern = {}, settings = {}, variantIndex = 0 }) {
+  const keyword = job.target_keyword;
+  const topic = job.target_topic || keyword;
+  const imageCount = pattern.imageCount || settings.imageCount || DEFAULT_REWRITE_SETTINGS.imageCount;
+  const sectionCount = pattern.sectionCount || settings.sectionCount || DEFAULT_REWRITE_SETTINGS.sectionCount;
+  const targetCharCount = pattern.targetCharCount || settings.targetCharCount || DEFAULT_REWRITE_SETTINGS.targetCharCount;
+  const targetKwCount = pattern.targetKwCount || settings.targetKwCount || DEFAULT_REWRITE_SETTINGS.targetKwCount;
+  const range = metricTargetRange({ ...settings, targetCharCount, targetKwCount, sectionCount });
+  const cta = job.cta_url || '';
+  const sourceSummaries = analyses.slice(0, 4).map((row, index) => ({
+    index: index + 1,
+    title: row.title || '',
+    mainKeyword: row.corrected_main_keyword || row.main_keyword || row.keyword || '',
+    category: row.category_guess || row.category || '',
+    charCount: row.char_count || row.charCount || 0,
+    kwCount: row.kw_count || row.kwCount || 0,
+    imageCount: row.image_count || row.imageCount || 0,
+    quoteBlocks: parseJsonArray(row.quote_blocks).slice(0, 8),
+    repeatedTerms: parseJsonArray(row.repeated_terms).slice(0, 10),
+    textSample: String(row.plain_text || row.source_text_preview || '').slice(0, 1200),
+  }));
+  return {
+    system: [
+      '너는 한국어 네이버 블로그/카페용 글을 쓰는 전문 에디터다.',
+      '벤치마킹 글의 주제와 검색 의도만 참고하고 문장, 문단 순서, 소제목 표현은 새로 만든다.',
+      '글자수나 키워드 반복수를 맞추기 위해 같은 문장이나 같은 의미를 반복하지 않는다.',
+      '응답은 반드시 JSON object 하나로만 작성한다.',
+    ].join('\n'),
+    user: JSON.stringify({
+      task: 'NaviWrite publish draft',
+      platform: job.platform || 'blog',
+      category: job.category || 'general',
+      keyword,
+      topic,
+      customTitle: job.custom_title || '',
+      variantIndex,
+      target: {
+        charCount: targetCharCount,
+        charCountMin: range.minCharCount,
+        charCountMax: range.maxCharCount,
+        sectionCount,
+        sectionCharCount: settings.sectionCharCount || DEFAULT_REWRITE_SETTINGS.sectionCharCount,
+        keywordRepeatCount: targetKwCount,
+        keywordRepeatMin: range.minKwCount,
+        keywordRepeatMax: range.maxKwCount,
+        imageCount,
+      },
+      rules: [
+        '제목은 메인키워드를 앞쪽에 두고, 검색자가 같이 찾는 보조어 2~3개를 자연스럽게 조합한다.',
+        '제목에 "홈페이지에서 쉽게 시작하세요", "클릭하세요", "지금 바로" 같은 과한 CTA 문구를 넣지 않는다.',
+        '본문 첫 줄에는 제목을 한 번만 넣는다.',
+        '도입부는 3문단으로 작성하고 독자가 왜 이 정보를 확인해야 하는지 자연스럽게 설명한다.',
+        '네이버 블로그는 각 섹션 제목을 반드시 "> 소제목" 형태로 작성한다.',
+        '빈 인용구를 만들지 않는다. ">" 뒤에는 반드시 실제 소제목 문장이 있어야 한다.',
+        '각 소제목 바로 다음 줄에 "[이미지 n 500x500 중앙정렬: 소제목]" 형식의 이미지 자리 표시자를 넣는다.',
+        '대표 이미지는 본문 초반에 "[대표이미지 500x500 중앙정렬: 제목]" 형식으로 넣는다.',
+        cta
+          ? `도입 CTA 이후 또는 2번째 섹션 뒤에 CTA 링크 "${cta}"를 넣고, QR 사용 시 "[네이버 QR 삽입: ${cta}]"를 함께 넣는다.`
+          : 'CTA 링크가 비어 있으면 CTA 자리 표시자나 "[글별 CTA 링크 입력 필요]" 문장을 절대 쓰지 않는다.',
+        '각 섹션은 역할이 달라야 한다. 대상/조건, 신청 방법, 일정/기간, 서류/환급, 주의사항, 요약처럼 겹치지 않게 나눈다.',
+        '같은 문장, 같은 첫 문장, 같은 결론 문장을 반복하지 않는다.',
+        '벤치마킹 글의 문장 12어절 이상을 그대로 가져오지 않는다.',
+        '말투는 광고 문구보다 정보형 블로그에 가깝게 쓴다. 너무 딱딱한 공문체나 과한 감탄문은 피한다.',
+      ],
+      sourceBenchmarks: sourceSummaries,
+      requiredJsonShape: {
+        title: 'string',
+        body: 'string',
+        sectionTitles: ['string'],
+        imageCards: [{ label: 'string', title: 'string', subtitle: 'string' }],
+      },
+    }, null, 2),
+  };
+}
+
 async function buildOpenAiRewriteDraft({ tenantId, job, analyses, pattern, settings, variantIndex }) {
   const openAi = await getOpenAiSettings(tenantId);
   if (!openAi.hasApiKey) {
     throw new Error('OPENAI_API_KEY가 설정되어 있지 않습니다. 운영 설정에서 OpenAI API 키를 저장하거나 Railway 환경변수에 추가해 주세요.');
   }
   const model = normalizeOpenAiModel(settings.openaiModel || openAi.model);
-  const prompt = buildOpenAiRewritePrompt({ job, analyses, pattern, settings, variantIndex });
+  const prompt = buildOpenAiRewritePromptV2({ job, analyses, pattern, settings, variantIndex });
   const response = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
     headers: {
@@ -2734,26 +3127,48 @@ async function buildOpenAiRewriteDraft({ tenantId, job, analyses, pattern, setti
   });
   let body = String(parsed.body || '').trim();
   body = replaceGeneratedTitleLine(body, parsed.title || fallbackTitle, title);
+  if (job.use_ai_images && !/\[(?:대표\s*이미지|대표이미지)/.test(body)) {
+    body = `${title}\n\n[대표이미지 500x500 중앙정렬: ${title}]\n\n${body.replace(new RegExp(`^${escapeRegExp(title)}\\s*`, 'i'), '')}`.trim();
+  }
   const sectionTitles = Array.isArray(parsed.sectionTitles) && parsed.sectionTitles.length
     ? parsed.sectionTitles.map((item) => String(item || '').replace(/^>\s*/, '').trim()).filter(Boolean)
     : makeSectionTitles(job.target_keyword, job.target_topic, Math.max(1, (pattern.sectionCount || settings.sectionCount || 7) - 1), variantIndex);
   sectionTitles.forEach((section, index) => {
-    if (!body.includes(`[이미지 ${index + 1}`)) {
+    const markerPattern = new RegExp(`\\[(?:이미지|image|img)\\s*${index + 1}\\b`, 'i');
+    if (!markerPattern.test(body)) {
       body += `\n\n[이미지 ${index + 1} 500x500 중앙정렬: ${section}]`;
     }
   });
-  const enforced = enforceArticleMetricTargets({
-    body,
-    title,
-    keyword: job.target_keyword,
-    topic: job.target_topic,
-    category: job.category,
-    settings: { ...settings, targetCharCount: pattern.targetCharCount || settings.targetCharCount, targetKwCount: pattern.targetKwCount || settings.targetKwCount },
+  const targetRange = metricTargetRange({
+    ...settings,
+    targetCharCount: pattern.targetCharCount || settings.targetCharCount,
+    targetKwCount: pattern.targetKwCount || settings.targetKwCount,
   });
-  body = enforced.body;
-  const plainText = enforced.plainText;
-  const charCount = enforced.charCount;
-  const kwCount = enforced.kwCount;
+  body = cleanGeneratedArticleBody(body);
+  let cleanedMetrics = articleMetrics(body, job.target_keyword);
+  const supplementNotes = [
+    `공고명과 접수처가 실제로 같은지 먼저 보는 것이 좋습니다.`,
+    `관련 안내가 여러 곳에 올라와도 최종 판단은 공식 페이지의 최신 기준을 우선으로 두는 편이 안전합니다.`,
+    `신청이나 확인을 진행하기 전에는 필요한 자료와 일정 기준을 미리 적어두면 중간에 놓치는 부분을 줄일 수 있습니다.`,
+    `접수 화면에서 요구하는 항목이 글마다 다르게 보이면 최신 공고문 기준으로 다시 확인해야 합니다.`,
+    `신청 후에는 완료 화면이나 접수 번호를 따로 저장해 두면 결과 조회나 문의가 필요할 때 더 수월합니다.`,
+    `일정이 변경될 수 있는 주제는 글을 읽은 날짜와 실제 공고 기준일을 함께 보는 습관이 필요합니다.`,
+    `문의처나 담당 부서가 따로 안내되어 있다면 접수 전 한 번 확인해 두는 것이 좋습니다. 작은 기준 차이도 실제 처리 결과에는 영향을 줄 수 있습니다.`,
+  ];
+  let metricSupplementCount = 0;
+  while ((cleanedMetrics.charCount < targetRange.minCharCount || cleanedMetrics.kwCount < targetRange.minKwCount) && metricSupplementCount < supplementNotes.length) {
+    body = cleanGeneratedArticleBody(`${body}\n\n${supplementNotes[metricSupplementCount]}`);
+    cleanedMetrics = articleMetrics(body, job.target_keyword);
+    metricSupplementCount += 1;
+  }
+  const enforced = {
+    targetRange,
+    metricAdjusted: metricSupplementCount > 0,
+    metricSupplementCount,
+  };
+  const plainText = cleanedMetrics.plainText;
+  const charCount = cleanedMetrics.charCount;
+  const kwCount = cleanedMetrics.kwCount;
   const requiredImageCount = Math.max(
     pattern.imageCount || settings.imageCount || 0,
     1 + sectionTitles.length
@@ -2919,7 +3334,7 @@ async function processRewriteJob(jobId, options = {}) {
       variantIndex,
     });
   } else {
-    output = buildRewriteDraft({
+    output = buildRewriteDraftV2({
       keyword: job.target_keyword,
       topic: job.target_topic,
       platform: job.platform,
