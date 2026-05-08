@@ -537,6 +537,32 @@ function looseTextIncluded(haystack, needle) {
   return head.length >= 12 && tail.length >= 12 && hay.includes(head) && hay.includes(tail);
 }
 
+function editorScopeRoot(scope = 'body') {
+  if (scope === 'title') {
+    return findTitleArea() || closestTitleContainer(document.activeElement) || document.body;
+  }
+  return document.querySelector('.se-container, .se-main-container, .se-content, .se-section-text, article')
+    || document.body;
+}
+
+function normalizedOccurrenceCount(haystack = '', needle = '') {
+  const hay = normalizeEditorText(haystack);
+  const expected = normalizeEditorText(needle);
+  if (!expected) return 0;
+  let count = 0;
+  let index = 0;
+  while ((index = hay.indexOf(expected, index)) !== -1) {
+    count += 1;
+    index += Math.max(1, expected.length);
+  }
+  return count;
+}
+
+function editorTextOccurrenceCount(text, scope = 'body') {
+  const root = editorScopeRoot(scope);
+  return normalizedOccurrenceCount(currentTextValue(root), text);
+}
+
 function textPresentAroundTarget(target, text, scope = 'body') {
   if (!normalizeEditorText(text)) return true;
   const base = editableRoot(target) || target;
@@ -1006,6 +1032,7 @@ async function typeTextLikeHuman(node, text, options = {}) {
   const value = String(text || '');
   const scope = options.scope || (isTitleEditable(target) ? 'title' : 'body');
   if (!value) return true;
+  const beforeOccurrenceCount = editorTextOccurrenceCount(value, scope);
   if (!options.useCurrentCaret) placeCaretAtEnd(target);
   else {
     target.focus?.();
@@ -1016,17 +1043,18 @@ async function typeTextLikeHuman(node, text, options = {}) {
   const nativeTyped = await requestNativeTextInput(value, { ...options, chunkSize, minDelay, maxDelay });
   await sleep(nativeTyped ? 80 : 0);
   target = resolveTypingTarget(target, options);
-  if (nativeTyped && textPresentAroundTarget(target, value, scope)) {
+  if (nativeTyped && (textPresentAroundTarget(target, value, scope) || editorTextOccurrenceCount(value, scope) > beforeOccurrenceCount)) {
     emitInput(target);
     return true;
   }
+  if (nativeTyped && options.noDuplicateRetry) return true;
 
   const nativeInserted = nativeTyped
     ? await requestNativeTextInput(value, { ...options, mode: 'insertText', chunkSize, minDelay, maxDelay })
     : false;
   await sleep(nativeInserted ? 80 : 0);
   target = resolveTypingTarget(target, options);
-  if (nativeInserted && textPresentAroundTarget(target, value, scope)) {
+  if (nativeInserted && (textPresentAroundTarget(target, value, scope) || editorTextOccurrenceCount(value, scope) > beforeOccurrenceCount)) {
     emitInput(target);
     return true;
   }
@@ -1076,7 +1104,7 @@ async function typeTextLikeHuman(node, text, options = {}) {
     await sleep(randomDelay(minDelay, maxDelay));
   }
   target = resolveTypingTarget(target, options);
-  return textPresentAroundTarget(target, value, scope);
+  return textPresentAroundTarget(target, value, scope) || editorTextOccurrenceCount(value, scope) > beforeOccurrenceCount;
 }
 
 async function typeSegmentText(node, text, options = {}) {
@@ -1085,6 +1113,7 @@ async function typeSegmentText(node, text, options = {}) {
   const typed = await typeTextLikeHuman(target, text, { ...options, scope });
   target = resolveTypingTarget(target, options);
   if (typed || textPresentAroundTarget(target, text, scope)) return true;
+  if (options.noDuplicateRetry && editorTextOccurrenceCount(text, scope) > 0) return true;
   const pasted = await pastePlainTextAtCaret(target, text, options);
   target = resolveTypingTarget(target, options);
   return Boolean(pasted || textPresentAroundTarget(target, text, scope));
@@ -1884,12 +1913,38 @@ function isEmptyQuoteBlock(node) {
   return text.length === 0;
 }
 
+function isLikelyEmptyQuoteBlock(node) {
+  const text = String(node?.textContent || node?.value || '');
+  const meta = nodeMeta(node);
+  const quoteHint = /quote|quotation|인용|se-quote|se-quotation/i.test(meta)
+    || /[“”]|출처\s*입력/.test(text)
+    || Boolean(node.querySelector?.(QUOTE_CONTAINER_SELECTOR));
+  return quoteHint && isEmptyQuoteBlock(node);
+}
+
+function collapseDuplicateTextInEditable(node, text) {
+  const target = editableRoot(node) || node;
+  if (!target) return false;
+  const expected = normalizeEditorText(text);
+  if (!expected) return false;
+  const current = currentTextValue(target);
+  if (normalizedOccurrenceCount(current, text) < 2) return false;
+  if ('value' in target) {
+    target.value = text;
+  } else {
+    target.textContent = text;
+  }
+  placeCaretAtEnd(target);
+  emitInput(target);
+  return true;
+}
+
 async function cleanupEmptyQuoteBlocks() {
-  const blocks = Array.from(document.querySelectorAll(QUOTE_CONTAINER_SELECTOR))
+  const blocks = Array.from(document.querySelectorAll(`${QUOTE_CONTAINER_SELECTOR}, .se-component`))
     .map((node) => node.closest?.('.se-component') || node)
     .filter((node, index, list) => list.indexOf(node) === index)
     .filter(visible)
-    .filter(isEmptyQuoteBlock);
+    .filter(isLikelyEmptyQuoteBlock);
   if (!blocks.length) return 0;
   blocks.forEach((block) => {
     const parent = block.parentElement;
@@ -2110,8 +2165,9 @@ async function typeBodySegments(node, job, images = []) {
       target = quoteEditableTarget(target) || sequentialBodyTarget(target);
       if (target && isPlaceholderOnly(target)) clearEditable(target);
       placeCaretAtEnd(target);
-      const typed = await typeSegmentText(target, segment.text, { chunkSize: 1, minDelay: 9, maxDelay: 23, useCurrentCaret: true, scope: 'body' });
+      const typed = await typeSegmentText(target, segment.text, { chunkSize: 1, minDelay: 9, maxDelay: 23, useCurrentCaret: true, scope: 'body', noDuplicateRetry: true });
       if (!typed) throw new Error(`본문 인용구 입력 실패: ${segment.text.slice(0, 40)}`);
+      collapseDuplicateTextInEditable(target, segment.text);
       quoteCount += 1;
       target = await exitQuoteBlock(target);
       typedSegments += 1;
