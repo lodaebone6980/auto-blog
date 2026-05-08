@@ -89,9 +89,14 @@ async function nativePressKey(tabId, key = 'Enter', options = {}) {
   try {
     await debuggerAttach(target);
     attached = true;
-    const params = key === 'Enter'
-      ? { key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 }
-      : { key, code: key };
+    const keyMap = {
+      Enter: { key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 },
+      ArrowDown: { key: 'ArrowDown', code: 'ArrowDown', windowsVirtualKeyCode: 40, nativeVirtualKeyCode: 40 },
+      ArrowUp: { key: 'ArrowUp', code: 'ArrowUp', windowsVirtualKeyCode: 38, nativeVirtualKeyCode: 38 },
+      ArrowLeft: { key: 'ArrowLeft', code: 'ArrowLeft', windowsVirtualKeyCode: 37, nativeVirtualKeyCode: 37 },
+      ArrowRight: { key: 'ArrowRight', code: 'ArrowRight', windowsVirtualKeyCode: 39, nativeVirtualKeyCode: 39 },
+    };
+    const params = keyMap[key] || { key, code: key };
     for (let index = 0; index < Math.max(1, Number(options.count || 1)); index += 1) {
       await debuggerCommand(target, 'Input.dispatchKeyEvent', { type: 'rawKeyDown', ...params });
       await debuggerCommand(target, 'Input.dispatchKeyEvent', { type: 'keyUp', ...params });

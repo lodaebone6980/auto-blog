@@ -889,6 +889,11 @@ function activeEditable() {
   return editable && visible(editable) && !isTitleEditable(editable) ? editable : null;
 }
 
+function isQuoteEditable(node) {
+  const editable = editableRoot(node);
+  return Boolean(editable?.closest?.(QUOTE_CONTAINER_SELECTOR));
+}
+
 function isBodyEditable(node) {
   return Boolean(node)
     && editorVisible(node)
@@ -910,6 +915,7 @@ function lastEmptyBodyEditable() {
     .map(editableRoot)
     .filter(Boolean)
     .filter((node, index, list) => list.indexOf(node) === index)
+    .filter((node) => !isQuoteEditable(node))
     .filter((node) => isBodyEditable(node) || (!isTitleEditable(node) && visible(node)))
     .filter((node) => {
       const text = (node.textContent || node.value || '').replace(/\s+/g, '').trim();
@@ -927,25 +933,27 @@ function lastEmptyBodyEditable() {
 
 function bodyTypingTarget(preferred) {
   const selected = selectionEditable();
-  if (selected && isBodyEditable(selected) && !isPlaceholderOnly(selected)) return selected;
+  if (selected && isBodyEditable(selected) && !isQuoteEditable(selected) && !isPlaceholderOnly(selected)) return selected;
   const preferredEditable = editableRoot(preferred);
-  if (preferredEditable && isBodyEditable(preferredEditable)) return preferredEditable;
+  if (preferredEditable && isBodyEditable(preferredEditable) && !isQuoteEditable(preferredEditable)) return preferredEditable;
   const active = activeEditable();
-  if (active && isBodyEditable(active)) return active;
+  if (active && isBodyEditable(active) && !isQuoteEditable(active)) return active;
   const empty = lastEmptyBodyEditable();
   if (empty) return empty;
-  return (selected && isBodyEditable(selected) ? selected : null)
-    || editableRoot(findBodyTarget());
+  const fallback = editableRoot(findBodyTarget());
+  return (selected && isBodyEditable(selected) && !isQuoteEditable(selected) ? selected : null)
+    || (fallback && !isQuoteEditable(fallback) ? fallback : null);
 }
 
 function currentBodyTypingTarget(preferred) {
   const selected = selectionEditable();
-  if (selected && isBodyEditable(selected)) return selected;
+  if (selected && isBodyEditable(selected) && !isQuoteEditable(selected)) return selected;
   const active = activeEditable();
-  if (active && isBodyEditable(active)) return active;
+  if (active && isBodyEditable(active) && !isQuoteEditable(active)) return active;
   const preferredEditable = editableRoot(preferred);
-  if (preferredEditable && isBodyEditable(preferredEditable)) return preferredEditable;
-  return editableRoot(findBodyTarget());
+  if (preferredEditable && isBodyEditable(preferredEditable) && !isQuoteEditable(preferredEditable)) return preferredEditable;
+  const fallback = editableRoot(findBodyTarget());
+  return fallback && !isQuoteEditable(fallback) ? fallback : null;
 }
 
 async function prepareBodyTypingTarget(preferred, { placeAtEnd = true, preserveCaret = false } = {}) {
@@ -968,12 +976,18 @@ function sequentialBodyTarget(preferred) {
   const active = activeEditable();
   const preferredEditable = editableRoot(preferred);
   const empty = lastEmptyBodyEditable();
-  const current = (selected && isBodyEditable(selected) ? selected : null)
-    || (active && isBodyEditable(active) ? active : null)
-    || (preferredEditable && isBodyEditable(preferredEditable) ? preferredEditable : null)
+  const current = (selected && isBodyEditable(selected) && !isQuoteEditable(selected) ? selected : null)
+    || (active && isBodyEditable(active) && !isQuoteEditable(active) ? active : null)
+    || (preferredEditable && isBodyEditable(preferredEditable) && !isQuoteEditable(preferredEditable) ? preferredEditable : null)
     || empty
-    || editableRoot(findBodyTarget());
-  if (!current) return editableRoot(preferred);
+    || (() => {
+      const fallback = editableRoot(findBodyTarget());
+      return fallback && !isQuoteEditable(fallback) ? fallback : null;
+    })();
+  if (!current) {
+    const preferredFallback = editableRoot(preferred);
+    return preferredFallback && !isQuoteEditable(preferredFallback) ? preferredFallback : null;
+  }
   if (isPlaceholderOnly(current)) clearEditable(current);
   if (!selectionEditable()) placeCaretAtEnd(current);
   return current;
@@ -1963,17 +1977,57 @@ async function cleanupEmptyQuoteBlocks() {
   return 0;
 }
 
+async function pressArrowDownFromQuote(node, count = 1) {
+  let target = quoteEditableTarget(node) || editableRoot(node) || selectionEditable();
+  if (!target) return false;
+  target.focus?.();
+  placeCaretAtEnd(target);
+  let moved = false;
+  for (let index = 0; index < Math.max(1, count); index += 1) {
+    ensureTypingNotStopped();
+    const nativePressed = await requestNativeKey('ArrowDown', { count: 1 });
+    if (!nativePressed) {
+      target.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', code: 'ArrowDown', bubbles: true }));
+      target.dispatchEvent(new KeyboardEvent('keyup', { key: 'ArrowDown', code: 'ArrowDown', bubbles: true }));
+    }
+    moved = true;
+    await sleep(130);
+    target = selectionEditable() || target;
+  }
+  return moved;
+}
+
 async function exitQuoteBlock(node) {
-  await pressEnter(node, 2, { useCurrentCaret: true });
-  await sleep(100);
+  await pressArrowDownFromQuote(node, 1);
+  await sleep(140);
+  const current = selectionEditable();
+  if (current && isQuoteEditable(current)) {
+    await pressArrowDownFromQuote(current, 1);
+    await sleep(120);
+  }
   applyFormatBlock('p');
   await cleanupEmptyQuoteBlocks();
-  const next = sequentialBodyTarget(node);
+  const next = sequentialBodyTarget(null) || sequentialBodyTarget(node);
   if (next) {
     next.click?.();
     placeCaretAtEnd(next);
   }
   return next || node;
+}
+
+async function ensureBodyTargetOutsideQuote(preferred) {
+  const current = selectionEditable();
+  if (current && isQuoteEditable(current)) {
+    await pressArrowDownFromQuote(current, 1);
+    await sleep(120);
+  }
+  const target = sequentialBodyTarget(preferred);
+  if (target) {
+    target.click?.();
+    placeCaretAtEnd(target);
+  }
+  const preferredEditable = editableRoot(preferred);
+  return target || (preferredEditable && !isQuoteEditable(preferredEditable) ? preferredEditable : null);
 }
 
 function isHeadingLine(line, index) {
@@ -2162,11 +2216,11 @@ async function typeBodySegments(node, job, images = []) {
       : { ...rawSegment, text: sanitizeEditorLine(rawSegment.text) };
     if (segment.type !== 'image' && (!segment.text || isImagePlaceholderV2(segment.text))) continue;
     if (segment.type === 'image') {
-      target = sequentialBodyTarget(target);
+      target = await ensureBodyTargetOutsideQuote(target);
       const inserted = await insertImageAtCaret(target, segment.image, segment.index);
       if (!inserted) throw new Error(`이미지 ${segment.index + 1} 업로드에 실패했습니다. 사진 버튼 또는 이미지 형식을 확인해 주세요.`);
       imageCount += 1;
-      target = sequentialBodyTarget(target);
+      target = await ensureBodyTargetOutsideQuote(target);
       continue;
     }
     if (segment.type === 'quote') {
@@ -2186,18 +2240,18 @@ async function typeBodySegments(node, job, images = []) {
       continue;
     }
     if (segment.type === 'heading') {
-      target = sequentialBodyTarget(target);
+      target = await ensureBodyTargetOutsideQuote(target);
       applyFormatBlock('h3');
       const typed = await typeSegmentText(target, segment.text, { chunkSize: 1, minDelay: 9, maxDelay: 22, useCurrentCaret: true, scope: 'body' });
       if (!typed) throw new Error(`본문 소제목 입력 실패: ${segment.text.slice(0, 40)}`);
       await pressEnter(target, 1, { useCurrentCaret: true });
-      target = sequentialBodyTarget(target);
+      target = await ensureBodyTargetOutsideQuote(target);
       applyFormatBlock('p');
       typedSegments += 1;
       continue;
     }
     if (segment.type === 'cta') {
-      target = sequentialBodyTarget(target);
+      target = await ensureBodyTargetOutsideQuote(target);
       applyFormatBlock('p');
       const typed = await typeSegmentText(target, segment.text, { chunkSize: 1, minDelay: 9, maxDelay: 22, useCurrentCaret: true, scope: 'body' });
       if (!typed) throw new Error(`CTA 입력 실패: ${segment.text.slice(0, 40)}`);
@@ -2205,7 +2259,7 @@ async function typeBodySegments(node, job, images = []) {
       typedSegments += 1;
       continue;
     }
-    target = sequentialBodyTarget(target);
+    target = await ensureBodyTargetOutsideQuote(target);
     applyFormatBlock('p');
     const typed = await typeSegmentText(target, segment.text, { chunkSize: 1, minDelay: 8, maxDelay: 20, useCurrentCaret: true, scope: 'body' });
     if (!typed) throw new Error(`본문 문단 입력 실패: ${segment.text.slice(0, 40)}`);
