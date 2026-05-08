@@ -902,16 +902,32 @@ function lastEmptyBodyEditable() {
 function bodyTypingTarget(preferred) {
   const selected = selectionEditable();
   if (selected && isBodyEditable(selected) && !isPlaceholderOnly(selected)) return selected;
-  const empty = lastEmptyBodyEditable();
-  if (empty) return empty;
   const preferredEditable = editableRoot(preferred);
   if (preferredEditable && isBodyEditable(preferredEditable)) return preferredEditable;
+  const active = activeEditable();
+  if (active && isBodyEditable(active)) return active;
+  const empty = lastEmptyBodyEditable();
+  if (empty) return empty;
   return (selected && isBodyEditable(selected) ? selected : null)
-    || (activeEditable() && isBodyEditable(activeEditable()) ? activeEditable() : null)
     || editableRoot(findBodyTarget());
 }
 
-async function prepareBodyTypingTarget(preferred, { placeAtEnd = true } = {}) {
+function currentBodyTypingTarget(preferred) {
+  const selected = selectionEditable();
+  if (selected && isBodyEditable(selected)) return selected;
+  const active = activeEditable();
+  if (active && isBodyEditable(active)) return active;
+  const preferredEditable = editableRoot(preferred);
+  if (preferredEditable && isBodyEditable(preferredEditable)) return preferredEditable;
+  return editableRoot(findBodyTarget());
+}
+
+async function prepareBodyTypingTarget(preferred, { placeAtEnd = true, preserveCaret = false } = {}) {
+  const current = currentBodyTypingTarget(preferred);
+  if (preserveCaret && current && selectionEditable() && isBodyEditable(current)) {
+    if (isPlaceholderOnly(current)) clearEditable(current);
+    return current;
+  }
   const target = bodyTypingTarget(preferred);
   if (!target) return null;
   target.scrollIntoView?.({ block: 'center', inline: 'center' });
@@ -919,6 +935,21 @@ async function prepareBodyTypingTarget(preferred, { placeAtEnd = true } = {}) {
   if (isPlaceholderOnly(target)) clearEditable(target);
   if (placeAtEnd) placeCaretAtEnd(target);
   return target;
+}
+
+function sequentialBodyTarget(preferred) {
+  const selected = selectionEditable();
+  const active = activeEditable();
+  const empty = lastEmptyBodyEditable();
+  const current = (selected && isBodyEditable(selected) ? selected : null)
+    || (active && isBodyEditable(active) ? active : null)
+    || empty
+    || (editableRoot(preferred) && isBodyEditable(editableRoot(preferred)) ? editableRoot(preferred) : null)
+    || editableRoot(findBodyTarget());
+  if (!current) return editableRoot(preferred);
+  if (isPlaceholderOnly(current)) clearEditable(current);
+  if (!selectionEditable()) placeCaretAtEnd(current);
+  return current;
 }
 
 function isPlaceholderOnly(node) {
@@ -1450,10 +1481,10 @@ async function centerEditorImages(beforeCount = 0) {
 }
 
 async function pasteImageFileAtCaret(node, blob, label) {
-  const target = editableRoot(node);
+  const target = sequentialBodyTarget(node);
   const beforeCount = editorImageCount();
   applyImageCenterMode(target);
-  placeCaretAtEnd(target);
+  if (!selectionEditable()) placeCaretAtEnd(target);
   const file = new File([blob], `${safeImageFilename(label)}.png`, { type: 'image/png' });
   const pasteData = new DataTransfer();
   pasteData.items.add(file);
@@ -1597,7 +1628,7 @@ async function insertImageAtCaret(node, image, index) {
   const url = imageUrl(image);
   if (!url) return false;
   ensureTypingNotStopped();
-  const target = resolveTypingTarget(node, { useCurrentCaret: true });
+  const target = sequentialBodyTarget(node);
   if (!selectionEditable()) placeCaretAtEnd(target);
   const label = imageLabel(image, index);
   const link = image.ctaLink || '';
@@ -1978,7 +2009,9 @@ function buildPublishingSegments(job, images = []) {
 
 async function typeBodySegments(node, job, images = []) {
   let target = editableRoot(node);
+  target = await prepareBodyTypingTarget(target, { placeAtEnd: true }) || target;
   clearEditable(target);
+  placeCaretAtEnd(target);
   const segments = buildPublishingSegments(job, images);
   let imageCount = 0;
   let quoteCount = 0;
@@ -1987,15 +2020,15 @@ async function typeBodySegments(node, job, images = []) {
   for (const segment of segments) {
     ensureTypingNotStopped();
     if (segment.type === 'image') {
-      target = await prepareBodyTypingTarget(target) || target;
+      target = sequentialBodyTarget(target);
       const inserted = await insertImageAtCaret(target, segment.image, segment.index);
       if (!inserted) throw new Error(`이미지 ${segment.index + 1} 업로드에 실패했습니다. 사진 버튼 또는 이미지 형식을 확인해 주세요.`);
       imageCount += 1;
-      target = await prepareBodyTypingTarget(target) || target;
+      target = sequentialBodyTarget(target);
       continue;
     }
     if (segment.type === 'quote') {
-      target = await prepareBodyTypingTarget(target) || target;
+      target = sequentialBodyTarget(target);
       const quote2Applied = await applyNaverQuote2();
       if (!quote2Applied) applyFormatBlock('blockquote');
       await sleep(120);
@@ -2008,18 +2041,18 @@ async function typeBodySegments(node, job, images = []) {
       continue;
     }
     if (segment.type === 'heading') {
-      target = await prepareBodyTypingTarget(target) || target;
+      target = sequentialBodyTarget(target);
       applyFormatBlock('h3');
       const typed = await typeSegmentText(target, segment.text, { chunkSize: 1, minDelay: 9, maxDelay: 22, useCurrentCaret: true, scope: 'body' });
       if (!typed) throw new Error(`본문 소제목 입력 실패: ${segment.text.slice(0, 40)}`);
       await pressEnter(target, 1, { useCurrentCaret: true });
-      target = await prepareBodyTypingTarget(target) || target;
+      target = sequentialBodyTarget(target);
       applyFormatBlock('p');
       typedSegments += 1;
       continue;
     }
     if (segment.type === 'cta') {
-      target = await prepareBodyTypingTarget(target) || target;
+      target = sequentialBodyTarget(target);
       applyFormatBlock('p');
       const typed = await typeSegmentText(target, segment.text, { chunkSize: 1, minDelay: 9, maxDelay: 22, useCurrentCaret: true, scope: 'body' });
       if (!typed) throw new Error(`CTA 입력 실패: ${segment.text.slice(0, 40)}`);
@@ -2027,7 +2060,7 @@ async function typeBodySegments(node, job, images = []) {
       typedSegments += 1;
       continue;
     }
-    target = await prepareBodyTypingTarget(target) || target;
+    target = sequentialBodyTarget(target);
     applyFormatBlock('p');
     const typed = await typeSegmentText(target, segment.text, { chunkSize: 1, minDelay: 8, maxDelay: 20, useCurrentCaret: true, scope: 'body' });
     if (!typed) throw new Error(`본문 문단 입력 실패: ${segment.text.slice(0, 40)}`);
