@@ -8316,9 +8316,10 @@ router.post('/rewrite-jobs', async (req, res) => {
         `INSERT INTO rewrite_jobs (
           target_keyword, target_topic, platform, category, cta_url,
           use_naver_qr, use_ai_images, source_analysis_ids, settings_json, content_skill_key,
-          custom_title, status, source_kind, publish_spec, qr_target_url, naver_qr_name, qr_status
+          custom_title, status, source_kind, publish_spec, qr_target_url, naver_qr_name, qr_status,
+          generator_mode, openai_model
         )
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'대기중',$12,$13,$14,$15,$16)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'대기중',$12,$13,$14,$15,$16,$17,$18)
         RETURNING *`,
         [
           spec.keyword,
@@ -8340,6 +8341,8 @@ router.post('/rewrite-jobs', async (req, res) => {
           qrTargetUrl,
           makeNaverQrName(spec.keyword, req.body?.campaignName || req.body?.campaign_name || 'rewrite'),
           useNaverQr ? 'QR 생성 필요' : 'QR 미사용',
+          rewriteSettings.generatorMode || 'openai',
+          rewriteSettings.openaiModel || DEFAULT_REWRITE_SETTINGS.openaiModel,
         ]
       );
       await addRewriteEvent(rows[0].id, 'created', '발행 생성 작업이 등록되었습니다', {
