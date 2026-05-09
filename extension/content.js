@@ -1257,6 +1257,31 @@ function isToolbarOrPopupNode(node) {
   return !node.closest?.('.se-content, .se-container, .se-canvas, article, [data-a11y-title*="본문"]');
 }
 
+function isPopupOptionNode(node) {
+  if (!node || !isToolbarOrPopupNode(node)) return false;
+  return Boolean(node.closest?.([
+    '.se-popup',
+    '.se-pop-layer',
+    '.se-layer',
+    '[class*="popup"]',
+    '[class*="Popup"]',
+    '[class*="layer"]',
+    '[class*="Layer"]',
+    '[role="menu"]',
+    '[role="listbox"]',
+  ].join(',')));
+}
+
+function isToolbarButtonNode(node) {
+  if (!node || !isToolbarOrPopupNode(node) || isPopupOptionNode(node)) return false;
+  return Boolean(node.closest?.([
+    '.se-toolbar',
+    '.se-floating-toolbar',
+    '[class*="toolbar"]',
+    '[class*="Toolbar"]',
+  ].join(',')));
+}
+
 async function clickNode(node, waitMs = 160) {
   if (!node) return false;
   const target = node.closest?.('button, a, [role="button"], input[type="button"]') || node;
@@ -1402,24 +1427,24 @@ async function dismissResumeDraftDialog(options = {}) {
 
 async function applyNaverQuote2() {
   const clickableSelectors = ['button', '[role="button"]', 'a', 'li', 'span'];
-  const quote2 = findVisibleNode(clickableSelectors, (text) =>
-    /인용구\s*2|인용\s*2|quote\s*2|quote2/i.test(text)
+  const quote2 = findVisibleNode(clickableSelectors, (text, node) =>
+    /인용구\s*2|인용\s*2|quote\s*2|quote2/i.test(text) && isPopupOptionNode(node)
   );
-  if (quote2 && isToolbarOrPopupNode(quote2) && await clickNode(quote2)) return true;
+  if (quote2 && await clickNode(quote2)) return true;
 
-  const quoteButton = findVisibleNode(clickableSelectors, (text) =>
-    /인용구|인용|quote/i.test(text)
+  const quoteButton = findVisibleNode(clickableSelectors, (text, node) =>
+    /인용구|인용|quote/i.test(text) && isToolbarButtonNode(node)
   );
-  if (quoteButton && isToolbarOrPopupNode(quoteButton)) {
+  if (quoteButton) {
     await clickNode(quoteButton, 220);
-    const option2 = findVisibleNode(clickableSelectors, (text) =>
-      /인용구\s*2|인용\s*2|quote\s*2|quote2/i.test(text)
+    const option2 = findVisibleNode(clickableSelectors, (text, node) =>
+      /인용구\s*2|인용\s*2|quote\s*2|quote2/i.test(text) && isPopupOptionNode(node)
     );
-    if (option2 && isToolbarOrPopupNode(option2) && await clickNode(option2)) return true;
+    if (option2 && await clickNode(option2)) return true;
 
     const quoteOptions = Array.from(document.querySelectorAll(clickableSelectors.join(',')))
       .filter(visible)
-      .filter(isToolbarOrPopupNode)
+      .filter(isPopupOptionNode)
       .filter((node) => /인용구|인용|quote/i.test(nodeText(node)));
     if (quoteOptions[1] && await clickNode(quoteOptions[1])) return true;
   }
@@ -2488,7 +2513,7 @@ async function typeBodySegments(node, job, images = []) {
     if (segment.type === 'quote') {
       target = sequentialBodyTarget(target);
       const quote2Applied = await applyNaverQuote2();
-      if (!quote2Applied) applyFormatBlock('blockquote');
+      if (!quote2Applied) applyFormatBlock('h3');
       await sleep(120);
       target = quoteEditableTarget(target) || sequentialBodyTarget(target);
       if (target && isPlaceholderOnly(target)) clearEditable(target);
