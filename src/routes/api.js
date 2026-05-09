@@ -3770,6 +3770,7 @@ function buildOpenAiRewritePromptV2({ job, analyses = [], pattern = {}, settings
         searchTotals: research.totals || [],
         searchItems: (research.items || []).slice(0, 10),
         factPack: research.factPack || null,
+        answerEngineSignals: research.answerEngineSignals || null,
         errors: research.errors || [],
       },
       verifiedArticleFlow: {
@@ -3820,7 +3821,9 @@ function buildOpenAiRewritePromptV2({ job, analyses = [], pattern = {}, settings
         `Distribute length by budget: intro about ${charBudget.intro.target} chars, each section about ${charBudget.sections[0]?.target || settings.sectionCharCount} chars, conclusion about ${charBudget.conclusion.target} chars. Do not make one long block while other sections stay thin.`,
         'Before returning JSON, mentally audit the body length. If it is short, expand each section with a distinct factual paragraph; do not append generic repeated notes at the end.',
         'Use webResearch.searchItems and autocompleteKeywords as factual reference material. Do not copy titles or snippets; extract only the checking order, current issue terms, and official-confirmation points.',
+        'Use webResearch.answerEngineSignals.relatedQuestions and relatedSearchTerms to shape headings and first sentences. Each section should satisfy one likely AI briefing or related-question intent without writing the label "질문".',
         'Use webResearch.factPack first when available: dates go into the period section, amounts into cost/benefit, eligibility into target, apply facts into application path, usage facts into usage/restriction, and cautions into documents or cautions.',
+        'For imageCards, include caption: a short Korean caption under 55 characters that contains the main keyword or a natural variant plus the section intent.',
         'Do not write every section with the same generic frame. Each section must contain a different concrete fact type or a different user action.',
         'The phrase "official notice/page must be checked" may appear at most twice. Replace repeated warnings with concrete checking steps.',
         'If the web research has no exact confirmed fact, write a verification-oriented sentence instead of inventing dates, prices, agencies, or URLs.',

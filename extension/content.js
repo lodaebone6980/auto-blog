@@ -2198,10 +2198,22 @@ async function cleanupEmptyQuoteBlocks() {
     if (!editable || !isLikelyEmptyQuoteBlock(component)) continue;
     await clickNode(editable, 40);
     placeCaretAtEnd(editable);
-    await requestNativeKey('Backspace', { count: 1 });
+    let pressed = await requestNativeKey('Backspace', { count: 1 });
+    if (!pressed) {
+      editable.dispatchEvent(new KeyboardEvent('keydown', { key: 'Backspace', code: 'Backspace', bubbles: true }));
+      document.execCommand?.('delete', false);
+      emitInput(editable);
+      editable.dispatchEvent(new KeyboardEvent('keyup', { key: 'Backspace', code: 'Backspace', bubbles: true }));
+    }
     await sleep(90);
     if (isLikelyEmptyQuoteBlock(component)) {
-      await requestNativeKey('Delete', { count: 1 });
+      pressed = await requestNativeKey('Delete', { count: 1 });
+      if (!pressed) {
+        editable.dispatchEvent(new KeyboardEvent('keydown', { key: 'Delete', code: 'Delete', bubbles: true }));
+        document.execCommand?.('forwardDelete', false);
+        emitInput(editable);
+        editable.dispatchEvent(new KeyboardEvent('keyup', { key: 'Delete', code: 'Delete', bubbles: true }));
+      }
       await sleep(90);
     }
     if (!document.body.contains(component) || !visible(component) || !isLikelyEmptyQuoteBlock(component)) {
