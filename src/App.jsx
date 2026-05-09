@@ -2596,9 +2596,26 @@ function RewritePanel() {
     [selectedSources]
   );
 
-  const completedRewriteJobs = useMemo(
-    () => jobs.filter((job) => job.body || job.plain_text),
+  const rewriteJobRows = useMemo(
+    () => [...jobs].sort((a, b) => {
+      const stamp = (job) => Date.parse(job?.updated_at || job?.created_at || '') || 0;
+      return stamp(b) - stamp(a);
+    }),
     [jobs]
+  );
+
+  const completedRewriteJobs = useMemo(
+    () => rewriteJobRows.filter((job) => job.body || job.plain_text),
+    [rewriteJobRows]
+  );
+
+  const activeRewriteJobCount = useMemo(
+    () => rewriteJobRows.filter((job) => {
+      const ready = Boolean(job.body || job.plain_text);
+      const status = String(job.status || '');
+      return !ready && !status.includes('오류') && !status.toLowerCase().includes('error');
+    }).length,
+    [rewriteJobRows]
   );
 
   const selectedCompletedRewriteJobs = useMemo(
@@ -2610,10 +2627,17 @@ function RewritePanel() {
     && completedRewriteJobs.every((job) => selectedRewriteJobIds.includes(job.id));
 
   useEffect(() => {
-    const availableIds = new Set(completedRewriteJobs.map((job) => job.id));
-    setSelectedRewriteJobIds((prev) => prev.filter((id) => availableIds.has(id)));
-    setExpandedRewriteJobIds((prev) => prev.filter((id) => availableIds.has(id)));
-  }, [completedRewriteJobs]);
+    const selectableIds = new Set(completedRewriteJobs.map((job) => job.id));
+    const visibleIds = new Set(rewriteJobRows.map((job) => job.id));
+    setSelectedRewriteJobIds((prev) => prev.filter((id) => selectableIds.has(id)));
+    setExpandedRewriteJobIds((prev) => prev.filter((id) => visibleIds.has(id)));
+  }, [completedRewriteJobs, rewriteJobRows]);
+
+  useEffect(() => {
+    if (activeRewriteJobCount === 0) return undefined;
+    const timer = window.setInterval(loadRewriteData, 5000);
+    return () => window.clearInterval(timer);
+  }, [activeRewriteJobCount, loadRewriteData]);
 
   const derivedSourceKeywords = useMemo(
     () => [...new Set(selectedSources
@@ -4096,6 +4120,9 @@ function RewritePanel() {
             </div>
           </div>
           <p style={{ marginTop: 8, fontSize: 11, color: COLORS.textMuted, fontWeight: 800 }}>
+            전체 작업 {rewriteJobRows.length}개 · 생성 중 {activeRewriteJobCount}개 · 글생성 완료 {completedRewriteJobs.length}개 · 선택 {selectedCompletedRewriteJobs.length}개
+          </p>
+          <p style={{ display: 'none' }}>
             완성 글 {completedRewriteJobs.length}개 · 선택 {selectedCompletedRewriteJobs.length}개
           </p>
         </div>
@@ -4104,7 +4131,7 @@ function RewritePanel() {
             <div style={{ padding: 20 }}>
               {[1, 2, 3].map((item) => <Skeleton key={item} height={58} style={{ marginBottom: 8 }} />)}
             </div>
-          ) : completedRewriteJobs.length === 0 ? (
+          ) : rewriteJobRows.length === 0 ? (
             <div style={{ padding: 24, textAlign: 'center', color: COLORS.textMuted, fontSize: 13 }}>
               아직 본문이 완성된 발행 생성 작업이 없습니다.
             </div>
@@ -4127,11 +4154,12 @@ function RewritePanel() {
                 </tr>
               </thead>
               <tbody>
-                {completedRewriteJobs.map((job) => {
+                {rewriteJobRows.map((job) => {
                   const images = parseArray(job.images_json);
                   const expanded = expandedRewriteJobIds.includes(job.id);
                   const busy = reprocessingIds.includes(job.id);
-                  const selected = selectedRewriteJobIds.includes(job.id);
+                  const ready = Boolean(job.body || job.plain_text);
+                  const selected = ready && selectedRewriteJobIds.includes(job.id);
                   const ctaDraft = ctaDrafts[job.id] ?? job.cta_url ?? job.qr_target_url ?? '';
                   const ctaSaving = savingCtaIds.includes(job.id);
                   const metricSummary = metricSummaryForJob(job);
@@ -4140,8 +4168,9 @@ function RewritePanel() {
                       <td style={{ padding: '12px' }}>
                         <input
                           type="checkbox"
+                          disabled={!ready}
                           checked={selected}
-                          onChange={() => toggleRewriteJob(job.id)}
+                          onChange={() => ready && toggleRewriteJob(job.id)}
                           aria-label="완성 글 선택"
                         />
                       </td>
@@ -4155,8 +4184,13 @@ function RewritePanel() {
                         </button>
                       </td>
                       <td style={{ padding: '12px', minWidth: 110 }}>
-                        <StatusBadge value={job.status || '완료'} />
+                        <StatusBadge value={job.status || (ready ? '글생성 완료' : '글생성 중')} />
                         <p style={{ marginTop: 5, fontSize: 10, color: COLORS.textMuted }}>#{job.id}</p>
+                        {!ready && (
+                          <p style={{ marginTop: 5, fontSize: 10, color: COLORS.warning, fontWeight: 850 }}>
+                            {job.error_message ? '생성 오류 확인 필요' : '본문 생성 대기/진행 중'}
+                          </p>
+                        )}
                       </td>
                       <td style={{ padding: '12px', maxWidth: 330 }}>
                         <p style={{ fontWeight: 900, color: COLORS.textPrimary, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{job.title || job.target_keyword}</p>
@@ -4240,7 +4274,14 @@ function RewritePanel() {
                       </td>
                       <td style={{ padding: '12px', minWidth: 230 }}>
                         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
-                          <button type="button" onClick={() => copyBody(job)} style={smallButtonStyle}>본문 복사</button>
+                          <button
+                            type="button"
+                            disabled={!ready}
+                            onClick={() => copyBody(job)}
+                            style={{ ...smallButtonStyle, cursor: ready ? 'pointer' : 'not-allowed', opacity: ready ? 1 : 0.55 }}
+                          >
+                            본문 복사
+                          </button>
                           <button type="button" disabled={busy} onClick={() => reprocessJob(job.id)} style={{ ...smallButtonStyle, background: COLORS.primary, color: 'white', borderColor: COLORS.primary }}>
                             {busy ? '생성중' : '다시 생성'}
                           </button>

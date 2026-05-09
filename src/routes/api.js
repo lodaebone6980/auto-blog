@@ -3210,6 +3210,74 @@ function safeJsonFromModelText(text = '') {
   }
 }
 
+function extractOpenAiChatText(data = {}) {
+  const message = data?.choices?.[0]?.message || {};
+  const content = message.content;
+  if (typeof content === 'string') return content.trim();
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => {
+        if (typeof part === 'string') return part;
+        if (!part || typeof part !== 'object') return '';
+        return part.text || part.output_text || part.input_text || part.content || '';
+      })
+      .join('\n')
+      .trim();
+  }
+  return String(data.output_text || '').trim();
+}
+
+function openAiEmptyResponseMessage(data = {}, model = '') {
+  const choice = data?.choices?.[0] || {};
+  const finishReason = choice.finish_reason || 'unknown';
+  const usage = data?.usage || {};
+  const used = [usage.prompt_tokens, usage.completion_tokens, usage.total_tokens]
+    .map((value) => Number(value || 0))
+    .join('/');
+  return `OpenAI 응답이 비어 있습니다. model=${model || 'unknown'}, finish_reason=${finishReason}, usage=${used}`;
+}
+
+async function fetchOpenAiChatJson({ openAi, model, messages, maxCompletionTokens, temperature = 0.6, operation = 'OpenAI' }) {
+  const normalizedModel = normalizeOpenAiModel(model);
+  const fallbackModel = normalizeOpenAiModel(process.env.OPENAI_FALLBACK_WRITER_MODEL || 'gpt-4.1-mini');
+  const models = [normalizedModel];
+  if (normalizedModel.startsWith('gpt-5') && fallbackModel && fallbackModel !== normalizedModel) models.push(fallbackModel);
+
+  let lastError = null;
+  for (const currentModel of models) {
+    const requestBody = {
+      model: currentModel,
+      response_format: { type: 'json_object' },
+      messages,
+    };
+    if (currentModel.startsWith('gpt-5')) {
+      requestBody.max_completion_tokens = maxCompletionTokens;
+    } else {
+      requestBody.temperature = temperature;
+      requestBody.max_tokens = maxCompletionTokens;
+    }
+
+    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${openAi.apiKey}`,
+      },
+      body: JSON.stringify(requestBody),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(data.error?.message || `${operation} API error ${response.status}`);
+    }
+
+    const content = extractOpenAiChatText(data);
+    if (content) return { data, content, model: currentModel };
+
+    lastError = new Error(openAiEmptyResponseMessage(data, currentModel));
+  }
+  throw lastError || new Error(`${operation} response was empty`);
+}
+
 const GENERATED_EDITOR_PLACEHOLDER_PATTERN = '(?:내용을?\\s*입력(?:하세요)?\\.?|사진\\s*설명을?\\s*입력(?:하세요)?\\.?|출처\\s*입력|AI\\s*활용\\s*설정)';
 const GENERATED_EDITOR_PLACEHOLDER_RE = new RegExp(GENERATED_EDITOR_PLACEHOLDER_PATTERN, 'gi');
 const GENERATED_EDITOR_PLACEHOLDER_TEST_RE = new RegExp(GENERATED_EDITOR_PLACEHOLDER_PATTERN, 'i');
@@ -3912,31 +3980,15 @@ async function repairOpenAiRewriteMetrics({ openAi, model, job, title, body, sec
     },
     { role: 'user', content: JSON.stringify(promptPayload, null, 2) },
   ];
-  const requestBody = {
-    model,
-    response_format: { type: 'json_object' },
-    messages,
-  };
   const maxCompletionTokens = clampNumber(Math.ceil((settings.targetCharCount || DEFAULT_REWRITE_SETTINGS.targetCharCount) * 2.1), 3000, 10000);
-  if (model.startsWith('gpt-5')) {
-    requestBody.max_completion_tokens = maxCompletionTokens;
-  } else {
-    requestBody.temperature = 0.5;
-    requestBody.max_tokens = maxCompletionTokens;
-  }
-  const response = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${openAi.apiKey}`,
-    },
-    body: JSON.stringify(requestBody),
+  const { data, content } = await fetchOpenAiChatJson({
+    openAi,
+    model,
+    messages,
+    maxCompletionTokens,
+    temperature: 0.5,
+    operation: 'OpenAI metric repair',
   });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new Error(data.error?.message || `OpenAI metric repair error ${response.status}`);
-  }
-  const content = data.choices?.[0]?.message?.content || '';
   const parsed = safeJsonFromModelText(content);
   const repairedTitle = cleanGeneratedTitle(parsed.title || title, {
     keyword: job.target_keyword,
@@ -3964,40 +4016,27 @@ async function buildOpenAiRewriteDraft({ tenantId, job, analyses, pattern, setti
   if (!openAi.hasApiKey) {
     throw new Error('OPENAI_API_KEY가 설정되어 있지 않습니다. 운영 설정에서 OpenAI API 키를 저장하거나 Railway 환경변수에 추가해 주세요.');
   }
-  const model = normalizeOpenAiModel(settings.openaiModel || openAi.model);
+  let model = normalizeOpenAiModel(settings.openaiModel || openAi.model);
   const prompt = buildOpenAiRewritePromptV2({ job, analyses, pattern, settings, variantIndex, research });
   const maxCompletionTokens = clampNumber(
     Math.ceil((settings.targetCharCount || DEFAULT_REWRITE_SETTINGS.targetCharCount) * 1.8),
     2500,
     9000
   );
-  const requestBody = {
+  const messages = [
+    { role: 'system', content: prompt.system },
+    { role: 'user', content: prompt.user },
+  ];
+  const openAiResult = await fetchOpenAiChatJson({
+    openAi,
     model,
-    response_format: { type: 'json_object' },
-    messages: [
-      { role: 'system', content: prompt.system },
-      { role: 'user', content: prompt.user },
-    ],
-  };
-  if (model.startsWith('gpt-5')) {
-    requestBody.max_completion_tokens = maxCompletionTokens;
-  } else {
-    requestBody.temperature = 0.72;
-    requestBody.max_tokens = maxCompletionTokens;
-  }
-  const response = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${openAi.apiKey}`,
-    },
-    body: JSON.stringify(requestBody),
+    messages,
+    maxCompletionTokens,
+    temperature: 0.72,
+    operation: 'OpenAI rewrite draft',
   });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new Error(data.error?.message || `OpenAI API 오류 ${response.status}`);
-  }
-  const content = data.choices?.[0]?.message?.content || '';
+  const { data, content } = openAiResult;
+  model = openAiResult.model || model;
   const parsed = safeJsonFromModelText(content);
   const fallbackTitle = normalizeTitleValue(job.custom_title) || makeRewriteTitle(job.target_keyword, job.target_topic, job.platform, pattern);
   let title = cleanGeneratedTitle(parsed.title || fallbackTitle, {
