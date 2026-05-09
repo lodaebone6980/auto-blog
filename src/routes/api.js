@@ -1185,8 +1185,8 @@ function countKeywordInText(text = '', keyword = '') {
 
 const VISIBLE_EDITOR_PLACEHOLDER_RE = /(AI\s*활용\s*설정|사진\s*설명을?\s*입력하세요\.?|내용을\s*입력하세요\.?|출처\s*입력)/gi;
 const VISIBLE_ARTICLE_MARKER_RE = /\[(?:대표\s*이미지|대표이미지|이미지|보조\s*이미지|네이버\s*QR|QR|네이버\s*동영상|동영상|링크|CTA)[^\]]*\]/gi;
-const VISIBLE_IMAGE_MARKER_LINE_RE = /^\s*\[(?:대표\s*이미지|대표이미지|이미지|보조\s*이미지)\b[^\]]*\]\s*$/i;
-const ANY_IMAGE_MARKER_LINE_RE = /^\s*\[(?:대표\s*이미지|대표이미지|이미지|보조\s*이미지)\b[^\]]*\]\s*$/i;
+const VISIBLE_IMAGE_MARKER_LINE_RE = /^\s*\[(?:대표\s*이미지|대표이미지|이미지|보조\s*이미지)[^\]]*\]\s*$/i;
+const ANY_IMAGE_MARKER_LINE_RE = /^\s*\[(?:대표\s*이미지|대표이미지|이미지|보조\s*이미지)[^\]]*\]\s*$/i;
 const AUTHORING_LABEL_RE = /^\s*(?:도입부\s*(?:첫|두|세)\s*문단|대표\s*이미지|요약\s*답변|답변|대답|세부\s*설명|설명|마무리\s*요약|행동\s*권장|체크리스트)\s*[:：]\s*/i;
 
 function articlePlainText(body = '') {
@@ -3461,7 +3461,7 @@ function ensureImageMarkers(body = '', { title = '', sectionTitles = [], require
   let lines = limitImagePlaceholders(String(body || ''), maxImages).split(/\r?\n/);
   let count = lines.filter((line) => ANY_IMAGE_MARKER_LINE_RE.test(line)).length;
   if (maxImages <= 0 || count >= maxImages) return lines.join('\n').trim();
-  const hasCover = lines.some((line) => /^\s*\[(?:대표\s*이미지|대표이미지)\b/i.test(line));
+  const hasCover = lines.some((line) => /^\s*\[(?:대표\s*이미지|대표이미지)[^\]]*\]/i.test(line));
   if (!hasCover) {
     const insertAt = lines.findIndex((line, index) => index > 0 && cleanVisibleArticleLine(line));
     lines.splice(insertAt > 0 ? insertAt : 1, 0, '', imageMarker(0, title), '');
@@ -3471,8 +3471,8 @@ function ensureImageMarkers(body = '', { title = '', sectionTitles = [], require
   const headingIndexes = lines.map((line, index) => (/^>\s*\S/.test(line) ? index : -1)).filter((index) => index >= 0);
   for (let i = 0; count < maxImages && i < headingIndexes.length; i += 1) {
     const lineIndex = headingIndexes[i] + 1;
-    const nextLines = lines.slice(lineIndex, lineIndex + 3).join('\n');
-    if (ANY_IMAGE_MARKER_LINE_RE.test(nextLines)) continue;
+    const nextLines = lines.slice(lineIndex, lineIndex + 3);
+    if (nextLines.some((line) => ANY_IMAGE_MARKER_LINE_RE.test(line))) continue;
     const section = sectionTitles[i] || lines[headingIndexes[i]].replace(/^>\s*/, '');
     lines.splice(lineIndex, 0, '', imageMarker(imageIndex, section), '');
     imageIndex += 1;
