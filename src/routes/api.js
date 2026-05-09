@@ -1499,7 +1499,7 @@ function imageCaptionLabel(keyword = '', section = '', index = 0) {
 }
 
 const DEFAULT_REWRITE_SETTINGS = {
-  contentSkillKey: 'adsense_verified_info',
+  contentSkillKey: 'verified_info',
   generatorMode: 'openai',
   openaiModel: 'gpt-5-mini',
   useWebResearch: true,
@@ -1518,6 +1518,64 @@ const DEFAULT_REWRITE_SETTINGS = {
 };
 
 const CONTENT_SKILLS = {
+  verified_info: {
+    key: 'verified_info',
+    name: '검색검증 정보형',
+    description: '검색 유입형 글을 쓰되 주제 오염 없이 공식 기준, 비용, 기간, 신청 경로, 사용자가 바로 해야 할 행동을 먼저 확인하는 기본 스킬입니다.',
+    articleGoal: 'verified_search_traffic',
+    targetPlatforms: ['naver_blog', 'naver_cafe', 'wordpress'],
+    imagePipeline: {
+      generationTiming: 'draft_generation',
+      storage: 'server_generated_images',
+      editorMode: 'extension_download_blob_then_upload',
+      defaultSize: '500x500',
+      alignment: 'center',
+      manualReviewRequired: false,
+      policy: '본문 생성 단계에서 대표 이미지와 섹션 이미지를 미리 만들고, 발행 단계에서는 서버 이미지를 받아 업로드만 수행',
+    },
+    writingRules: {
+      quotePerSection: true,
+      keywordRepeatBias: 'verified_natural',
+      similarityRiskTarget: 'very_low',
+      ctaPlacement: '도입 CTA 이후 또는 2번째 섹션 뒤',
+      promptRules: [
+        'Never change the user topic into AdSense, blog monetization, or another unrelated domain unless the target keyword itself says so.',
+        'SEO/Naver: title and first intro must clearly identify the exact target keyword, user intent, and action keywords without clickbait.',
+        'SEO/Google: write people-first original content that adds useful checking steps, not a rehash of search snippets.',
+        'AEO: each quote heading must answer one likely question directly in the first sentence, then explain conditions, exceptions, and next action.',
+        'GEO: distinguish confirmed facts from verification steps. When dates, amounts, agencies, or URLs are in factPack, paraphrase them precisely; when missing, do not invent them.',
+        'Length control: distribute the target character count across intro, every section, and conclusion. Do not solve short output by repeating the same warning or adding generic ending notes.',
+        'Do not use fixed labels such as "답변:", "세부 설명:", "도입부 첫 문단:", or "마무리 요약:" in the final body.',
+        'Do not add visible SmartEditor placeholder strings such as "내용을 입력하세요.", "출처 입력", "사진 설명을 입력하세요.", or "AI 활용 설정".',
+        'Use 2-3 related keyword variants in natural sentences, but keep exact target keyword repetition within the requested range.',
+        'Write each section with a different angle: 대상/조건, 신청/접수, 일정/마감, 비용/금액, 서류/주의사항, 사용처/확인절차, 요약/체크리스트.',
+        'Image captions should include the section intent and one natural keyword variant under 55 Korean characters.',
+      ],
+      requiredFactSlots: [
+        'who_is_target',
+        'where_to_apply_or_check',
+        'cost_or_fee',
+        'period_or_duration',
+        'completion_or_result_step',
+        'caution_or_exclusion',
+      ],
+      forbiddenPatterns: [
+        'unrelated_adsense_topic',
+        'same_paragraph_frame_repeated',
+        'answer_detail_label_repetition',
+        'invented_amount_or_date',
+        'editor_placeholder_text',
+      ],
+      obsidianLearningFields: [
+        '확인된 공식 사실',
+        '생성 후 사람이 고친 사실',
+        '상위노출 키워드',
+        '클릭을 만든 제목 조합',
+        '반복이 과했던 표현',
+        '다음 생성에서 금지할 문장',
+      ],
+    },
+  },
   adsense_verified_info: {
     key: 'adsense_verified_info',
     name: '애드센스 정보검증형',
@@ -1626,11 +1684,17 @@ const CONTENT_SKILLS = {
   },
 };
 
+const CONTENT_SKILL_ALIASES = {
+  adsense_verified_info: 'verified_info',
+  adsense_traffic: 'verified_info',
+};
+
 function contentSkillFor(key = '') {
-  return CONTENT_SKILLS[key] || CONTENT_SKILLS.adsense_verified_info;
+  const normalized = CONTENT_SKILL_ALIASES[key] || key || DEFAULT_REWRITE_SETTINGS.contentSkillKey;
+  return CONTENT_SKILLS[normalized] || CONTENT_SKILLS.verified_info;
 }
 
-function promptSkillPayload(skill = CONTENT_SKILLS.adsense_verified_info) {
+function promptSkillPayload(skill = CONTENT_SKILLS.verified_info) {
   const rules = skill.writingRules || {};
   return {
     key: skill.key,
