@@ -4442,6 +4442,51 @@ async function mapLimit(items, limit, mapper) {
   return results;
 }
 
+function processRewriteJobsInBackground(jobs, options = {}) {
+  const list = Array.isArray(jobs) ? jobs.filter(Boolean) : [];
+  if (list.length === 0) return;
+  const concurrency = clampNumber(parseInt(options.concurrency || '3', 10) || 3, 1, 5);
+  setTimeout(async () => {
+    await mapLimit(list, concurrency, async (job) => {
+      try {
+        const processed = await processRewriteJob(job.id, {
+          tenantId: options.tenantId,
+          researchCredentials: options.researchCredentials,
+          generatorMode: options.generatorMode,
+        });
+        if (processed?.source_kind === 'rss' && processed?.source_item_id) {
+          await pool.query(
+            `UPDATE rss_source_items
+             SET status = $2,
+                 updated_at = NOW()
+             WHERE id = $1`,
+            [processed.source_item_id, processed.status === '오류' ? '오류' : '발행 생성 완료']
+          );
+        }
+      } catch (err) {
+        await pool.query(
+          `UPDATE rewrite_jobs
+           SET status = '오류',
+               error_message = $2,
+               updated_at = NOW()
+           WHERE id = $1`,
+          [job.id, err.message]
+        );
+        if (job.source_kind === 'rss' && job.source_item_id) {
+          await pool.query(
+            `UPDATE rss_source_items
+             SET status = '오류',
+                 updated_at = NOW()
+             WHERE id = $1`,
+            [job.source_item_id]
+          );
+        }
+        await addRewriteEvent(job.id, 'error', '발행 생성 백그라운드 처리 중 오류가 발생했습니다', { error: err.message });
+      }
+    });
+  }, 0);
+}
+
 async function saveCollectionAnalysis(link, analysis, fetchStatus = 'server_collected') {
   const inserted = await pool.query(
     `INSERT INTO source_analyses (
@@ -7309,6 +7354,7 @@ router.post('/rss-items/to-rewrite-jobs', async (req, res) => {
     if (items.length === 0) return res.status(404).json({ error: 'RSS items not found' });
 
     const settings = parseRewriteSettings(req.body?.rewriteSettings || {});
+    const asyncProcess = req.body?.asyncProcess !== false && req.body?.processInline !== true;
     const inserted = [];
     for (const item of items) {
       const keyword = normalizeKeywordValue(item.selected_keyword || item.main_keyword);
@@ -7335,6 +7381,20 @@ router.post('/rss-items/to-rewrite-jobs', async (req, res) => {
           JSON.stringify(buildPublishSpec(normalizePlatform(req.body?.platform || item.platform || 'blog', item.link), settings)),
         ]
       );
+      if (asyncProcess) {
+        await pool.query(
+          `UPDATE rss_source_items
+           SET rewrite_job_id = $2,
+               status = '발행 생성 중',
+               checked_for_publish = TRUE,
+               updated_at = NOW()
+           WHERE id = $1`,
+          [item.id, rows[0].id]
+        );
+        inserted.push(rows[0]);
+        continue;
+      }
+
       const processed = await processRewriteJob(rows[0].id, { tenantId, researchCredentials });
       await pool.query(
         `UPDATE rss_source_items
@@ -7346,6 +7406,17 @@ router.post('/rss-items/to-rewrite-jobs', async (req, res) => {
         [item.id, processed.id, processed.status === '오류' ? '오류' : '발행 생성 완료']
       );
       inserted.push(processed);
+    }
+    if (asyncProcess) {
+      processRewriteJobsInBackground(inserted, { tenantId, researchCredentials, concurrency: req.body?.concurrency || 3 });
+      return res.json({
+        ok: true,
+        created: inserted.length,
+        queued: inserted.length,
+        processed: 0,
+        processingMode: 'background',
+        jobs: inserted.map(attachRewriteMetricSummary),
+      });
     }
     res.json({ ok: true, created: inserted.length, jobs: inserted });
   } catch (err) {
@@ -8241,6 +8312,21 @@ router.post('/rewrite-jobs', async (req, res) => {
     }
 
     const concurrency = clampNumber(parseInt(req.body?.concurrency || '3', 10) || 3, 1, 5);
+    const asyncProcess = req.body?.asyncProcess !== false && req.body?.processInline !== true;
+    if (asyncProcess) {
+      processRewriteJobsInBackground(insertedJobs, { tenantId, researchCredentials, concurrency });
+      return res.json({
+        ok: true,
+        created: insertedJobs.length,
+        queued: insertedJobs.length,
+        processed: 0,
+        contentJobsCreated: 0,
+        contentJobs: [],
+        concurrency,
+        processingMode: 'background',
+        jobs: insertedJobs.map(attachRewriteMetricSummary),
+      });
+    }
     const processed = await mapLimit(insertedJobs, concurrency, async (job) => {
       try {
         return await processRewriteJob(job.id, { tenantId, researchCredentials });

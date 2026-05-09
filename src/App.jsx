@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 
 const API = '/api';
 const EXTENSION_ZIP_PATH = '/downloads/naviwrite-extension.zip?v=1.4.29';
@@ -98,10 +98,18 @@ function formatTime(d) {
 async function safeFetch(url, opts) {
   try {
     const res = await fetch(url, opts);
-    if (!res.ok) throw new Error(res.statusText);
-    return await res.json();
-  } catch {
-    return null;
+    const contentType = res.headers.get('content-type') || '';
+    const payload = contentType.includes('application/json') ? await res.json() : await res.text();
+    if (!res.ok) {
+      return {
+        ok: false,
+        status: res.status,
+        error: payload?.error || payload?.message || res.statusText || 'Request failed',
+      };
+    }
+    return payload;
+  } catch (err) {
+    return { ok: false, error: err?.message || 'Network request failed' };
   }
 }
 
@@ -2486,6 +2494,7 @@ function RewritePanel() {
   });
   const [loading, setLoading] = useState(false);
   const [creating, setCreating] = useState(false);
+  const creatingRef = useRef(false);
   const [queueing, setQueueing] = useState(false);
   const [benchmarking, setBenchmarking] = useState(false);
   const [message, setMessage] = useState('');
@@ -2980,10 +2989,16 @@ function RewritePanel() {
       return;
     }
 
+    if (creatingRef.current) {
+      setMessage('이미 발행 생성 작업을 등록 중입니다. 잠시만 기다려 주세요.');
+      return;
+    }
+    creatingRef.current = true;
     setCreating(true);
     setMessage(`발행 생성 작업 ${rewriteJobCount}개를 생성 중입니다.`);
     const createdCounts = [];
     const errors = [];
+    try {
     const opsSettings = loadOpsSettings();
     const naverSearchPayload = {
       naverClientId: opsSettings.naverClientId || '',
@@ -3007,6 +3022,7 @@ function RewritePanel() {
           rewriteSettings,
           ...naverSearchPayload,
           concurrency: 3,
+          asyncProcess: true,
         }),
       });
       if (res?.ok) {
@@ -3027,6 +3043,8 @@ function RewritePanel() {
           customTitle,
           rewriteSettings,
           ...naverSearchPayload,
+          concurrency: 3,
+          asyncProcess: true,
         }),
       });
       if (res?.ok) {
@@ -3037,16 +3055,22 @@ function RewritePanel() {
       }
     }
 
+    } catch (err) {
+      errors.push(err?.message || '발행 생성 작업 등록 중 오류가 발생했습니다.');
+    }
     setCreating(false);
+    creatingRef.current = false;
 
     const createdTotal = createdCounts.reduce((sum, value) => sum + value, 0);
     if (createdTotal > 0 && errors.length === 0) {
-      setMessage(`발행 생성 완료 · 생성 ${createdTotal}개`);
+      setMessage(`발행 생성 작업 등록 완료 · ${createdTotal}개 · 글 생성은 백그라운드에서 진행됩니다.`);
       setKeywordsText('');
       await loadRewriteData();
+      window.setTimeout(loadRewriteData, 3500);
     } else if (createdTotal > 0) {
       setMessage(`일부 생성 완료 · 생성 ${createdTotal}개 · ${errors.join(' / ')}`);
       await loadRewriteData();
+      window.setTimeout(loadRewriteData, 3500);
     } else {
       setMessage(errors.join(' / ') || '발행 생성 작업 생성에 실패했습니다.');
     }
