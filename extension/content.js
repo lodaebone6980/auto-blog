@@ -1233,6 +1233,30 @@ function findVisibleNode(selectors, matcher) {
   return null;
 }
 
+function isToolbarOrPopupNode(node) {
+  if (!node) return false;
+  const toolRoot = node.closest?.([
+    '.se-toolbar',
+    '.se-menu',
+    '.se-popup',
+    '.se-pop-layer',
+    '.se-layer',
+    '.se-floating-toolbar',
+    '[class*="toolbar"]',
+    '[class*="Toolbar"]',
+    '[class*="menu"]',
+    '[class*="Menu"]',
+    '[class*="popup"]',
+    '[class*="Popup"]',
+    '[class*="layer"]',
+    '[class*="Layer"]',
+    '[role="menu"]',
+    '[role="listbox"]',
+  ].join(','));
+  if (!toolRoot) return false;
+  return !node.closest?.('.se-content, .se-container, .se-canvas, article, [data-a11y-title*="본문"]');
+}
+
 async function clickNode(node, waitMs = 160) {
   if (!node) return false;
   const target = node.closest?.('button, a, [role="button"], input[type="button"]') || node;
@@ -1381,20 +1405,21 @@ async function applyNaverQuote2() {
   const quote2 = findVisibleNode(clickableSelectors, (text) =>
     /인용구\s*2|인용\s*2|quote\s*2|quote2/i.test(text)
   );
-  if (quote2 && await clickNode(quote2)) return true;
+  if (quote2 && isToolbarOrPopupNode(quote2) && await clickNode(quote2)) return true;
 
   const quoteButton = findVisibleNode(clickableSelectors, (text) =>
     /인용구|인용|quote/i.test(text)
   );
-  if (quoteButton) {
+  if (quoteButton && isToolbarOrPopupNode(quoteButton)) {
     await clickNode(quoteButton, 220);
     const option2 = findVisibleNode(clickableSelectors, (text) =>
       /인용구\s*2|인용\s*2|quote\s*2|quote2/i.test(text)
     );
-    if (option2 && await clickNode(option2)) return true;
+    if (option2 && isToolbarOrPopupNode(option2) && await clickNode(option2)) return true;
 
     const quoteOptions = Array.from(document.querySelectorAll(clickableSelectors.join(',')))
       .filter(visible)
+      .filter(isToolbarOrPopupNode)
       .filter((node) => /인용구|인용|quote/i.test(nodeText(node)));
     if (quoteOptions[1] && await clickNode(quoteOptions[1])) return true;
   }
@@ -1562,6 +1587,62 @@ async function centerEditorImages(beforeCount = 0) {
   try {
     document.execCommand?.('justifyCenter', false);
   } catch {}
+}
+
+function isImageCaptionEditable(node) {
+  const editable = editableRoot(node);
+  if (!editable) return false;
+  const meta = nodeMeta(editable);
+  const imageRoot = editable.closest?.('.se-component-image, .se-module-image, .se-section-image, figure, [class*="caption"], [class*="Caption"]');
+  return Boolean(imageRoot) && /사진\s*설명|caption|description|alt/i.test(meta);
+}
+
+function imageCaptionEditables() {
+  return Array.from(document.querySelectorAll([
+    '.se-component-image [contenteditable="true"]',
+    '.se-module-image [contenteditable="true"]',
+    '.se-section-image [contenteditable="true"]',
+    '[class*="caption"] [contenteditable="true"]',
+    '[class*="Caption"] [contenteditable="true"]',
+    '[contenteditable="true"][data-placeholder*="사진"]',
+    '[contenteditable="true"][aria-label*="사진"]',
+  ].join(',')))
+    .map(editableRoot)
+    .filter(Boolean)
+    .filter((node, index, list) => list.indexOf(node) === index)
+    .filter(visible)
+    .filter(isImageCaptionEditable);
+}
+
+async function fillLatestImageCaption(caption = '') {
+  const text = sanitizeEditorLine(caption);
+  if (!text) return false;
+  const candidates = imageCaptionEditables()
+    .map((node) => ({
+      node,
+      top: node.getBoundingClientRect().top,
+      isEmpty: isPlaceholderOnly(node) || !stripEditorAuxPlaceholders(currentTextValue(node)).trim(),
+    }))
+    .sort((a, b) => (Number(b.isEmpty) - Number(a.isEmpty)) || (b.top - a.top));
+  const target = candidates[0]?.node;
+  if (!target) return false;
+  await clickNode(target, 60);
+  if (isPlaceholderOnly(target)) clearEditable(target);
+  placeCaretAtEnd(target);
+  const typed = await typeSegmentText(target, text, {
+    chunkSize: 1,
+    minDelay: 6,
+    maxDelay: 14,
+    useCurrentCaret: true,
+    scope: 'body',
+    noDuplicateRetry: true,
+  });
+  if (typed) {
+    emitInput(target);
+    await requestNativeKey('ArrowDown', { count: 1 });
+    await sleep(80);
+  }
+  return typed;
 }
 
 async function pasteImageFileAtCaret(node, blob, label) {
@@ -1751,6 +1832,7 @@ async function insertImageAtCaret(node, image, index) {
       const insertedAsFile = await pasteImageFileAtCaret(target, pngBlob, label);
       if (insertedAsFile) {
         await centerEditorImages();
+        await fillLatestImageCaption(imageCaptionText(image, index));
         await settleCaretAfterImage(target);
         return true;
       }
@@ -1770,6 +1852,7 @@ async function insertImageAtCaret(node, image, index) {
   emitInput(target);
   await sleep(180);
   await centerEditorImages();
+  await fillLatestImageCaption(imageCaptionText(image, index));
   await settleCaretAfterImage(target);
   return inserted;
 }
@@ -1802,6 +1885,29 @@ function imageUrl(image) {
 
 function imageLabel(image, index) {
   return image.label || image.image_role || image.imageRole || `이미지 ${index + 1}`;
+}
+
+function imageCaptionText(image, index) {
+  const raw = image.caption
+    || image.caption_text
+    || image.captionText
+    || image.alt
+    || [image.keyword, sectionTitleFromImage(image, imageLabel(image, index))].filter(Boolean).join(' ');
+  return sanitizeEditorLine(raw)
+    .replace(/^대표\s*이미지\s*/i, '')
+    .replace(/^이미지\s*\d+\s*/i, '')
+    .slice(0, 58)
+    .trim();
+}
+
+function buildImageCaption(job, image, index, role = 'section') {
+  const keyword = sanitizeEditorLine(job.target_keyword || job.keyword || job.title || '');
+  const section = sanitizeEditorLine(sectionTitleFromImage(image, role === 'thumbnail' ? '핵심 요약' : imageLabel(image, index)));
+  const source = imageCaptionText(image, index) || [keyword, section].filter(Boolean).join(' ');
+  const parts = [];
+  if (keyword && !source.includes(keyword)) parts.push(keyword);
+  parts.push(source);
+  return sanitizeEditorLine(parts.join(' ')).slice(0, 58);
 }
 
 function imageOrderValue(image, fallbackIndex = 0) {
@@ -2065,10 +2171,44 @@ function collapseDuplicateTextInEditable(node, text) {
   }
 }
 
+function quoteComponents() {
+  return Array.from(document.querySelectorAll(QUOTE_CONTAINER_SELECTOR))
+    .filter((node, index, list) => list.indexOf(node) === index)
+    .filter((node) => visible(node) || editorVisible(node));
+}
+
+function quoteComponentEditable(component) {
+  if (!component) return null;
+  return Array.from(component.querySelectorAll?.('.__se-node, .se-text-paragraph, [contenteditable="true"], textarea') || [])
+    .map(editableRoot)
+    .filter(Boolean)
+    .filter((node, index, list) => list.indexOf(node) === index)
+    .filter(visible)
+    .filter((node) => !isQuoteSourceEditable(node))[0] || null;
+}
+
 async function cleanupEmptyQuoteBlocks() {
-  // Do not remove SmartEditor components directly. Manual removal can make
-  // Naver's internal reconciliation throw NotFoundError while writing.
-  return 0;
+  const components = quoteComponents()
+    .filter(isLikelyEmptyQuoteBlock)
+    .sort((a, b) => b.getBoundingClientRect().top - a.getBoundingClientRect().top);
+  let removed = 0;
+  for (const component of components) {
+    ensureTypingNotStopped();
+    const editable = quoteComponentEditable(component) || editableRoot(component);
+    if (!editable || !isLikelyEmptyQuoteBlock(component)) continue;
+    await clickNode(editable, 40);
+    placeCaretAtEnd(editable);
+    await requestNativeKey('Backspace', { count: 1 });
+    await sleep(90);
+    if (isLikelyEmptyQuoteBlock(component)) {
+      await requestNativeKey('Delete', { count: 1 });
+      await sleep(90);
+    }
+    if (!document.body.contains(component) || !visible(component) || !isLikelyEmptyQuoteBlock(component)) {
+      removed += 1;
+    }
+  }
+  return removed;
 }
 
 async function pressArrowDownFromQuote(node, count = 1) {
@@ -2096,6 +2236,11 @@ async function exitQuoteBlock(node) {
   if (quoteTarget) {
     await pressArrowDownFromQuote(quoteTarget, 1);
     await sleep(130);
+    const afterFirst = selectionEditable();
+    if (afterFirst && (isQuoteEditable(afterFirst) || isQuoteSourceEditable(afterFirst))) {
+      await pressArrowDownFromQuote(afterFirst, 1);
+      await sleep(110);
+    }
     applyFormatBlock('p');
   }
   const selected = selectionEditable();
@@ -2105,9 +2250,14 @@ async function exitQuoteBlock(node) {
 
 async function ensureBodyTargetOutsideQuote(preferred) {
   const current = selectionEditable();
-  if (current && isQuoteEditable(current)) {
+  if (current && (isQuoteEditable(current) || isQuoteSourceEditable(current))) {
     await pressArrowDownFromQuote(current, 1);
     await sleep(120);
+    const afterFirst = selectionEditable();
+    if (afterFirst && (isQuoteEditable(afterFirst) || isQuoteSourceEditable(afterFirst))) {
+      await pressArrowDownFromQuote(afterFirst, 1);
+      await sleep(90);
+    }
     applyFormatBlock('p');
     const afterArrow = selectionEditable();
     if (afterArrow && usableBodyEditable(afterArrow)) return afterArrow;
@@ -2221,10 +2371,15 @@ function buildPublishingSegments(job, images = []) {
   const pushNextImage = (role = 'section') => {
     if (!orderedImages[imageIndex]) return false;
     const isThumbnail = role === 'thumbnail';
+    const image = orderedImages[imageIndex];
     segments.push({
       type: 'image',
       role,
-      image: { ...orderedImages[imageIndex], ctaLink: isThumbnail ? link : '' },
+      image: {
+        ...image,
+        ctaLink: isThumbnail ? link : '',
+        captionText: buildImageCaption(job, image, imageIndex, role),
+      },
       index: imageIndex,
     });
     imageIndex += 1;
@@ -2331,6 +2486,7 @@ async function typeBodySegments(node, job, images = []) {
       collapseDuplicateTextInEditable(target, segment.text);
       quoteCount += 1;
       target = await exitQuoteBlock(target);
+      await cleanupEmptyQuoteBlocks();
       typedSegments += 1;
       continue;
     }
@@ -2350,7 +2506,7 @@ async function typeBodySegments(node, job, images = []) {
       applyFormatBlock('p');
       const typed = await typeSegmentText(target, segment.text, { chunkSize: 1, minDelay: 9, maxDelay: 22, useCurrentCaret: true, scope: 'body' });
       if (!typed) throw new Error(`CTA 입력 실패: ${segment.text.slice(0, 40)}`);
-      await pressEnter(target, 2, { useCurrentCaret: true });
+      await pressEnter(target, 1, { useCurrentCaret: true });
       typedSegments += 1;
       continue;
     }
@@ -2358,7 +2514,7 @@ async function typeBodySegments(node, job, images = []) {
     applyFormatBlock('p');
     const typed = await typeSegmentText(target, segment.text, { chunkSize: 1, minDelay: 8, maxDelay: 20, useCurrentCaret: true, scope: 'body' });
     if (!typed) throw new Error(`본문 문단 입력 실패: ${segment.text.slice(0, 40)}`);
-    await pressEnter(target, 2, { useCurrentCaret: true });
+    await pressEnter(target, 1, { useCurrentCaret: true });
     typedSegments += 1;
   }
   await cleanupEmptyQuoteBlocks();

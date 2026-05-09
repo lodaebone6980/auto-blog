@@ -2451,6 +2451,9 @@ function RewritePanel() {
   const [ctaDrafts, setCtaDrafts] = useState({});
   const [qrUseDrafts, setQrUseDrafts] = useState({});
   const [savingCtaIds, setSavingCtaIds] = useState([]);
+  const [ctaSearchJobId, setCtaSearchJobId] = useState(null);
+  const [ctaSearchResults, setCtaSearchResults] = useState([]);
+  const [ctaSearching, setCtaSearching] = useState(false);
   const [keywordsText, setKeywordsText] = useState('');
   const [benchmarkUrlsText, setBenchmarkUrlsText] = useState('');
   const [collectingBenchmarkUrls, setCollectingBenchmarkUrls] = useState(false);
@@ -2794,12 +2797,34 @@ function RewritePanel() {
     }
   };
 
-  const openCtaSearch = (job) => {
+  const searchStoredCtaLinks = async (job) => {
     const query = [
       job.target_keyword || job.keyword || job.title || '',
-      '공식 홈페이지 신청 바로가기',
+      job.category || '',
     ].filter(Boolean).join(' ');
-    window.open(`https://search.naver.com/search.naver?query=${encodeURIComponent(query)}`, '_blank', 'noopener,noreferrer');
+    setCtaSearchJobId(job.id);
+    setCtaSearching(true);
+    const res = await safeFetch(`${API}/cta-links?query=${encodeURIComponent(query)}`);
+    setCtaSearching(false);
+    if (res?.ok) {
+      setCtaSearchResults(res.results || []);
+      setMessage((res.results || []).length
+        ? `보관된 CTA/QR 링크 ${res.results.length}개를 찾았습니다.`
+        : '보관된 CTA/QR 링크가 아직 없습니다. 먼저 CTA 저장 또는 QR 발행을 해주세요.');
+    } else {
+      setCtaSearchResults([]);
+      setMessage(res?.error || '보관 CTA/QR 링크 검색에 실패했습니다.');
+    }
+  };
+
+  const applyStoredCtaLink = (job, result) => {
+    const value = result.shortUrl || result.url || result.qrTargetUrl || result.ctaUrl || '';
+    if (!value) return;
+    setCtaDrafts((prev) => ({ ...prev, [job.id]: value }));
+    setQrUseDrafts((prev) => ({ ...prev, [job.id]: !result.shortUrl }));
+    setMessage(result.shortUrl
+      ? '저장된 네이버 QR 단축링크를 CTA에 적용했습니다.'
+      : '저장된 원본 CTA 링크를 적용했습니다. 네이버 QR 변환을 켜면 QR 발행 메뉴에서 단축링크로 바뀝니다.');
   };
 
   const updateRewriteSetting = (key, value) => {
@@ -4148,10 +4173,10 @@ function RewritePanel() {
                         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginTop: 6 }}>
                           <button
                             type="button"
-                            onClick={() => openCtaSearch(job)}
+                            onClick={() => searchStoredCtaLinks(job)}
                             style={{ height: 28, borderRadius: 7, border: `1px solid ${COLORS.border}`, background: 'white', color: COLORS.primary, fontSize: 10, fontWeight: 850, cursor: 'pointer' }}
                           >
-                            링크 검색
+                            {ctaSearching && ctaSearchJobId === job.id ? '검색중' : '보관 검색'}
                           </button>
                           <button
                             type="button"
@@ -4162,6 +4187,32 @@ function RewritePanel() {
                             {ctaSaving ? '저장중' : 'CTA 저장'}
                           </button>
                         </div>
+                        {ctaSearchJobId === job.id && ctaSearchResults.length > 0 && (
+                          <div style={{ marginTop: 6, display: 'grid', gap: 5, maxHeight: 130, overflow: 'auto' }}>
+                            {ctaSearchResults.slice(0, 5).map((result) => (
+                              <button
+                                key={result.id}
+                                type="button"
+                                onClick={() => applyStoredCtaLink(job, result)}
+                                style={{
+                                  textAlign: 'left',
+                                  border: `1px solid ${COLORS.border}`,
+                                  background: result.shortUrl ? '#ecfdf5' : '#f8fafc',
+                                  borderRadius: 7,
+                                  padding: '6px 7px',
+                                  cursor: 'pointer',
+                                }}
+                              >
+                                <span style={{ display: 'block', fontSize: 10, fontWeight: 900, color: COLORS.textPrimary, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                  {result.keyword || result.title || result.url}
+                                </span>
+                                <span style={{ display: 'block', marginTop: 2, fontSize: 9, color: result.shortUrl ? COLORS.success : COLORS.textMuted, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                  {result.shortUrl || result.url}
+                                </span>
+                              </button>
+                            ))}
+                          </div>
+                        )}
                       </td>
                       <td style={{ padding: '12px', minWidth: 230 }}>
                         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>

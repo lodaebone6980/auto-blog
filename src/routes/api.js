@@ -1473,6 +1473,19 @@ function imageKeywordLabel(keyword = '', topic = '', index = 0) {
   return variants[(index - 1) % Math.max(variants.length, 1)] || normalizeKeywordValue(keyword);
 }
 
+function imageCaptionLabel(keyword = '', section = '', index = 0) {
+  const main = normalizeKeywordValue(keyword);
+  const sectionText = normalizeKeywordValue(section)
+    .replace(/^대표\s*이미지\s*/i, '')
+    .replace(/^이미지\s*\d+\s*/i, '');
+  const caption = [main, sectionText]
+    .filter(Boolean)
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return caption.slice(0, 58);
+}
+
 const DEFAULT_REWRITE_SETTINGS = {
   contentSkillKey: 'adsense_verified_info',
   generatorMode: 'openai',
@@ -1520,6 +1533,9 @@ const CONTENT_SKILLS = {
         'GEO: distinguish confirmed facts from verification steps. When dates, amounts, agencies, or URLs are in factPack, paraphrase them precisely; when missing, do not invent them.',
         'Length control: distribute the target character count across intro, every section, and conclusion. Do not solve short output by repeating the same warning or adding generic ending notes.',
         '각 섹션은 먼저 구체 답을 한 문단으로 제시한 뒤 세부 설명을 이어 쓴다. 단, "요약 답변:"과 "세부 설명:" 라벨을 반복하지 않는다.',
+        'AI 브리핑/관련질문형 답변처럼 각 소제목은 실제 질문 1개에 답하는 구조로 쓴다. 질문 문구를 그대로 반복하지 말고 자연스러운 소제목과 첫 문장에 녹인다.',
+        '네이버 자동완성어, 검색 API 상위 제목, 관련 질문에서 나온 행동 키워드를 제목·소제목·첫 문단에 분산한다. 단, 검색어 나열처럼 보이면 안 된다.',
+        '이미지 카드에는 본문 키워드와 소제목이 들어간 짧은 캡션을 붙일 수 있도록 imageCards.caption을 작성한다.',
         '공식 기준이 필요한 주제는 기관명, 과정명, 비용, 시간, 신청 경로, 등록/확인 절차를 먼저 확인한 것처럼 구조화한다.',
         '확인되지 않은 환급, 서류, 지원금, 일정, 금액을 만들지 않는다. 근거가 없으면 "공식 공지에서 최종 확인" 단계로 처리한다.',
         '금융/투자 교육 주제는 교육기관, 과정명, 수강료, 교육 시간, 수료번호 등록, 기본예탁금 또는 거래 제한을 핵심 섹션에 포함한다.',
@@ -2343,6 +2359,13 @@ async function buildRewriteResearchContext({ keyword = '', topic = '', platform 
     keyword: seed,
     topic,
   });
+  const answerEngineSignals = buildAnswerEngineSignals({
+    keyword: seed,
+    topic,
+    autocompleteKeywords,
+    items: researchItems,
+    factPack,
+  });
 
   return {
     enabled: true,
@@ -2353,7 +2376,64 @@ async function buildRewriteResearchContext({ keyword = '', topic = '', platform 
     autocompleteKeywords: autocompleteKeywords.slice(0, 12),
     items: researchItems,
     factPack,
+    answerEngineSignals,
     errors: errors.slice(0, 6),
+  };
+}
+
+function buildAnswerEngineSignals({ keyword = '', topic = '', autocompleteKeywords = [], items = [], factPack = null } = {}) {
+  const seed = normalizeKeywordValue(keyword || topic);
+  const normalized = seed.replace(/\s+/g, ' ');
+  const actionTerms = [
+    '대상', '기준', '신청 방법', '신청 기간', '지급일', '금액', '사용처', '홈페이지',
+    '조회', '서류', '지역', '주의사항', '결과 확인', '예약', '예매', '환급',
+  ];
+  const sourceText = [
+    normalized,
+    ...autocompleteKeywords,
+    ...items.flatMap((item) => [item.title, item.description, item.query]),
+  ].join(' ');
+  const relatedTerms = [...new Set([
+    ...autocompleteKeywords,
+    ...actionTerms.filter((term) => sourceText.includes(term)).map((term) => `${normalized} ${term}`),
+  ].map(normalizeKeywordValue).filter(Boolean))]
+    .filter((term) => term.length >= 2)
+    .slice(0, 18);
+
+  const questionTemplates = [
+    ['대상', `${normalized} 대상은 누구인가요?`],
+    ['기준', `${normalized} 기준은 어떻게 확인하나요?`],
+    ['신청', `${normalized} 신청 방법은 무엇인가요?`],
+    ['기간', `${normalized} 신청 기간은 언제인가요?`],
+    ['금액', `${normalized} 금액은 얼마인가요?`],
+    ['사용처', `${normalized} 사용처는 어디인가요?`],
+    ['서류', `${normalized} 준비 서류는 무엇인가요?`],
+    ['주의', `${normalized} 신청 전 주의할 점은 무엇인가요?`],
+  ];
+  const factKinds = factPack?.facts ? Object.keys(factPack.facts).filter((key) => (factPack.facts[key] || []).length > 0) : [];
+  const questions = questionTemplates
+    .filter(([term]) => sourceText.includes(term) || factKinds.some((kind) => ({
+      eligibility: '대상',
+      amounts: '금액',
+      dates: '기간',
+      apply: '신청',
+      usage: '사용처',
+      cautions: '주의',
+    }[kind] || '').includes(term)))
+    .map(([, question]) => question);
+  const fallbackQuestions = [
+    `${normalized} 어디서 확인하나요?`,
+    `${normalized} 지금 신청 가능한가요?`,
+    `${normalized} 공식 기준은 어디에서 보나요?`,
+  ];
+  return {
+    relatedSearchTerms: relatedTerms,
+    relatedQuestions: [...new Set([...questions, ...fallbackQuestions])].slice(0, 10),
+    briefingFormat: [
+      '첫 문장에 사용자가 묻는 질문의 짧은 답을 먼저 둔다.',
+      '두 번째 문단에서 조건, 예외, 확인 경로를 나눈다.',
+      '마지막 문단은 사용자가 바로 할 행동 1개로 끝낸다.',
+    ],
   };
 }
 
@@ -3079,6 +3159,7 @@ function buildRewriteDraft({ keyword, topic, platform, ctaUrl, useNaverQr, useAi
             label: '대표 이미지',
             title,
             section: title,
+            caption: imageCaptionLabel(keyword, title, index),
             prompt: `${keyword} 대표 이미지`,
             url: makeTemplateImage({ keyword, section: title, subtitle: '새 글 초안', index, platform }),
             width: 500,
@@ -3092,6 +3173,7 @@ function buildRewriteDraft({ keyword, topic, platform, ctaUrl, useNaverQr, useAi
           label: `이미지 ${index}`,
           title: section,
           section,
+          caption: imageCaptionLabel(keyword, section, index),
           prompt: `${keyword} ${section} 섹션 이미지`,
           url: makeTemplateImage({ keyword, section, subtitle: `${index}번째 핵심`, index, platform }),
           width: 500,
@@ -3145,6 +3227,8 @@ function cleanGeneratedArticleBody(text = '') {
     .replace(/\[글별 CTA 링크 입력 필요\]/g, '')
     .replace(/\[네이버 QR 삽입(?: 위치)?:\s*\[글별 CTA 링크 입력 필요\]\]/g, '')
     .replace(GENERATED_EDITOR_PLACEHOLDER_RE, '')
+    .replace(/\b사실근거\s*\(\s*factPack\s*\)/gi, '확인 자료')
+    .replace(/\bfactPack\b/gi, '확인 자료')
     .replace(/^\s*(?:도입부\s*(?:첫|두\s*번째|세\s*번째)?\s*문단|대답|답변|요약\s*답변|세부\s*설명|설명|마무리\s*요약|행동\s*권장|체크리스트)\s*[:：]\s*/gmi, '')
     .replace(/^\s*\d+[.)]\s+/gm, '')
     .replace(/([가-힣A-Za-z0-9][^\n]{7,80})\1+/g, '$1')
@@ -3465,6 +3549,7 @@ function buildRewriteDraftV2({ keyword, topic, platform, ctaUrl, useNaverQr, use
           label: index === 0 ? '대표 이미지' : `이미지 ${index}`,
           title: section,
           section,
+          caption: imageCaptionLabel(keyword, section, index),
           prompt: `${keyword} ${section} 정보형 카드 이미지`,
           url: makeTemplateImage({
             keyword: imageKeywordLabel(keyword, topic, index),
@@ -3539,6 +3624,7 @@ function buildOpenAiRewritePrompt({ job, analyses = [], pattern = {}, settings =
         searchTotals: research.totals || [],
         searchItems: (research.items || []).slice(0, 10),
         factPack: research.factPack || null,
+        answerEngineSignals: research.answerEngineSignals || null,
         errors: research.errors || [],
       },
       verifiedArticleFlow: {
@@ -3591,7 +3677,9 @@ function buildOpenAiRewritePrompt({ job, analyses = [], pattern = {}, settings =
         `Hard metric gate: final body must be ${range.minCharCount}-${range.maxCharCount} Korean characters without spaces, exact keyword count ${range.minKwCount}-${range.maxKwCount}, image placeholders exactly ${imageCount}, and quote headings about ${sectionCount}. Revise before returning JSON if any metric is outside the range.`,
         'Before returning JSON, mentally audit the body length. If it is short, expand each section with a distinct factual paragraph; do not append generic repeated notes at the end.',
         'Use webResearch.searchItems and autocompleteKeywords as factual reference material. Do not copy titles or snippets; extract only the checking order, current issue terms, and official-confirmation points.',
+        'Use webResearch.answerEngineSignals.relatedQuestions and relatedSearchTerms to shape headings and first sentences. Each section should satisfy one likely AI briefing or related-question intent without writing the label "질문".',
         'Use webResearch.factPack first when available: dates go into the period section, amounts into cost/benefit, eligibility into target, apply facts into application path, usage facts into usage/restriction, and cautions into documents or cautions.',
+        'For imageCards, include caption: a short Korean caption under 55 characters that contains the main keyword or a natural variant plus the section intent.',
         'Do not write every section with the same generic frame. Each section must contain a different concrete fact type or a different user action.',
         'The phrase "official notice/page must be checked" may appear at most twice. Replace repeated warnings with concrete checking steps.',
         'If the web research has no exact confirmed fact, write a verification-oriented sentence instead of inventing dates, prices, agencies, or URLs.',
@@ -3630,7 +3718,7 @@ function buildOpenAiRewritePrompt({ job, analyses = [], pattern = {}, settings =
         title: 'string',
         body: 'string with title, intro, CTA, quote headings, image placeholders, conclusion',
         sectionTitles: ['string'],
-        imageCards: [{ label: '대표 또는 섹션명', title: '이미지 제목', subtitle: '이미지 보조문구' }],
+        imageCards: [{ label: '대표 또는 섹션명', title: '이미지 제목', subtitle: '이미지 보조문구', caption: '키워드가 포함된 짧은 사진 설명' }],
       },
     }, null, 2),
   };
@@ -3774,7 +3862,7 @@ function buildOpenAiRewritePromptV2({ job, analyses = [], pattern = {}, settings
         title: 'string',
         body: 'string',
         sectionTitles: ['string'],
-        imageCards: [{ label: 'string', title: 'string', subtitle: 'string' }],
+        imageCards: [{ label: 'string', title: 'string', subtitle: 'string', caption: 'string under 55 Korean chars' }],
       },
     }, null, 2),
   };
@@ -4012,16 +4100,28 @@ async function buildOpenAiRewriteDraft({ tenantId, job, analyses, pattern, setti
   const kwCount = cleanedMetrics.kwCount;
   const cards = Array.isArray(parsed.imageCards) ? parsed.imageCards : [];
   const images = job.use_ai_images
-    ? Array.from({ length: requiredImageCount }, (_, index) => {
+      ? Array.from({ length: requiredImageCount }, (_, index) => {
         const card = cards[index] || {};
         const section = index === 0 ? title : sectionTitles[(index - 1) % Math.max(sectionTitles.length, 1)] || title;
-        return makeTemplateImage({
+        const url = makeTemplateImage({
           keyword: imageKeywordLabel(job.target_keyword, job.target_topic, index),
           section: card.title || card.label || section,
           subtitle: card.subtitle || (index === 0 ? '핵심 요약' : `${index}번째 포인트`),
           index,
           platform: job.platform,
         });
+        return {
+          index,
+          role: index === 0 ? 'cover' : 'section',
+          label: index === 0 ? '대표 이미지' : `이미지 ${index}`,
+          title: card.title || card.label || section,
+          section: card.title || card.label || section,
+          caption: card.caption || imageCaptionLabel(job.target_keyword, card.title || card.label || section, index),
+          prompt: `${job.target_keyword} ${card.title || card.label || section} 정보형 카드 이미지`,
+          url,
+          width: 500,
+          height: 500,
+        };
       })
     : [];
   const costUsd = estimateOpenAiCostUsd({
@@ -4278,7 +4378,16 @@ async function processRewriteJob(jobId, options = {}) {
       scores.aeo,
       scores.total,
       similarityRisk,
-      JSON.stringify(output.images.map((url, index) => ({ index, type: 'template-svg', url }))),
+      JSON.stringify(output.images.map((image, index) => (
+        typeof image === 'string'
+          ? { index, type: 'template-svg', url: image }
+          : {
+              ...image,
+              index: image.index ?? index,
+              type: image.type || 'template-svg',
+              url: image.url || image.publicUrl || image.public_url || '',
+            }
+      ))),
       JSON.stringify(output.publishSpec || buildPublishSpec(job.platform, settings)),
       output.generatorMode || 'server_template',
       output.openaiModel || null,
@@ -7837,6 +7946,99 @@ router.post('/title-recommendations', async (req, res) => {
       serpTopTerms: titleRecommendationActions(baseSerpTitles.join(' ')),
       candidates: scored,
     });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/cta-links', async (req, res) => {
+  try {
+    const tenantId = tenantIdFromReq(req);
+    const query = normalizeKeywordValue(req.query.query || req.query.q || '');
+    const terms = query
+      .split(/\s+/)
+      .map((term) => term.trim())
+      .filter((term) => term.length >= 2)
+      .slice(0, 8);
+    const { rows } = await pool.query(
+      `SELECT *
+       FROM (
+         SELECT 'rewrite' AS source_type,
+                id,
+                target_keyword AS keyword,
+                title,
+                platform,
+                category,
+                cta_url,
+                qr_target_url,
+                naver_qr_short_url,
+                naver_qr_manage_url,
+                naver_qr_name,
+                qr_account_id,
+                updated_at
+         FROM rewrite_jobs
+         WHERE COALESCE(cta_url, qr_target_url, naver_qr_short_url, '') <> ''
+         UNION ALL
+         SELECT 'content' AS source_type,
+                id,
+                keyword,
+                title,
+                platform,
+                category,
+                cta_url,
+                qr_target_url,
+                naver_qr_short_url,
+                naver_qr_manage_url,
+                naver_qr_name,
+                qr_account_id,
+                updated_at
+         FROM content_jobs
+         WHERE tenant_id = $1
+           AND COALESCE(cta_url, qr_target_url, naver_qr_short_url, '') <> ''
+       ) links
+       ORDER BY updated_at DESC
+       LIMIT 200`,
+      [tenantId]
+    );
+    const scored = rows
+      .map((row) => {
+        const haystack = [
+          row.keyword,
+          row.title,
+          row.category,
+          row.platform,
+          row.cta_url,
+          row.qr_target_url,
+          row.naver_qr_short_url,
+          row.naver_qr_name,
+        ].join(' ').toLowerCase();
+        const score = terms.length
+          ? terms.reduce((sum, term) => sum + (haystack.includes(term.toLowerCase()) ? 1 : 0), 0)
+          : 1;
+        return { row, score };
+      })
+      .filter((item) => item.score > 0 || terms.length === 0)
+      .sort((a, b) => b.score - a.score || new Date(b.row.updated_at) - new Date(a.row.updated_at))
+      .slice(0, 30)
+      .map(({ row, score }) => ({
+        id: `${row.source_type}:${row.id}`,
+        sourceType: row.source_type,
+        sourceId: row.id,
+        keyword: row.keyword,
+        title: row.title,
+        platform: row.platform,
+        category: row.category,
+        url: row.cta_url || row.qr_target_url || row.naver_qr_short_url,
+        ctaUrl: row.cta_url,
+        qrTargetUrl: row.qr_target_url,
+        shortUrl: row.naver_qr_short_url,
+        manageUrl: row.naver_qr_manage_url,
+        qrName: row.naver_qr_name,
+        qrAccountId: row.qr_account_id,
+        updatedAt: row.updated_at,
+        score,
+      }));
+    res.json({ ok: true, query, results: scored });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
