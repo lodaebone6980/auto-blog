@@ -1183,9 +1183,17 @@ function countKeywordInText(text = '', keyword = '') {
   return (String(text || '').match(new RegExp(escapeRegExp(safeKeyword), 'gi')) || []).length;
 }
 
+const VISIBLE_EDITOR_PLACEHOLDER_RE = /(AI\s*활용\s*설정|사진\s*설명을?\s*입력하세요\.?|내용을\s*입력하세요\.?|출처\s*입력)/gi;
+const VISIBLE_ARTICLE_MARKER_RE = /\[(?:대표\s*이미지|대표이미지|이미지|보조\s*이미지|네이버\s*QR|QR|네이버\s*동영상|동영상|링크|CTA)[^\]]*\]/gi;
+const VISIBLE_IMAGE_MARKER_LINE_RE = /^\s*\[(?:대표\s*이미지|대표이미지|이미지|보조\s*이미지)\b[^\]]*\]\s*$/i;
+const ANY_IMAGE_MARKER_LINE_RE = /^\s*\[(?:대표\s*이미지|대표이미지|이미지|보조\s*이미지)\b[^\]]*\]\s*$/i;
+const AUTHORING_LABEL_RE = /^\s*(?:도입부\s*(?:첫|두|세)\s*문단|대표\s*이미지|요약\s*답변|답변|대답|세부\s*설명|설명|마무리\s*요약|행동\s*권장|체크리스트)\s*[:：]\s*/i;
+
 function articlePlainText(body = '') {
   return String(body || '')
     .replace(/\[(?:대표이미지|대표 이미지|이미지|보조 이미지|네이버 QR|네이버 동영상|링크 삽입|링크 삽입 위치)[^\]]+\]/g, '')
+    .replace(VISIBLE_ARTICLE_MARKER_RE, '')
+    .replace(VISIBLE_EDITOR_PLACEHOLDER_RE, '')
     .replace(/^>\s*/gm, '')
     .trim();
 }
@@ -1461,6 +1469,10 @@ function limitImagePlaceholders(body = '', maxTotal = DEFAULT_REWRITE_SETTINGS.i
   let count = 0;
   const maxImages = Math.max(0, Number(maxTotal) || 0);
   return String(body || '').split('\n').filter((line) => {
+    if (ANY_IMAGE_MARKER_LINE_RE.test(line)) {
+      count += 1;
+      return count <= maxImages;
+    }
     if (!/^\s*\[(?:대표이미지|대표 이미지|이미지|보조 이미지)\b/.test(line)) return true;
     count += 1;
     return count <= maxImages;
@@ -3320,6 +3332,180 @@ function cleanGeneratedArticleBody(text = '') {
     .trim();
 }
 
+function cleanVisibleArticleLine(line = '') {
+  return String(line || '')
+    .replace(VISIBLE_EDITOR_PLACEHOLDER_RE, '')
+    .replace(AUTHORING_LABEL_RE, '')
+    .replace(/^\s*\d+[.)]\s+/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function paragraphArray(value = []) {
+  const source = Array.isArray(value) ? value : String(value || '').split(/\n{1,}/);
+  return source
+    .flatMap((item) => {
+      if (Array.isArray(item)) return item;
+      if (item && typeof item === 'object') return [item.text || item.body || item.content || ''];
+      return String(item || '').split(/\n{2,}/);
+    })
+    .map(cleanVisibleArticleLine)
+    .filter(Boolean)
+    .filter((line) => !VISIBLE_IMAGE_MARKER_LINE_RE.test(line))
+    .filter((line) => !/^>\s*$/.test(line))
+    .slice(0, 24);
+}
+
+function normalizeGeneratedArticleBlocks(parsed = {}, { title = '', keyword = '', topic = '', sectionTitles = [] } = {}) {
+  const root = parsed.articleBlocks || parsed.article_blocks || parsed.blocks || parsed;
+  const rawSections = Array.isArray(root.sections) ? root.sections
+    : Array.isArray(root.sectionBlocks) ? root.sectionBlocks
+      : Array.isArray(root.section_blocks) ? root.section_blocks
+        : [];
+  if (!rawSections.length) return null;
+  const cleanTitle = cleanVisibleArticleLine(root.title || parsed.title || title);
+  const intro = paragraphArray(root.intro || root.introParagraphs || root.intro_paragraphs || root.opening || parsed.intro || []);
+  const conclusion = paragraphArray(root.conclusion || root.closing || root.outro || parsed.conclusion || []);
+  const sections = rawSections.map((section, index) => {
+    const heading = cleanVisibleArticleLine(
+      section.heading || section.title || section.quote || section.subtitle || section.name || sectionTitles[index] || `${keyword} 확인 ${index + 1}`
+    ).replace(/^>\s*/, '');
+    const paragraphs = paragraphArray(
+      section.paragraphs || section.body || section.content || section.detail || [section.answer, section.description].filter(Boolean)
+    );
+    return {
+      heading,
+      paragraphs,
+      caption: cleanVisibleArticleLine(section.caption || section.imageCaption || section.image_caption || ''),
+    };
+  }).filter((section) => section.heading && section.paragraphs.length);
+  if (!sections.length) return null;
+  return { title: cleanTitle || title, intro, sections, conclusion, keyword, topic };
+}
+
+function imageMarker(index = 0, text = '') {
+  const label = index === 0 ? '대표이미지' : `이미지 ${index}`;
+  return `[${label} 500x500 중앙정렬: ${cleanVisibleArticleLine(text).slice(0, 70)}]`;
+}
+
+function countVisibleImageMarkers(body = '') {
+  return String(body || '').split(/\r?\n/).filter((line) => ANY_IMAGE_MARKER_LINE_RE.test(line)).length;
+}
+
+function ensureImageMarkers(body = '', { title = '', sectionTitles = [], requiredImageCount = 0 } = {}) {
+  const maxImages = Math.max(0, Number(requiredImageCount) || 0);
+  let lines = limitImagePlaceholders(String(body || ''), maxImages).split(/\r?\n/);
+  let count = lines.filter((line) => ANY_IMAGE_MARKER_LINE_RE.test(line)).length;
+  if (maxImages <= 0 || count >= maxImages) return lines.join('\n').trim();
+  const hasCover = lines.some((line) => /^\s*\[(?:대표\s*이미지|대표이미지)\b/i.test(line));
+  if (!hasCover) {
+    const insertAt = lines.findIndex((line, index) => index > 0 && cleanVisibleArticleLine(line));
+    lines.splice(insertAt > 0 ? insertAt : 1, 0, '', imageMarker(0, title), '');
+    count += 1;
+  }
+  let imageIndex = Math.max(1, count);
+  const headingIndexes = lines.map((line, index) => (/^>\s*\S/.test(line) ? index : -1)).filter((index) => index >= 0);
+  for (let i = 0; count < maxImages && i < headingIndexes.length; i += 1) {
+    const lineIndex = headingIndexes[i] + 1;
+    const nextLines = lines.slice(lineIndex, lineIndex + 3).join('\n');
+    if (ANY_IMAGE_MARKER_LINE_RE.test(nextLines)) continue;
+    const section = sectionTitles[i] || lines[headingIndexes[i]].replace(/^>\s*/, '');
+    lines.splice(lineIndex, 0, '', imageMarker(imageIndex, section), '');
+    imageIndex += 1;
+    count += 1;
+  }
+  while (count < maxImages) {
+    lines.push('', imageMarker(imageIndex, sectionTitles[imageIndex - 1] || title));
+    imageIndex += 1;
+    count += 1;
+  }
+  return lines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+function buildArticleBodyFromBlocks(blocks, { title = '', keyword = '', platform = 'blog', ctaUrl = '', useNaverQr = false, useAiImages = true, requiredImageCount = 0, sectionCount = 7 } = {}) {
+  const finalTitle = cleanVisibleArticleLine(blocks?.title || title);
+  const sections = (blocks?.sections || []).slice(0, Math.max(1, sectionCount));
+  const bodyParts = [finalTitle, ''];
+  if (useAiImages && requiredImageCount > 0) bodyParts.push(imageMarker(0, finalTitle), '');
+  const intro = blocks?.intro?.length ? blocks.intro : paragraphArray([
+    `${keyword} 정보를 찾을 때는 대상, 기간, 신청 경로를 먼저 나눠 보는 것이 좋습니다.`,
+    `아래에서는 확인 순서와 주의할 부분을 실제로 점검하기 쉬운 흐름으로 정리했습니다.`,
+  ]);
+  bodyParts.push(...intro, '');
+  if (ctaUrl) {
+    bodyParts.push(`지금 바로 아래에서 ${keyword} 관련 내용을 확인하세요.`, ctaUrl);
+    if (useNaverQr) bodyParts.push(`[네이버 QR 삽입: ${ctaUrl}]`);
+    bodyParts.push('');
+  }
+  if (platform === 'blog') bodyParts.push(`[네이버 동영상 업로드 위치: ${keyword} 핵심 요약 15초 영상]`, '');
+  const sectionImageLimit = Math.max(0, requiredImageCount - 1);
+  sections.forEach((section, index) => {
+    bodyParts.push(`> ${section.heading}`, '');
+    if (useAiImages && index < sectionImageLimit) bodyParts.push(imageMarker(index + 1, section.heading), '');
+    bodyParts.push(...paragraphArray(section.paragraphs), '');
+  });
+  const conclusion = blocks?.conclusion?.length ? blocks.conclusion : paragraphArray([
+    `${keyword}는 최신 기준과 실제 접수처를 함께 확인해야 혼선을 줄일 수 있습니다.`,
+    `마지막으로 신청 전에는 공고명, 기간, 대상 조건, 제출 자료를 한 번 더 대조해 보시기 바랍니다.`,
+  ]);
+  bodyParts.push(...conclusion);
+  return bodyParts.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+function qualityExpansionParagraph({ keyword = '', topic = '', index = 0, includeKeyword = true } = {}) {
+  const key = includeKeyword ? normalizeKeywordValue(keyword) : '해당 정보';
+  const subject = normalizeKeywordValue(topic) || normalizeKeywordValue(keyword) || '관련 내용';
+  const variants = [
+    `${key}를 확인할 때는 제목에 보이는 문구만 보지 말고 실제 공고명, 기준일, 접수처가 서로 맞는지 함께 보는 편이 안전합니다. 비슷한 안내가 여러 곳에 올라와도 최종 판단은 공식 화면에서 현재 열려 있는 메뉴와 공지 날짜를 대조한 뒤 진행하는 것이 좋습니다.`,
+    `${key} 관련 절차를 진행하기 전에는 대상 조건과 예외 조건을 따로 적어두면 중간에 다시 확인하는 시간을 줄일 수 있습니다. 특히 온라인 접수와 방문 접수 중 어떤 방식이 가능한지, 본인 인증이나 추가 자료가 필요한지까지 확인해야 실제 신청 흐름이 끊기지 않습니다.`,
+    `${subject} 일정은 시작일보다 마감일을 놓치는 경우가 더 많습니다. 그래서 신청 가능 기간, 결과 확인 시점, 실제 처리 예정일을 한 번에 묶어두고 변경 공지가 있는지 살펴보면 검색자가 바로 행동으로 옮기기 쉽습니다.`,
+    `${key} 대상 여부가 애매하다면 한 가지 기준만 보지 말고 거주 기준일, 연령, 기존 지원 수령 여부, 중복 제한 항목까지 함께 확인해야 합니다. 이 부분을 분리해서 설명하면 단순한 안내보다 실제로 도움이 되는 정보형 글에 가까워집니다.`,
+    `${subject}를 살펴볼 때는 문의처도 함께 저장해 두는 것이 좋습니다. 접수 화면에서 요구하는 항목이 예상과 다르거나 자료 보완 요청이 나올 수 있으므로, 확인 가능한 공식 연락처와 접수 번호를 남겨두면 이후 절차가 훨씬 수월합니다.`,
+    `${key}는 지역이나 운영 주체에 따라 세부 표현이 달라질 수 있습니다. 따라서 같은 주제의 안내라도 금액, 기간, 신청 경로처럼 바뀔 수 있는 값은 최신 공지를 기준으로 다시 확인하고, 변동 가능성이 낮은 준비 순서만 먼저 챙기는 방식이 안정적입니다.`,
+  ];
+  return variants[Math.abs(index) % variants.length];
+}
+
+function insertParagraphsAcrossSections(body = '', paragraphs = []) {
+  if (!paragraphs.length) return body;
+  let lines = String(body || '').split(/\r?\n/);
+  const headingIndexes = lines.map((line, index) => (/^>\s*\S/.test(line) ? index : -1)).filter((index) => index >= 0);
+  if (!headingIndexes.length) return `${body.trim()}\n\n${paragraphs.join('\n\n')}`.trim();
+  paragraphs.forEach((paragraph, index) => {
+    const refreshedHeadings = lines.map((line, lineIndex) => (/^>\s*\S/.test(line) ? lineIndex : -1)).filter((lineIndex) => lineIndex >= 0);
+    const targetHeading = refreshedHeadings[index % refreshedHeadings.length];
+    const nextHeading = refreshedHeadings.find((lineIndex) => lineIndex > targetHeading) || lines.length;
+    lines.splice(nextHeading, 0, '', paragraph, '');
+  });
+  return lines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+function enforceRewriteQualityLocally({ title = '', body = '', keyword = '', topic = '', sectionTitles = [], settings = {}, requiredImageCount = 0 } = {}) {
+  const targetRange = metricTargetRange(settings);
+  let finalBody = cleanGeneratedArticleBody(body);
+  finalBody = ensureImageMarkers(finalBody, { title, sectionTitles, requiredImageCount });
+  finalBody = limitExactKeywordRepetition(finalBody, keyword, targetRange.maxKwCount, topic);
+  let metrics = articleMetrics(finalBody, keyword);
+  let addedParagraphCount = 0;
+  let guard = 0;
+  while ((metrics.charCount < targetRange.minCharCount || metrics.kwCount < targetRange.minKwCount) && guard < 8) {
+    const includeKeyword = metrics.kwCount < targetRange.minKwCount;
+    const paragraph = qualityExpansionParagraph({ keyword, topic, index: guard, includeKeyword });
+    finalBody = insertParagraphsAcrossSections(finalBody, [paragraph]);
+    finalBody = ensureImageMarkers(finalBody, { title, sectionTitles, requiredImageCount });
+    finalBody = limitExactKeywordRepetition(finalBody, keyword, targetRange.maxKwCount, topic);
+    metrics = articleMetrics(finalBody, keyword);
+    addedParagraphCount += 1;
+    if (metrics.charCount > targetRange.maxCharCount + 180 && metrics.kwCount >= targetRange.minKwCount) break;
+    guard += 1;
+  }
+  finalBody = cleanGeneratedArticleBody(finalBody);
+  finalBody = ensureImageMarkers(finalBody, { title, sectionTitles, requiredImageCount });
+  finalBody = limitExactKeywordRepetition(finalBody, keyword, targetRange.maxKwCount, topic);
+  metrics = articleMetrics(finalBody, keyword);
+  return { body: finalBody, metrics, addedParagraphCount, imageMarkerCount: countVisibleImageMarkers(finalBody) };
+}
+
 function naturalDraftSubject(keyword = '', topic = '') {
   return normalizeKeywordValue(topic) || normalizeKeywordValue(keyword) || '해당 주제';
 }
@@ -3751,6 +3937,10 @@ function buildOpenAiRewritePrompt({ job, analyses = [], pattern = {}, settings =
         'Do not write every section with the same generic frame. Each section must contain a different concrete fact type or a different user action.',
         'The phrase "official notice/page must be checked" may appear at most twice. Replace repeated warnings with concrete checking steps.',
         'If the web research has no exact confirmed fact, write a verification-oriented sentence instead of inventing dates, prices, agencies, or URLs.',
+        'Prefer structured output. In addition to body, return articleBlocks with intro, sections, and conclusion so the server can rebuild the final Naver editor order.',
+        'articleBlocks.sections must contain unique headings and 2-3 natural paragraphs each. Never put image placeholders, SmartEditor placeholder text, or caption placeholder text inside section paragraphs.',
+        'Do not put the same sentence frame into multiple sections. If two sections sound similar, rewrite one around a different user action, fact type, or caution.',
+        'Visible section headings must not start with numbers and must not repeat the exact main keyword mechanically in every heading.',
         ...skillPayload.promptRules,
       ],
       sourceBenchmarks: sourceSummaries,
@@ -3932,6 +4122,11 @@ function buildOpenAiRewritePromptV2({ job, analyses = [], pattern = {}, settings
       requiredJsonShape: {
         title: 'string',
         body: 'string',
+        articleBlocks: {
+          intro: ['string paragraph without labels'],
+          sections: [{ heading: 'string without number prefix', paragraphs: ['2-3 Korean paragraphs'], caption: 'image caption under 55 chars' }],
+          conclusion: ['string paragraph without labels'],
+        },
         sectionTitles: ['string'],
         imageCards: [{ label: 'string', title: 'string', subtitle: 'string', caption: 'string under 55 Korean chars' }],
       },
@@ -4062,6 +4257,30 @@ async function buildOpenAiRewriteDraft({ tenantId, job, analyses, pattern, setti
       body += `\n\n[이미지 ${index + 1} 500x500 중앙정렬: ${section}]`;
     }
   });
+  const parsedBlocks = normalizeGeneratedArticleBlocks(parsed, {
+    title,
+    keyword: job.target_keyword,
+    topic: job.target_topic,
+    sectionTitles,
+  });
+  if (parsedBlocks) {
+    body = buildArticleBodyFromBlocks(parsedBlocks, {
+      title,
+      keyword: job.target_keyword,
+      platform: job.platform,
+      ctaUrl: job.cta_url,
+      useNaverQr: job.use_naver_qr,
+      useAiImages: job.use_ai_images,
+      requiredImageCount,
+      sectionCount: pattern.sectionCount || settings.sectionCount || sectionTitles.length,
+    });
+  } else {
+    body = ensureImageMarkers(body, {
+      title,
+      sectionTitles,
+      requiredImageCount: job.use_ai_images ? requiredImageCount : 0,
+    });
+  }
   const targetRange = metricTargetRange({
     ...settings,
     targetCharCount: pattern.targetCharCount || settings.targetCharCount,
@@ -4130,12 +4349,30 @@ async function buildOpenAiRewriteDraft({ tenantId, job, analyses, pattern, setti
     cleanedMetrics = articleMetrics(body, job.target_keyword);
     metricSupplementCount += 1;
   }
+  const localQuality = enforceRewriteQualityLocally({
+    title,
+    body,
+    keyword: job.target_keyword,
+    topic: job.target_topic,
+    sectionTitles,
+    settings: {
+      ...settings,
+      targetCharCount: pattern.targetCharCount || settings.targetCharCount,
+      targetKwCount: pattern.targetKwCount || settings.targetKwCount,
+      sectionCount: pattern.sectionCount || settings.sectionCount,
+    },
+    requiredImageCount: job.use_ai_images ? requiredImageCount : 0,
+  });
+  body = localQuality.body;
+  cleanedMetrics = localQuality.metrics;
+  metricSupplementCount += localQuality.addedParagraphCount || 0;
   const enforced = {
     targetRange,
     metricAdjusted: metricSupplementCount > 0 || metricRepairCount > 0,
     metricSupplementCount,
     metricRepairCount,
     metricRepairError,
+    localImageMarkerCount: localQuality.imageMarkerCount,
   };
   const plainText = cleanedMetrics.plainText;
   const charCount = cleanedMetrics.charCount;
@@ -4205,7 +4442,12 @@ async function buildOpenAiRewriteDraft({ tenantId, job, analyses, pattern, setti
     imageCount: images.length,
     quoteCount: (body.match(/^>\s*/gm) || []).length || sectionTitles.length,
     images,
-    publishSpec: buildPublishSpec(job.platform, settings, { hasCtaUrl: Boolean(job.cta_url), useNaverQr: job.use_naver_qr }),
+    publishSpec: buildPublishSpec(job.platform, settings, {
+      hasCtaUrl: Boolean(job.cta_url),
+      useNaverQr: job.use_naver_qr,
+      articleBlocks: parsedBlocks || null,
+      qualityGate: enforced,
+    }),
     metricEnforced: enforced,
     generatorMode: 'openai',
     openaiModel: model,
