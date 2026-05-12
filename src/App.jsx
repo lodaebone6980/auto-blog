@@ -113,6 +113,22 @@ async function safeFetch(url, opts) {
   }
 }
 
+function captureScrollPosition(enabled) {
+  if (!enabled || typeof window === 'undefined') return null;
+  return { x: window.scrollX, y: window.scrollY };
+}
+
+function restoreScrollPosition(snapshot) {
+  if (!snapshot || typeof window === 'undefined') return;
+  const restore = () => window.scrollTo(snapshot.x, snapshot.y);
+  window.requestAnimationFrame(() => {
+    restore();
+    window.requestAnimationFrame(restore);
+  });
+  window.setTimeout(restore, 80);
+  window.setTimeout(restore, 220);
+}
+
 function downloadStaticAsset(path, filename) {
   const url = `${window.location.origin}${path}?v=${Date.now()}`;
   const anchor = document.createElement('a');
@@ -2495,6 +2511,7 @@ function RewritePanel() {
   const [loading, setLoading] = useState(false);
   const [creating, setCreating] = useState(false);
   const creatingRef = useRef(false);
+  const rewriteRefreshInFlightRef = useRef(false);
   const [queueing, setQueueing] = useState(false);
   const [benchmarking, setBenchmarking] = useState(false);
   const [message, setMessage] = useState('');
@@ -2511,17 +2528,29 @@ function RewritePanel() {
     }
   };
 
-  const loadRewriteData = useCallback(async () => {
-    setLoading(true);
-    const [linkRes, jobRes, rssRes] = await Promise.all([
-      safeFetch(`${API}/collections/links?limit=150`),
-      safeFetch(`${API}/rewrite-jobs?limit=80`),
-      safeFetch(`${API}/rss-items?checkedForPublish=true&limit=150`),
-    ]);
-    setLoading(false);
-    if (Array.isArray(linkRes)) setLinks(linkRes);
-    if (Array.isArray(jobRes)) setJobs(jobRes);
-    if (Array.isArray(rssRes)) setRssItems(rssRes);
+  const loadRewriteData = useCallback(async (options = {}) => {
+    const preserveScroll = Boolean(options?.preserveScroll);
+    const silent = Boolean(options?.silent);
+    const skipIfBusy = Boolean(options?.skipIfBusy);
+    if (skipIfBusy && rewriteRefreshInFlightRef.current) return;
+
+    const scrollSnapshot = captureScrollPosition(preserveScroll);
+    rewriteRefreshInFlightRef.current = true;
+    if (!silent) setLoading(true);
+    try {
+      const [linkRes, jobRes, rssRes] = await Promise.all([
+        safeFetch(`${API}/collections/links?limit=150`),
+        safeFetch(`${API}/rewrite-jobs?limit=80`),
+        safeFetch(`${API}/rss-items?checkedForPublish=true&limit=150`),
+      ]);
+      if (Array.isArray(linkRes)) setLinks(linkRes);
+      if (Array.isArray(jobRes)) setJobs(jobRes);
+      if (Array.isArray(rssRes)) setRssItems(rssRes);
+    } finally {
+      if (!silent) setLoading(false);
+      rewriteRefreshInFlightRef.current = false;
+      restoreScrollPosition(scrollSnapshot);
+    }
   }, []);
 
   useEffect(() => {
@@ -2635,7 +2664,9 @@ function RewritePanel() {
 
   useEffect(() => {
     if (activeRewriteJobCount === 0) return undefined;
-    const timer = window.setInterval(loadRewriteData, 5000);
+    const timer = window.setInterval(() => {
+      loadRewriteData({ preserveScroll: true, silent: true, skipIfBusy: true });
+    }, 5000);
     return () => window.clearInterval(timer);
   }, [activeRewriteJobCount, loadRewriteData]);
 
@@ -2780,7 +2811,7 @@ function RewritePanel() {
     setSavingKeywordIds((prev) => prev.filter((id) => id !== link.id));
     if (res?.ok) {
       setMessage(value ? `수정 메인키워드 저장: ${value}` : '수정 메인키워드를 비웠습니다.');
-      await loadRewriteData();
+      await loadRewriteData({ preserveScroll: true, silent: true });
     } else {
       setMessage(res?.error || '수정 메인키워드 저장에 실패했습니다.');
     }
@@ -2796,7 +2827,7 @@ function RewritePanel() {
     });
     if (res?.ok) {
       setMessage(`RSS 선택 키워드 저장: ${value}`);
-      await loadRewriteData();
+      await loadRewriteData({ preserveScroll: true, silent: true });
     } else {
       setMessage(res?.error || 'RSS 선택 키워드 저장에 실패했습니다.');
     }
@@ -2824,7 +2855,7 @@ function RewritePanel() {
       setMessage(value
         ? `CTA 링크 저장 완료 · ${useNaverQr ? '네이버 QR 생성 필요' : '링크만 사용'}`
         : 'CTA 링크를 비웠습니다.');
-      await loadRewriteData();
+      await loadRewriteData({ preserveScroll: true, silent: true });
     } else {
       setMessage(res?.error || 'CTA 링크 저장에 실패했습니다.');
     }
@@ -3089,12 +3120,12 @@ function RewritePanel() {
     if (createdTotal > 0 && errors.length === 0) {
       setMessage(`발행 생성 작업 등록 완료 · ${createdTotal}개 · 글 생성은 백그라운드에서 진행됩니다.`);
       setKeywordsText('');
-      await loadRewriteData();
-      window.setTimeout(loadRewriteData, 3500);
+      await loadRewriteData({ preserveScroll: true, silent: true });
+      window.setTimeout(() => loadRewriteData({ preserveScroll: true, silent: true, skipIfBusy: true }), 3500);
     } else if (createdTotal > 0) {
       setMessage(`일부 생성 완료 · 생성 ${createdTotal}개 · ${errors.join(' / ')}`);
-      await loadRewriteData();
-      window.setTimeout(loadRewriteData, 3500);
+      await loadRewriteData({ preserveScroll: true, silent: true });
+      window.setTimeout(() => loadRewriteData({ preserveScroll: true, silent: true, skipIfBusy: true }), 3500);
     } else {
       setMessage(errors.join(' / ') || '발행 생성 작업 생성에 실패했습니다.');
     }
@@ -3112,7 +3143,7 @@ function RewritePanel() {
     if (res?.ok) {
       const elapsed = res.elapsedMs ? ` · ${Math.max(1, Math.round(res.elapsedMs / 1000))}초` : '';
       setMessage(`작업 #${jobId} 재생성 완료 · ${res.generatorMode === 'server_template' ? '서버 템플릿' : 'AI'}${elapsed}`);
-      await loadRewriteData();
+      await loadRewriteData({ preserveScroll: true, silent: true });
     } else {
       setMessage(res?.error || '재생성에 실패했습니다.');
     }
@@ -3134,7 +3165,7 @@ function RewritePanel() {
     }
     setCreating(false);
     setMessage(`선택한 ${selectedRewriteLinks.length}개 작업을 다시 생성했습니다.`);
-    await loadRewriteData();
+    await loadRewriteData({ preserveScroll: true, silent: true });
   };
 
   const sendRewriteIdsToPublishQueue = async (rewriteJobIds) => {
@@ -3159,7 +3190,7 @@ function RewritePanel() {
     setQueueing(false);
     if (res?.ok) {
       setMessage(`${res.created || rewriteJobIds.length}개 작업을 자동발행 대기로 보냈습니다. 즉시/예약 시간은 확장프로그램이 블로그별 최근 발행 기준으로 저장합니다.`);
-      await loadRewriteData();
+      await loadRewriteData({ preserveScroll: true, silent: true });
       return res;
     } else {
       setMessage(res?.error || '자동발행 대기 저장에 실패했습니다.');
@@ -3196,7 +3227,7 @@ function RewritePanel() {
     }
     setCreating(false);
     setMessage(`선택한 완성 글 ${selectedCompletedRewriteJobs.length}개를 다시 생성했습니다.`);
-    await loadRewriteData();
+    await loadRewriteData({ preserveScroll: true, silent: true });
   };
 
   const copyBody = async (job) => {
